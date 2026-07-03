@@ -9,6 +9,7 @@ build/
 coverage/
 
 # Runtime / local data
+.data/
 *.db
 *.db-shm
 *.db-wal

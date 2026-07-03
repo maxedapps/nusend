@@ -3,6 +3,14 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "db:migrate": "bun src/db/migrate.ts up",
+    "db:rollback": "bun src/db/migrate.ts down",
+    "db:status": "bun src/db/migrate.ts status",
+    "dev": "bun --hot src/main.ts",
+    "start": "bun src/main.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "hono": "^4.12.27"
   }
 }
