@@ -1,0 +1,665 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plan: Add Protected Mailings Create API</title>
+<style>
+:root { color-scheme: light dark; }
+body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; line-height: 1.6; background: #f6f7f9; color: #1f2937; }
+main { max-width: 920px; margin: 48px auto; padding: 48px 56px; background: #fff; border: 1px solid #e5e7eb; border-radius: 18px; box-shadow: 0 18px 50px rgba(15, 23, 42, 0.08); }
+.header-meta { margin: -18px 0 34px; color: #6b7280; font-size: 13px; }
+.copy-button-wrap { position: fixed; top: 16px; right: 16px; z-index: 99999; }
+.copy-button { border: 1px solid #d1d5db; border-radius: 999px; padding: 9px 14px; background: #fff; color: #111827; font: 600 13px/1 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; box-shadow: 0 8px 24px rgba(15, 23, 42, 0.14); cursor: pointer; }
+.copy-button:hover { background: #f9fafb; }
+.copy-button:focus-visible { outline: 3px solid #93c5fd; outline-offset: 2px; }
+.copy-button[data-state="copied"] { background: #ecfdf5; border-color: #10b981; color: #065f46; }
+.copy-button[data-state="error"] { background: #fef2f2; border-color: #ef4444; color: #991b1b; }
+h1, h2, h3, h4 { line-height: 1.25; color: #111827; }
+h1 { margin-top: 0; font-size: 2.2rem; }
+h2 { margin-top: 2.2rem; padding-top: 1rem; border-top: 1px solid #e5e7eb; }
+h3 { margin-top: 1.7rem; }
+a { color: #2563eb; }
+code { padding: 0.15em 0.35em; border-radius: 0.35em; background: #f3f4f6; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.92em; }
+pre { overflow-x: auto; padding: 18px; border-radius: 12px; background: #111827; color: #f9fafb; }
+pre code { padding: 0; background: transparent; color: inherit; }
+blockquote { margin-left: 0; padding-left: 1rem; color: #4b5563; border-left: 4px solid #d1d5db; }
+table { border-collapse: collapse; width: 100%; display: block; overflow-x: auto; }
+th, td { border: 1px solid #d1d5db; padding: 8px 10px; }
+th { background: #f3f4f6; }
+li + li { margin-top: 0.25rem; }
+input[type="checkbox"] { margin-right: 0.45rem; }
+@media (prefers-color-scheme: dark) {
+  body { background: #0b1020; color: #d1d5db; }
+  main { background: #111827; border-color: #253044; box-shadow: none; }
+  h1, h2, h3, h4 { color: #f9fafb; }
+  h2 { border-top-color: #253044; }
+  .header-meta { color: #9ca3af; }
+  .copy-button { background: #111827; border-color: #374151; color: #f9fafb; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35); }
+  .copy-button:hover { background: #1f2937; }
+  .copy-button[data-state="copied"] { background: #052e24; border-color: #10b981; color: #a7f3d0; }
+  .copy-button[data-state="error"] { background: #450a0a; border-color: #ef4444; color: #fecaca; }
+  code { background: #1f2937; }
+  pre { background: #030712; }
+  blockquote { color: #9ca3af; border-left-color: #4b5563; }
+  th, td { border-color: #374151; }
+  th { background: #1f2937; }
+  a { color: #60a5fa; }
+}
+@media print { body { background: white; } main { box-shadow: none; border: 0; margin: 0; padding: 0; max-width: none; } .copy-button-wrap { display: none; } }
+</style>
+</head>
+<body>
+<div class="copy-button-wrap"><button class="copy-button" type="button" data-copy-response>Copy plan</button></div>
+<main>
+<div class="header-meta">Source: /Users/maximilianschwarzmuller/development/projects/nusend/.plans/add-protected-mailings-api.md<br>Rendered: 2026-07-03T15:44:11.039Z</div>
+<h1 id="plan-add-protected-mailings-create-api">Plan: Add Protected Mailings Create API</h1>
+<h2 id="summary">Summary</h2>
+<p>Add the first protected domain API slice for Nusend: <code>POST /api/mailings</code>. The endpoint will accept final email content, authenticate via Better Auth session or organization-owned API key, require <code>mailings:create</code>, snapshot recipients into <code>deliveries</code>, and enqueue <code>send_delivery</code> jobs. It will <strong>not</strong> send through SES yet.</p>
+<p>The slice should stay narrow: no SES worker, no template rendering, no Markdown handling, no OpenAPI, no idempotency keys, no public signup changes, no <code>organization_id</code> schema expansion, and no new runtime dependencies unless implementation uncovers a hard need.</p>
+<h2 id="confirmed-requirements-and-assumptions">Confirmed Requirements and Assumptions</h2>
+<ul>
+<li>Endpoint: <code>POST /api/mailings</code>.</li>
+<li>Authentication: existing <code>requirePrincipal</code> middleware.</li>
+<li>Permission: <code>mailings:create</code> for sessions and API keys.</li>
+<li>Input content is final <code>subject</code>, <code>html</code>, and optional <code>text</code>; Nusend still does not accept/store Markdown source.</li>
+<li>Persist:
+<ul>
+<li>one <code>mailings</code> row</li>
+<li>one <code>deliveries</code> row per recipient candidate</li>
+<li>one queued <code>jobs</code> row per non-suppressed delivery</li>
+</ul>
+</li>
+<li>No SES integration in this slice.</li>
+<li>Keep implementation lean: Bun SQLite, Hono, TypeScript, no ORM, no validation library.</li>
+<li>One workspace per deployment remains the assumption, so do not add <code>organization_id</code> columns to email-domain tables now.</li>
+<li>Suppression behavior follows <code>PROJECT.md</code>: marketing suppressions/unsubscribes must not block transactional mail; only <code>scope = 'all'</code> blocks transactional mail.</li>
+</ul>
+<h2 id="research-and-current-state-findings">Research and Current-State Findings</h2>
+<ul>
+<li><code>apps/service/src/app.ts</code>
+<ul>
+<li>Currently has health routes and mounts Better Auth at <code>/api/auth/*</code>.</li>
+<li><code>AppOptions.auth</code> is currently typed as <code>Pick&lt;AuthInstance, &quot;handler&quot;&gt;</code>; mailings routes need <code>auth.api.getSession</code> and <code>auth.api.verifyApiKey</code>, so this type must be widened.</li>
+</ul>
+</li>
+<li><code>apps/service/src/main.ts</code>
+<ul>
+<li>Opens SQLite, creates Better Auth, and passes only <code>auth</code> plus <code>pingDatabase</code> into <code>createApp</code>.</li>
+<li>It should pass <code>db</code> too.</li>
+</ul>
+</li>
+<li><code>apps/service/src/auth/middleware.ts</code>
+<ul>
+<li>Already resolves <code>x-api-key</code> or session principals.</li>
+<li>Already enforces permission sets.</li>
+<li>Stores <code>principal</code> in Hono context.</li>
+</ul>
+</li>
+<li><code>apps/service/src/auth/permissions.ts</code>
+<ul>
+<li>Already defines <code>mailings: [&quot;create&quot;, &quot;read&quot;, &quot;update&quot;, &quot;cancel&quot;, &quot;send&quot;]</code>; no permission vocabulary change needed.</li>
+</ul>
+</li>
+<li><code>apps/service/src/db/index.ts</code>
+<ul>
+<li><code>openDatabase()</code> already enables <code>PRAGMA foreign_keys = ON</code>, <code>busy_timeout</code>, WAL, and related pragmas.</li>
+</ul>
+</li>
+<li><code>apps/service/src/db/migrations/sql/0001_initial_schema.sql</code>
+<ul>
+<li>Already has <code>mailings</code>, <code>deliveries</code>, <code>jobs</code>, <code>contacts</code>, <code>lists</code>, <code>list_memberships</code>, <code>suppressions</code>.</li>
+<li><code>mailings.state</code> allows <code>draft</code>, <code>scheduled</code>, <code>sending</code>, <code>paused</code>, <code>cancelled</code>, <code>completed</code>.</li>
+<li><code>deliveries.status</code> allows <code>scheduled</code>, <code>queued</code>, <code>sending</code>, <code>sent</code>, <code>delivered</code>, <code>bounced</code>, <code>complained</code>, <code>failed</code>, <code>suppressed</code>, <code>cancelled</code>.</li>
+<li><code>jobs.kind</code> allows <code>send_delivery</code>; <code>jobs.state</code> allows <code>queued</code>.</li>
+</ul>
+</li>
+<li>Existing DB/auth tests run under root <code>vitest</code> on Node, so any test importing <code>bun:sqlite</code> directly must spawn a Bun subprocess. Existing patterns are in:
+<ul>
+<li><code>apps/service/src/auth/middleware.test.ts</code></li>
+<li><code>apps/service/src/auth/auth.integration.test.ts</code></li>
+<li><code>apps/service/src/db/migrate.integration.test.ts</code></li>
+</ul>
+</li>
+</ul>
+<h2 id="chosen-implementation-strategy">Chosen Implementation Strategy</h2>
+<p>Implement a small <code>mailings</code> feature module with pure validation, explicit SQL persistence, and a Hono route factory.</p>
+<p>Rationale:</p>
+<ul>
+<li>Keeps domain logic testable without adding libraries.</li>
+<li>Reuses the existing auth middleware and permissions model.</li>
+<li>Preserves the current lean architecture and custom SQL schema.</li>
+<li>Validates the core <code>mailings -&gt; deliveries -&gt; jobs</code> flow before introducing SES complexity.</li>
+</ul>
+<h2 id="api-design">API Design</h2>
+<h3 id="route">Route</h3>
+<pre><code class="language-txt">POST /api/mailings
+</code></pre>
+<h3 id="auth">Auth</h3>
+<p>Use:</p>
+<pre><code class="language-ts">requirePrincipal({
+  auth,
+  db,
+  permissions: { mailings: [&quot;create&quot;] },
+})
+</code></pre>
+<p>Accepted auth modes:</p>
+<ul>
+<li>session cookie/headers handled by Better Auth</li>
+<li><code>x-api-key</code> organization-owned API key</li>
+</ul>
+<h3 id="request-body">Request Body</h3>
+<pre><code class="language-ts">type CreateMailingRequest = {
+  purpose: &quot;transactional&quot; | &quot;marketing&quot;;
+  name?: string;
+  subject: string;
+  html: string;
+  text?: string;
+  scheduledAt?: string;
+  recipients?: Array&lt;{
+    email: string;
+    vars?: Record&lt;string, unknown&gt;;
+  }&gt;;
+  listId?: string;
+};
+</code></pre>
+<h3 id="validation-rules">Validation Rules</h3>
+<ul>
+<li>Body must be a JSON object.</li>
+<li><code>purpose</code> must be <code>transactional</code> or <code>marketing</code>.</li>
+<li><code>subject</code> and <code>html</code> must be non-empty strings after trimming.</li>
+<li><code>text</code>, if present, must be a string; blank string normalizes to <code>null</code>.</li>
+<li><code>name</code>, if present, must be a string; blank string normalizes to <code>null</code>.</li>
+<li><code>scheduledAt</code>, if present, must parse to a valid date; store as <code>new Date(value).toISOString()</code>.</li>
+<li>If <code>scheduledAt</code> is omitted, use <code>now</code> as the effective scheduled time.</li>
+<li>Exactly one recipient source is allowed:
+<ul>
+<li><code>recipients</code>, or</li>
+<li><code>listId</code>.</li>
+</ul>
+</li>
+<li>Transactional mailings must use <code>recipients</code> and must not use <code>listId</code>.</li>
+<li>Marketing mailings may use either <code>recipients</code> or <code>listId</code>.</li>
+<li><code>recipients</code> must be a non-empty array when provided.</li>
+<li>Explicit <code>recipients</code> should have an initial maximum of <code>1000</code> to avoid accidental oversized requests; make this a module constant, not config yet.</li>
+<li>Normalize emails by trimming and lowercasing.</li>
+<li>Email validation should remain simple: require one <code>@</code>, non-empty local/domain, and no whitespace. Do not add an email validation package.</li>
+<li>Duplicate explicit recipients should return <code>400 invalid_request</code> because merging per-recipient <code>vars</code> is ambiguous.</li>
+<li><code>vars</code>, if present, must be a non-array JSON object. Store <code>JSON.stringify(vars)</code> after ensuring serialization succeeds.</li>
+</ul>
+<h2 id="response-design">Response Design</h2>
+<h3 id="success-201">Success: <code>201</code></h3>
+<pre><code class="language-json">{
+  &quot;mailing&quot;: {
+    &quot;id&quot;: &quot;...&quot;,
+    &quot;purpose&quot;: &quot;transactional&quot;,
+    &quot;state&quot;: &quot;scheduled&quot;,
+    &quot;scheduledAt&quot;: &quot;2026-07-03T12:00:00.000Z&quot;
+  },
+  &quot;counts&quot;: {
+    &quot;deliveries&quot;: 1,
+    &quot;queued&quot;: 1,
+    &quot;suppressed&quot;: 0
+  }
+}
+</code></pre>
+<h3 id="errors">Errors</h3>
+<p>Keep the existing JSON error style:</p>
+<pre><code class="language-json">{
+  &quot;error&quot;: {
+    &quot;code&quot;: &quot;invalid_request&quot;,
+    &quot;message&quot;: &quot;...&quot;
+  }
+}
+</code></pre>
+<p>Use:</p>
+<ul>
+<li><code>400 invalid_request</code> for malformed JSON and validation failures.</li>
+<li><code>401 unauthenticated</code> from existing middleware.</li>
+<li><code>403 forbidden</code> from existing middleware.</li>
+<li><code>404 not_found</code> if <code>listId</code> does not exist.</li>
+<li><code>422 empty_recipient_set</code> if a valid request resolves to no sendable recipients, including:
+<ul>
+<li>list exists but has no currently subscribed contacts</li>
+<li>all recipient candidates are suppressed</li>
+</ul>
+</li>
+</ul>
+<p><code>422</code> is preferred over <code>409</code> because this is a semantically valid request that cannot be processed into sendable work. Document this because transactional callers may see it when a single address is globally suppressed.</p>
+<h2 id="persistence-behavior">Persistence Behavior</h2>
+<p>All read/resolve/write work should happen inside one SQLite <code>db.transaction</code> to guarantee atomicity and avoid partial mailings.</p>
+<ol>
+<li>Parse, validate, and normalize request input before DB writes.</li>
+<li>Compute <code>now = new Date().toISOString()</code>.</li>
+<li>Compute <code>effectiveScheduledAt = input.scheduledAt ?? now</code>.</li>
+<li>Inside one transaction:
+<ol>
+<li>Resolve recipient candidates.</li>
+<li>Evaluate suppressions.</li>
+<li>Reject empty/all-suppressed sets with a domain error.</li>
+<li>Insert one <code>mailings</code> row.</li>
+<li>Insert <code>deliveries</code> rows.</li>
+<li>Insert <code>jobs</code> rows for queued deliveries only.</li>
+</ol>
+</li>
+<li>Return IDs/counts.</li>
+</ol>
+<h3 id="mailing-row">Mailing Row</h3>
+<ul>
+<li><code>id = crypto.randomUUID()</code>.</li>
+<li><code>purpose</code> from input.</li>
+<li><code>state = 'scheduled'</code>.</li>
+<li><code>name</code>, <code>subject</code>, <code>html</code>, <code>text</code> from normalized input.</li>
+<li><code>list_id = listId ?? null</code>.</li>
+<li><code>scheduled_at = effectiveScheduledAt</code>.</li>
+</ul>
+<p>Use <code>scheduled_at = now</code> for immediate sends to avoid <code>state = 'scheduled'</code> with <code>scheduled_at IS NULL</code>.</p>
+<h3 id="explicit-recipient-resolution">Explicit Recipient Resolution</h3>
+<p>For <code>recipients</code>:</p>
+<ul>
+<li>Normalize and reject duplicate emails.</li>
+<li>Do not auto-create contacts.</li>
+<li>Optionally look up matching contacts by email and set <code>contact_id</code> if present.</li>
+<li>Store explicit per-recipient vars in <code>deliveries.vars_json</code>.</li>
+</ul>
+<h3 id="list-recipient-resolution">List Recipient Resolution</h3>
+<p>For <code>listId</code>:</p>
+<ul>
+<li>Require <code>purpose = 'marketing'</code>.</li>
+<li>Verify <code>lists.id</code> exists; otherwise return <code>404 not_found</code>.</li>
+<li>Load recipient candidates from <code>contacts</code> joined with <code>list_memberships</code> where:</li>
+</ul>
+<pre><code class="language-sql">list_memberships.list_id = $listId
+AND list_memberships.unsubscribed_at IS NULL
+</code></pre>
+<ul>
+<li>Use <code>contacts.email</code> and <code>contacts.id</code>.</li>
+<li>Set <code>vars_json = NULL</code> for now; do not automatically copy <code>contacts.attrs_json</code> into delivery vars in this slice.</li>
+</ul>
+<h3 id="suppression-rules">Suppression Rules</h3>
+<p>For each candidate recipient:</p>
+<ul>
+<li><code>scope = 'all'</code> suppresses both transactional and marketing sends.</li>
+<li>For <code>purpose = 'marketing'</code>:
+<ul>
+<li><code>scope = 'marketing'</code> suppresses.</li>
+<li><code>scope = 'list'</code> suppresses only when <code>suppressions.list_id</code> matches the mailing <code>listId</code>.</li>
+</ul>
+</li>
+<li>For <code>purpose = 'transactional'</code>:
+<ul>
+<li>ignore <code>scope = 'marketing'</code></li>
+<li>ignore <code>scope = 'list'</code></li>
+</ul>
+</li>
+</ul>
+<p>Implementation note:</p>
+<ul>
+<li>Prefer one suppression query per batch for candidate emails and relevant scopes, then evaluate in memory.</li>
+<li>Keep correctness and simplicity above clever SQL.</li>
+<li>Use the same normalized lowercase email values for contact/suppression lookup and delivery storage, even though DB columns also use <code>COLLATE NOCASE</code>.</li>
+</ul>
+<h3 id="delivery-rows">Delivery Rows</h3>
+<p>For each recipient candidate:</p>
+<ul>
+<li><code>id = crypto.randomUUID()</code>.</li>
+<li><code>mailing_id = mailing.id</code>.</li>
+<li><code>email = normalized email</code>.</li>
+<li><code>contact_id = contact ID or NULL</code>.</li>
+<li><code>vars_json = JSON string or NULL</code>.</li>
+<li><code>status = 'queued'</code> if not suppressed.</li>
+<li><code>status = 'suppressed'</code> if suppressed.</li>
+</ul>
+<h3 id="job-rows">Job Rows</h3>
+<p>For each queued delivery only:</p>
+<ul>
+<li><code>id = crypto.randomUUID()</code>.</li>
+<li><code>kind = 'send_delivery'</code>.</li>
+<li><code>state = 'queued'</code>.</li>
+<li><code>run_at = effectiveScheduledAt</code>.</li>
+<li><code>ref_id = delivery.id</code>.</li>
+<li>Prefer schema defaults for <code>attempts</code> and <code>max_attempts</code> unless explicit values improve clarity.</li>
+</ul>
+<h2 id="proposed-file-changes">Proposed File Changes</h2>
+<h3 id="new-files">New Files</h3>
+<ul>
+<li><code>apps/service/src/mailings/validation.ts</code>
+<ul>
+<li>request parsing/normalization helpers</li>
+<li>validation result types</li>
+<li>email normalization</li>
+<li>recipient-source checks</li>
+</ul>
+</li>
+<li><code>apps/service/src/mailings/create-mailing.ts</code>
+<ul>
+<li><code>createMailing(db, input)</code> domain service</li>
+<li>SQL transaction</li>
+<li>recipient resolution</li>
+<li>suppression evaluation</li>
+<li>delivery/job inserts</li>
+</ul>
+</li>
+<li><code>apps/service/src/mailings/routes.ts</code>
+<ul>
+<li>route factory</li>
+<li>auth middleware wiring</li>
+<li>JSON parsing and domain-error-to-HTTP mapping</li>
+</ul>
+</li>
+<li><code>apps/service/src/mailings/validation.test.ts</code>
+<ul>
+<li>pure Node/Vitest tests; no <code>bun:sqlite</code> import</li>
+</ul>
+</li>
+<li><code>apps/service/src/mailings/create-mailing.test.ts</code>
+<ul>
+<li>Bun-subprocess integration tests for DB behavior</li>
+</ul>
+</li>
+<li><code>apps/service/src/mailings/routes.test.ts</code>
+<ul>
+<li>Bun-subprocess route/auth integration tests</li>
+</ul>
+</li>
+<li>Optional if duplication becomes noisy: <code>apps/service/src/testing/bun-scenario.ts</code>
+<ul>
+<li>shared <code>spawnSync(&quot;bun&quot;, [scriptPath])</code> helper for tests that need <code>bun:sqlite</code></li>
+</ul>
+</li>
+</ul>
+<h3 id="modified-files">Modified Files</h3>
+<ul>
+<li><code>apps/service/src/app.ts</code>
+<ul>
+<li>import <code>Database</code> type.</li>
+<li>widen <code>AppOptions.auth</code> from <code>Pick&lt;AuthInstance, &quot;handler&quot;&gt;</code> to either full <code>AuthInstance</code> or <code>Pick&lt;AuthInstance, &quot;handler&quot; | &quot;api&quot;&gt;</code>.</li>
+<li>add <code>db?: Database</code>.</li>
+<li>mount mailings routes only when both <code>auth</code> and <code>db</code> are present.</li>
+<li>keep health-only tests possible without auth/db.</li>
+</ul>
+</li>
+<li><code>apps/service/src/main.ts</code>
+<ul>
+<li>pass <code>db</code> into <code>createApp</code>.</li>
+</ul>
+</li>
+<li><code>README.md</code>
+<ul>
+<li>document <code>POST /api/mailings</code>, <code>x-api-key</code>, request/response shape, and <code>422 empty_recipient_set</code>.</li>
+</ul>
+</li>
+<li>Possibly <code>PROJECT.md</code>
+<ul>
+<li>only if the finalized API contract should be captured there; avoid broad doc churn otherwise.</li>
+</ul>
+</li>
+</ul>
+<h2 id="implementation-steps">Implementation Steps</h2>
+<ol>
+<li>Add pure validation module.
+<ul>
+<li>Define raw request and normalized input types.</li>
+<li>Implement result helpers such as <code>{ ok: true, value } | { ok: false, code, message }</code>.</li>
+<li>Keep it free of Hono and SQLite imports.</li>
+</ul>
+</li>
+<li>Add DB/domain service.
+<ul>
+<li>Export <code>createMailing(db, input)</code>.</li>
+<li>Define domain errors for <code>list_not_found</code> and <code>empty_recipient_set</code>.</li>
+<li>Keep all resolve/suppression/insert logic inside a single <code>db.transaction</code>.</li>
+</ul>
+</li>
+<li>Implement explicit recipient path.
+<ul>
+<li>Normalize emails.</li>
+<li>Reject duplicates.</li>
+<li>Look up existing contacts by email when straightforward.</li>
+<li>Do not auto-create contacts.</li>
+</ul>
+</li>
+<li>Implement list recipient path.
+<ul>
+<li>Verify list exists.</li>
+<li>Snapshot subscribed contacts only.</li>
+<li>Do not copy <code>contacts.attrs_json</code> into <code>vars_json</code> yet.</li>
+</ul>
+</li>
+<li>Implement suppression evaluation.
+<ul>
+<li>Batch query candidate emails.</li>
+<li>Apply <code>all</code>, <code>marketing</code>, and <code>list</code> rules in TypeScript.</li>
+</ul>
+</li>
+<li>Insert rows atomically.
+<ul>
+<li>Always set <code>mailings.scheduled_at</code> and <code>jobs.run_at</code> to <code>effectiveScheduledAt</code>.</li>
+<li>Create jobs only for queued deliveries.</li>
+</ul>
+</li>
+<li>Add route factory.
+<ul>
+<li>Parse JSON safely.</li>
+<li>Run validation.</li>
+<li>Use <code>requirePrincipal({ auth, db, permissions: { mailings: [&quot;create&quot;] } })</code>.</li>
+<li>Map validation/domain errors to documented HTTP responses.</li>
+</ul>
+</li>
+<li>Wire route into <code>createApp</code> and <code>main.ts</code>.</li>
+<li>Add tests using the correct runtime strategy.</li>
+<li>Update README.</li>
+<li>Run formatting and validation.</li>
+</ol>
+<h2 id="testing-plan">Testing Plan</h2>
+<p>Run:</p>
+<pre><code class="language-sh">pnpm format
+pnpm check
+</code></pre>
+<h3 id="important-test-harness-constraint">Important Test Harness Constraint</h3>
+<p>Root <code>pnpm test</code> runs <code>vitest</code> on Node. Tests that import <code>bun:sqlite</code> directly will fail at import time. Therefore:</p>
+<ul>
+<li><code>validation.test.ts</code> can run in-process under Vitest.</li>
+<li>DB and route integration tests must spawn a Bun subprocess, following the existing pattern in <code>apps/service/src/auth/middleware.test.ts</code> and related tests.</li>
+<li>Scenario scripts should apply <code>0001_initial_schema.sql</code> and <code>0002_auth.sql</code> where needed using <code>parseMigrationFile</code>.</li>
+</ul>
+<h3 id="validation-tests">Validation Tests</h3>
+<ul>
+<li>Missing body fields fail.</li>
+<li>Invalid <code>purpose</code> fails.</li>
+<li>Empty <code>subject</code>/<code>html</code> fails.</li>
+<li>Transactional with <code>listId</code> fails.</li>
+<li>Both <code>recipients</code> and <code>listId</code> fail.</li>
+<li>Neither <code>recipients</code> nor <code>listId</code> fails.</li>
+<li>Duplicate explicit recipient fails.</li>
+<li>Invalid <code>scheduledAt</code> fails.</li>
+<li>Array/non-object <code>vars</code> fails.</li>
+<li>Blank optional <code>name</code>/<code>text</code> normalize to <code>null</code>.</li>
+</ul>
+<h3 id="direct-db-integration-tests">Direct DB Integration Tests</h3>
+<p>Use Bun subprocess scripts to verify:</p>
+<ul>
+<li>Transactional explicit recipient creates:
+<ul>
+<li>one <code>mailings</code> row</li>
+<li>one <code>deliveries</code> row with <code>queued</code></li>
+<li>one <code>jobs</code> row with <code>send_delivery</code></li>
+</ul>
+</li>
+<li><code>mailings.scheduled_at</code> and <code>jobs.run_at</code> equal <code>now</code>/effective time when <code>scheduledAt</code> omitted.</li>
+<li>Provided <code>scheduledAt</code> is stored on <code>mailings.scheduled_at</code> and <code>jobs.run_at</code>.</li>
+<li>Explicit recipient matching existing contact stores <code>contact_id</code>.</li>
+<li>Marketing list send snapshots only subscribed contacts.</li>
+<li>Unsubscribed list members are excluded.</li>
+<li><code>scope = all</code> suppresses transactional and marketing.</li>
+<li><code>scope = marketing</code> suppresses marketing only.</li>
+<li><code>scope = list</code> suppresses matching-list marketing only.</li>
+<li>Partial suppression creates suppressed delivery rows and jobs only for queued rows.</li>
+<li>All-suppressed request returns domain error and writes zero rows.</li>
+<li>Missing list returns domain error and writes zero rows.</li>
+<li>Simulated mid-transaction failure leaves zero <code>mailings</code>/<code>deliveries</code>/<code>jobs</code> rows.</li>
+</ul>
+<h3 id="httpauth-route-tests">HTTP/Auth Route Tests</h3>
+<p>Use Bun subprocess scripts to verify:</p>
+<ul>
+<li>No auth returns <code>401</code>.</li>
+<li>Invalid API key returns <code>401</code>.</li>
+<li>API key without <code>mailings:create</code> returns <code>403</code>.</li>
+<li>API key with <code>mailings:create</code> returns <code>201</code> and writes rows.</li>
+<li>Session principal with <code>mailings:create</code> role returns <code>201</code> and writes rows.</li>
+<li>Malformed JSON returns <code>400</code>.</li>
+<li>Invalid payload returns <code>400</code>.</li>
+<li>Missing list returns <code>404</code>.</li>
+<li>Empty/all-suppressed recipient set returns <code>422</code>.</li>
+<li>Response includes mailing ID/state/scheduledAt and counts.</li>
+</ul>
+<h2 id="manual-smoke-test">Manual Smoke Test</h2>
+<p>After migrating and creating an organization API key with <code>mailings:create</code>:</p>
+<pre><code class="language-sh">curl -i http://localhost:3000/api/mailings \
+  -H 'content-type: application/json' \
+  -H 'x-api-key: nusend_...' \
+  --data '{
+    &quot;purpose&quot;: &quot;transactional&quot;,
+    &quot;subject&quot;: &quot;Reset your password&quot;,
+    &quot;html&quot;: &quot;&lt;p&gt;Reset your password&lt;/p&gt;&quot;,
+    &quot;text&quot;: &quot;Reset your password&quot;,
+    &quot;recipients&quot;: [{ &quot;email&quot;: &quot;user@example.com&quot; }]
+  }'
+</code></pre>
+<p>Inspect SQLite:</p>
+<pre><code class="language-sql">SELECT id, purpose, state, scheduled_at FROM mailings ORDER BY created_at DESC LIMIT 1;
+SELECT mailing_id, email, status FROM deliveries ORDER BY created_at DESC LIMIT 5;
+SELECT kind, state, run_at, ref_id FROM jobs ORDER BY created_at DESC LIMIT 5;
+</code></pre>
+<h2 id="risks-and-mitigations">Risks and Mitigations</h2>
+<ul>
+<li><strong>All-suppressed transactional requests return <code>422</code></strong>: document this for API clients; it is expected when a single recipient has <code>scope = all</code> suppression.</li>
+<li><strong>Large list sends in one transaction can become slow</strong>: acceptable for this slice; later work can chunk list sends or move expansion to a worker.</li>
+<li><strong>No idempotency key</strong>: duplicate client retries can create duplicate mailings. Accept now; add idempotency later.</li>
+<li><strong>No <code>organization_id</code> on domain tables</strong>: matches the current one-workspace decision; future true multi-workspace support will need migrations.</li>
+<li><strong>No unsubscribe-link enforcement before SES sending</strong>: creation can be allowed because this slice does not send; the future SES sender must enforce marketing unsubscribe link policy before actual delivery.</li>
+<li><strong>Duplicate recipients are rejected</strong>: safer for personalization vars but may be friction for batch clients; can revisit later.</li>
+<li><strong>Contact lookup for explicit recipients is optional value</strong>: useful for linking history, but if it complicates implementation, it can be skipped without breaking core behavior.</li>
+</ul>
+<h2 id="alternatives-considered">Alternatives Considered</h2>
+<ol>
+<li><strong>Add SES worker now</strong>
+<ul>
+<li>Rejected: too large. Persist/queue/auth should be proven independently.</li>
+</ul>
+</li>
+<li><strong>Add <code>organization_id</code> to <code>mailings</code>/<code>deliveries</code> now</strong>
+<ul>
+<li>Rejected: conflicts with current one-workspace-per-deployment simplification.</li>
+</ul>
+</li>
+<li><strong>Use a validation library</strong>
+<ul>
+<li>Rejected: current project intentionally avoids unnecessary dependencies; hand-written validation is sufficient.</li>
+</ul>
+</li>
+<li><strong>Silently de-duplicate recipients</strong>
+<ul>
+<li>Rejected: ambiguous when duplicates have different <code>vars</code>.</li>
+</ul>
+</li>
+<li><strong>Auto-create contacts for explicit recipients</strong>
+<ul>
+<li>Rejected: transactional recipients should not pollute contact/list data.</li>
+</ul>
+</li>
+<li><strong>Create audit-only all-suppressed mailings</strong>
+<ul>
+<li>Rejected for now: produces no runnable work and adds clutter. Partial suppression still creates audit rows for the mailing.</li>
+</ul>
+</li>
+<li><strong>Leave <code>scheduled_at = NULL</code> for immediate sends</strong>
+<ul>
+<li>Rejected: <code>state = scheduled</code> plus <code>scheduled_at = NULL</code> is ambiguous for future worker queries. Store the effective scheduled time consistently.</li>
+</ul>
+</li>
+</ol>
+<h2 id="review-notes">Review Notes</h2>
+<p>This plan incorporates independent Claude review feedback, especially:</p>
+<ul>
+<li>DB/route tests must use Bun subprocesses under the current Vitest-on-Node setup.</li>
+<li><code>AppOptions.auth</code> must be widened for <code>requirePrincipal</code>.</li>
+<li><code>scheduled_at</code> and <code>job.run_at</code> should always be populated consistently.</li>
+<li>Add session-route and transaction-rollback tests.</li>
+</ul>
+<h2 id="implementation-progress">Implementation Progress</h2>
+<p>Status legend: <code>[ ]</code> not started, <code>[~]</code> in progress, <code>[x]</code> complete.</p>
+<ul>
+<li class="task-list-item"><input type="checkbox" class="task-list-item-checkbox" disabled checked>Read full plan before editing implementation files.</li>
+<li class="task-list-item"><input type="checkbox" class="task-list-item-checkbox" disabled checked>Created implementation progress tracker in this plan.</li>
+<li class="task-list-item"><input type="checkbox" class="task-list-item-checkbox" disabled checked>Decomposed work and inspected relevant repo context.</li>
+<li class="task-list-item"><input type="checkbox" class="task-list-item-checkbox" disabled checked>Used read-only subagent context/review where safe.</li>
+<li class="task-list-item"><input type="checkbox" class="task-list-item-checkbox" disabled checked>Implement validation module and validation tests.</li>
+<li class="task-list-item"><input type="checkbox" class="task-list-item-checkbox" disabled checked>Implement create-mailing domain service and DB integration tests.</li>
+<li class="task-list-item"><input type="checkbox" class="task-list-item-checkbox" disabled checked>Implement route factory and wire into app/main.</li>
+<li class="task-list-item"><input type="checkbox" class="task-list-item-checkbox" disabled checked>Add route integration tests.</li>
+<li class="task-list-item"><input type="checkbox" class="task-list-item-checkbox" disabled checked>Update README API docs.</li>
+<li class="task-list-item"><input type="checkbox" class="task-list-item-checkbox" disabled checked>Run formatting and full validation.</li>
+<li class="task-list-item"><input type="checkbox" class="task-list-item-checkbox" disabled checked>Perform independent review pass after major implementation.</li>
+<li class="task-list-item"><input type="checkbox" class="task-list-item-checkbox" disabled checked>Incorporate review feedback or document rejected/deferred feedback.</li>
+<li class="task-list-item"><input type="checkbox" class="task-list-item-checkbox" disabled checked>Perform final validation and final independent review.</li>
+</ul>
+<h3 id="implementation-notes">Implementation Notes</h3>
+<ul>
+<li>Progress tracker created before implementation edits.</li>
+<li>Work decomposition: validation first, DB service second, route/app wiring third, docs/tests/validation last.</li>
+<li>Parallelism decision: implementation edits are tightly coupled, so main agent implemented sequentially. Safe read-only scout subagent ran in parallel and confirmed code context/test constraints.</li>
+<li>Added optional <code>CreateMailingOptions</code> test seam (<code>createId</code>, <code>now</code>) to make scheduling and rollback tests deterministic.</li>
+<li>Focused validation: <code>pnpm --filter @nusend/service typecheck</code> passed; <code>pnpm test -- apps/service/src/mailings</code> passed with 52 tests.</li>
+<li>Full validation: <code>pnpm format &amp;&amp; pnpm check</code> passed with 52 tests.</li>
+<li>Independent review session <code>16059f2f-f9ae-4350-b87e-fe8407b41fb4</code> found no blockers. Addressed useful low-severity feedback by removing redundant suppression filtering logic, avoiding unused transactional query params, rewriting a suppression matrix test to use a reachable list-send input shape, and documenting persisted suppressed deliveries. Reviewer follow-up confirmed all concerns resolved. Deferred: conditional mailings route mounting when <code>auth + db</code> are present (intentional for health-only app construction); <code>vars: null</code> remains invalid because the plan requires vars, if present, to be an object.</li>
+<li>Final validation: <code>pnpm check</code> passed with 10 test files and 52 tests.</li>
+<li>Final independent review session <code>09b997c3-c8a0-4a07-ae71-78dd1f0b686c</code> found no blockers and approved shipping. Non-blocking notes: explicit marketing recipients have no list context for list-scoped unsubscribes; <code>vars: null</code> is rejected; simple email validation accepts dotless domains. These are consistent with the plan and deferred/future sender responsibilities.</li>
+</ul>
+
+</main>
+<script>
+(() => {
+  const source = "# Plan: Add Protected Mailings Create API\n\n## Summary\n\nAdd the first protected domain API slice for Nusend: `POST /api/mailings`. The endpoint will accept final email content, authenticate via Better Auth session or organization-owned API key, require `mailings:create`, snapshot recipients into `deliveries`, and enqueue `send_delivery` jobs. It will **not** send through SES yet.\n\nThe slice should stay narrow: no SES worker, no template rendering, no Markdown handling, no OpenAPI, no idempotency keys, no public signup changes, no `organization_id` schema expansion, and no new runtime dependencies unless implementation uncovers a hard need.\n\n## Confirmed Requirements and Assumptions\n\n- Endpoint: `POST /api/mailings`.\n- Authentication: existing `requirePrincipal` middleware.\n- Permission: `mailings:create` for sessions and API keys.\n- Input content is final `subject`, `html`, and optional `text`; Nusend still does not accept/store Markdown source.\n- Persist:\n  - one `mailings` row\n  - one `deliveries` row per recipient candidate\n  - one queued `jobs` row per non-suppressed delivery\n- No SES integration in this slice.\n- Keep implementation lean: Bun SQLite, Hono, TypeScript, no ORM, no validation library.\n- One workspace per deployment remains the assumption, so do not add `organization_id` columns to email-domain tables now.\n- Suppression behavior follows `PROJECT.md`: marketing suppressions/unsubscribes must not block transactional mail; only `scope = 'all'` blocks transactional mail.\n\n## Research and Current-State Findings\n\n- `apps/service/src/app.ts`\n  - Currently has health routes and mounts Better Auth at `/api/auth/*`.\n  - `AppOptions.auth` is currently typed as `Pick\u003cAuthInstance, \"handler\">`; mailings routes need `auth.api.getSession` and `auth.api.verifyApiKey`, so this type must be widened.\n- `apps/service/src/main.ts`\n  - Opens SQLite, creates Better Auth, and passes only `auth` plus `pingDatabase` into `createApp`.\n  - It should pass `db` too.\n- `apps/service/src/auth/middleware.ts`\n  - Already resolves `x-api-key` or session principals.\n  - Already enforces permission sets.\n  - Stores `principal` in Hono context.\n- `apps/service/src/auth/permissions.ts`\n  - Already defines `mailings: [\"create\", \"read\", \"update\", \"cancel\", \"send\"]`; no permission vocabulary change needed.\n- `apps/service/src/db/index.ts`\n  - `openDatabase()` already enables `PRAGMA foreign_keys = ON`, `busy_timeout`, WAL, and related pragmas.\n- `apps/service/src/db/migrations/sql/0001_initial_schema.sql`\n  - Already has `mailings`, `deliveries`, `jobs`, `contacts`, `lists`, `list_memberships`, `suppressions`.\n  - `mailings.state` allows `draft`, `scheduled`, `sending`, `paused`, `cancelled`, `completed`.\n  - `deliveries.status` allows `scheduled`, `queued`, `sending`, `sent`, `delivered`, `bounced`, `complained`, `failed`, `suppressed`, `cancelled`.\n  - `jobs.kind` allows `send_delivery`; `jobs.state` allows `queued`.\n- Existing DB/auth tests run under root `vitest` on Node, so any test importing `bun:sqlite` directly must spawn a Bun subprocess. Existing patterns are in:\n  - `apps/service/src/auth/middleware.test.ts`\n  - `apps/service/src/auth/auth.integration.test.ts`\n  - `apps/service/src/db/migrate.integration.test.ts`\n\n## Chosen Implementation Strategy\n\nImplement a small `mailings` feature module with pure validation, explicit SQL persistence, and a Hono route factory.\n\nRationale:\n\n- Keeps domain logic testable without adding libraries.\n- Reuses the existing auth middleware and permissions model.\n- Preserves the current lean architecture and custom SQL schema.\n- Validates the core `mailings -> deliveries -> jobs` flow before introducing SES complexity.\n\n## API Design\n\n### Route\n\n```txt\nPOST /api/mailings\n```\n\n### Auth\n\nUse:\n\n```ts\nrequirePrincipal({\n  auth,\n  db,\n  permissions: { mailings: [\"create\"] },\n})\n```\n\nAccepted auth modes:\n\n- session cookie/headers handled by Better Auth\n- `x-api-key` organization-owned API key\n\n### Request Body\n\n```ts\ntype CreateMailingRequest = {\n  purpose: \"transactional\" | \"marketing\";\n  name?: string;\n  subject: string;\n  html: string;\n  text?: string;\n  scheduledAt?: string;\n  recipients?: Array\u003c{\n    email: string;\n    vars?: Record\u003cstring, unknown>;\n  }>;\n  listId?: string;\n};\n```\n\n### Validation Rules\n\n- Body must be a JSON object.\n- `purpose` must be `transactional` or `marketing`.\n- `subject` and `html` must be non-empty strings after trimming.\n- `text`, if present, must be a string; blank string normalizes to `null`.\n- `name`, if present, must be a string; blank string normalizes to `null`.\n- `scheduledAt`, if present, must parse to a valid date; store as `new Date(value).toISOString()`.\n- If `scheduledAt` is omitted, use `now` as the effective scheduled time.\n- Exactly one recipient source is allowed:\n  - `recipients`, or\n  - `listId`.\n- Transactional mailings must use `recipients` and must not use `listId`.\n- Marketing mailings may use either `recipients` or `listId`.\n- `recipients` must be a non-empty array when provided.\n- Explicit `recipients` should have an initial maximum of `1000` to avoid accidental oversized requests; make this a module constant, not config yet.\n- Normalize emails by trimming and lowercasing.\n- Email validation should remain simple: require one `@`, non-empty local/domain, and no whitespace. Do not add an email validation package.\n- Duplicate explicit recipients should return `400 invalid_request` because merging per-recipient `vars` is ambiguous.\n- `vars`, if present, must be a non-array JSON object. Store `JSON.stringify(vars)` after ensuring serialization succeeds.\n\n## Response Design\n\n### Success: `201`\n\n```json\n{\n  \"mailing\": {\n    \"id\": \"...\",\n    \"purpose\": \"transactional\",\n    \"state\": \"scheduled\",\n    \"scheduledAt\": \"2026-07-03T12:00:00.000Z\"\n  },\n  \"counts\": {\n    \"deliveries\": 1,\n    \"queued\": 1,\n    \"suppressed\": 0\n  }\n}\n```\n\n### Errors\n\nKeep the existing JSON error style:\n\n```json\n{\n  \"error\": {\n    \"code\": \"invalid_request\",\n    \"message\": \"...\"\n  }\n}\n```\n\nUse:\n\n- `400 invalid_request` for malformed JSON and validation failures.\n- `401 unauthenticated` from existing middleware.\n- `403 forbidden` from existing middleware.\n- `404 not_found` if `listId` does not exist.\n- `422 empty_recipient_set` if a valid request resolves to no sendable recipients, including:\n  - list exists but has no currently subscribed contacts\n  - all recipient candidates are suppressed\n\n`422` is preferred over `409` because this is a semantically valid request that cannot be processed into sendable work. Document this because transactional callers may see it when a single address is globally suppressed.\n\n## Persistence Behavior\n\nAll read/resolve/write work should happen inside one SQLite `db.transaction` to guarantee atomicity and avoid partial mailings.\n\n1. Parse, validate, and normalize request input before DB writes.\n2. Compute `now = new Date().toISOString()`.\n3. Compute `effectiveScheduledAt = input.scheduledAt ?? now`.\n4. Inside one transaction:\n   1. Resolve recipient candidates.\n   2. Evaluate suppressions.\n   3. Reject empty/all-suppressed sets with a domain error.\n   4. Insert one `mailings` row.\n   5. Insert `deliveries` rows.\n   6. Insert `jobs` rows for queued deliveries only.\n5. Return IDs/counts.\n\n### Mailing Row\n\n- `id = crypto.randomUUID()`.\n- `purpose` from input.\n- `state = 'scheduled'`.\n- `name`, `subject`, `html`, `text` from normalized input.\n- `list_id = listId ?? null`.\n- `scheduled_at = effectiveScheduledAt`.\n\nUse `scheduled_at = now` for immediate sends to avoid `state = 'scheduled'` with `scheduled_at IS NULL`.\n\n### Explicit Recipient Resolution\n\nFor `recipients`:\n\n- Normalize and reject duplicate emails.\n- Do not auto-create contacts.\n- Optionally look up matching contacts by email and set `contact_id` if present.\n- Store explicit per-recipient vars in `deliveries.vars_json`.\n\n### List Recipient Resolution\n\nFor `listId`:\n\n- Require `purpose = 'marketing'`.\n- Verify `lists.id` exists; otherwise return `404 not_found`.\n- Load recipient candidates from `contacts` joined with `list_memberships` where:\n\n```sql\nlist_memberships.list_id = $listId\nAND list_memberships.unsubscribed_at IS NULL\n```\n\n- Use `contacts.email` and `contacts.id`.\n- Set `vars_json = NULL` for now; do not automatically copy `contacts.attrs_json` into delivery vars in this slice.\n\n### Suppression Rules\n\nFor each candidate recipient:\n\n- `scope = 'all'` suppresses both transactional and marketing sends.\n- For `purpose = 'marketing'`:\n  - `scope = 'marketing'` suppresses.\n  - `scope = 'list'` suppresses only when `suppressions.list_id` matches the mailing `listId`.\n- For `purpose = 'transactional'`:\n  - ignore `scope = 'marketing'`\n  - ignore `scope = 'list'`\n\nImplementation note:\n\n- Prefer one suppression query per batch for candidate emails and relevant scopes, then evaluate in memory.\n- Keep correctness and simplicity above clever SQL.\n- Use the same normalized lowercase email values for contact/suppression lookup and delivery storage, even though DB columns also use `COLLATE NOCASE`.\n\n### Delivery Rows\n\nFor each recipient candidate:\n\n- `id = crypto.randomUUID()`.\n- `mailing_id = mailing.id`.\n- `email = normalized email`.\n- `contact_id = contact ID or NULL`.\n- `vars_json = JSON string or NULL`.\n- `status = 'queued'` if not suppressed.\n- `status = 'suppressed'` if suppressed.\n\n### Job Rows\n\nFor each queued delivery only:\n\n- `id = crypto.randomUUID()`.\n- `kind = 'send_delivery'`.\n- `state = 'queued'`.\n- `run_at = effectiveScheduledAt`.\n- `ref_id = delivery.id`.\n- Prefer schema defaults for `attempts` and `max_attempts` unless explicit values improve clarity.\n\n## Proposed File Changes\n\n### New Files\n\n- `apps/service/src/mailings/validation.ts`\n  - request parsing/normalization helpers\n  - validation result types\n  - email normalization\n  - recipient-source checks\n- `apps/service/src/mailings/create-mailing.ts`\n  - `createMailing(db, input)` domain service\n  - SQL transaction\n  - recipient resolution\n  - suppression evaluation\n  - delivery/job inserts\n- `apps/service/src/mailings/routes.ts`\n  - route factory\n  - auth middleware wiring\n  - JSON parsing and domain-error-to-HTTP mapping\n- `apps/service/src/mailings/validation.test.ts`\n  - pure Node/Vitest tests; no `bun:sqlite` import\n- `apps/service/src/mailings/create-mailing.test.ts`\n  - Bun-subprocess integration tests for DB behavior\n- `apps/service/src/mailings/routes.test.ts`\n  - Bun-subprocess route/auth integration tests\n- Optional if duplication becomes noisy: `apps/service/src/testing/bun-scenario.ts`\n  - shared `spawnSync(\"bun\", [scriptPath])` helper for tests that need `bun:sqlite`\n\n### Modified Files\n\n- `apps/service/src/app.ts`\n  - import `Database` type.\n  - widen `AppOptions.auth` from `Pick\u003cAuthInstance, \"handler\">` to either full `AuthInstance` or `Pick\u003cAuthInstance, \"handler\" | \"api\">`.\n  - add `db?: Database`.\n  - mount mailings routes only when both `auth` and `db` are present.\n  - keep health-only tests possible without auth/db.\n- `apps/service/src/main.ts`\n  - pass `db` into `createApp`.\n- `README.md`\n  - document `POST /api/mailings`, `x-api-key`, request/response shape, and `422 empty_recipient_set`.\n- Possibly `PROJECT.md`\n  - only if the finalized API contract should be captured there; avoid broad doc churn otherwise.\n\n## Implementation Steps\n\n1. Add pure validation module.\n   - Define raw request and normalized input types.\n   - Implement result helpers such as `{ ok: true, value } | { ok: false, code, message }`.\n   - Keep it free of Hono and SQLite imports.\n2. Add DB/domain service.\n   - Export `createMailing(db, input)`.\n   - Define domain errors for `list_not_found` and `empty_recipient_set`.\n   - Keep all resolve/suppression/insert logic inside a single `db.transaction`.\n3. Implement explicit recipient path.\n   - Normalize emails.\n   - Reject duplicates.\n   - Look up existing contacts by email when straightforward.\n   - Do not auto-create contacts.\n4. Implement list recipient path.\n   - Verify list exists.\n   - Snapshot subscribed contacts only.\n   - Do not copy `contacts.attrs_json` into `vars_json` yet.\n5. Implement suppression evaluation.\n   - Batch query candidate emails.\n   - Apply `all`, `marketing`, and `list` rules in TypeScript.\n6. Insert rows atomically.\n   - Always set `mailings.scheduled_at` and `jobs.run_at` to `effectiveScheduledAt`.\n   - Create jobs only for queued deliveries.\n7. Add route factory.\n   - Parse JSON safely.\n   - Run validation.\n   - Use `requirePrincipal({ auth, db, permissions: { mailings: [\"create\"] } })`.\n   - Map validation/domain errors to documented HTTP responses.\n8. Wire route into `createApp` and `main.ts`.\n9. Add tests using the correct runtime strategy.\n10. Update README.\n11. Run formatting and validation.\n\n## Testing Plan\n\nRun:\n\n```sh\npnpm format\npnpm check\n```\n\n### Important Test Harness Constraint\n\nRoot `pnpm test` runs `vitest` on Node. Tests that import `bun:sqlite` directly will fail at import time. Therefore:\n\n- `validation.test.ts` can run in-process under Vitest.\n- DB and route integration tests must spawn a Bun subprocess, following the existing pattern in `apps/service/src/auth/middleware.test.ts` and related tests.\n- Scenario scripts should apply `0001_initial_schema.sql` and `0002_auth.sql` where needed using `parseMigrationFile`.\n\n### Validation Tests\n\n- Missing body fields fail.\n- Invalid `purpose` fails.\n- Empty `subject`/`html` fails.\n- Transactional with `listId` fails.\n- Both `recipients` and `listId` fail.\n- Neither `recipients` nor `listId` fails.\n- Duplicate explicit recipient fails.\n- Invalid `scheduledAt` fails.\n- Array/non-object `vars` fails.\n- Blank optional `name`/`text` normalize to `null`.\n\n### Direct DB Integration Tests\n\nUse Bun subprocess scripts to verify:\n\n- Transactional explicit recipient creates:\n  - one `mailings` row\n  - one `deliveries` row with `queued`\n  - one `jobs` row with `send_delivery`\n- `mailings.scheduled_at` and `jobs.run_at` equal `now`/effective time when `scheduledAt` omitted.\n- Provided `scheduledAt` is stored on `mailings.scheduled_at` and `jobs.run_at`.\n- Explicit recipient matching existing contact stores `contact_id`.\n- Marketing list send snapshots only subscribed contacts.\n- Unsubscribed list members are excluded.\n- `scope = all` suppresses transactional and marketing.\n- `scope = marketing` suppresses marketing only.\n- `scope = list` suppresses matching-list marketing only.\n- Partial suppression creates suppressed delivery rows and jobs only for queued rows.\n- All-suppressed request returns domain error and writes zero rows.\n- Missing list returns domain error and writes zero rows.\n- Simulated mid-transaction failure leaves zero `mailings`/`deliveries`/`jobs` rows.\n\n### HTTP/Auth Route Tests\n\nUse Bun subprocess scripts to verify:\n\n- No auth returns `401`.\n- Invalid API key returns `401`.\n- API key without `mailings:create` returns `403`.\n- API key with `mailings:create` returns `201` and writes rows.\n- Session principal with `mailings:create` role returns `201` and writes rows.\n- Malformed JSON returns `400`.\n- Invalid payload returns `400`.\n- Missing list returns `404`.\n- Empty/all-suppressed recipient set returns `422`.\n- Response includes mailing ID/state/scheduledAt and counts.\n\n## Manual Smoke Test\n\nAfter migrating and creating an organization API key with `mailings:create`:\n\n```sh\ncurl -i http://localhost:3000/api/mailings \\\n  -H 'content-type: application/json' \\\n  -H 'x-api-key: nusend_...' \\\n  --data '{\n    \"purpose\": \"transactional\",\n    \"subject\": \"Reset your password\",\n    \"html\": \"\u003cp>Reset your password\u003c/p>\",\n    \"text\": \"Reset your password\",\n    \"recipients\": [{ \"email\": \"user@example.com\" }]\n  }'\n```\n\nInspect SQLite:\n\n```sql\nSELECT id, purpose, state, scheduled_at FROM mailings ORDER BY created_at DESC LIMIT 1;\nSELECT mailing_id, email, status FROM deliveries ORDER BY created_at DESC LIMIT 5;\nSELECT kind, state, run_at, ref_id FROM jobs ORDER BY created_at DESC LIMIT 5;\n```\n\n## Risks and Mitigations\n\n- **All-suppressed transactional requests return `422`**: document this for API clients; it is expected when a single recipient has `scope = all` suppression.\n- **Large list sends in one transaction can become slow**: acceptable for this slice; later work can chunk list sends or move expansion to a worker.\n- **No idempotency key**: duplicate client retries can create duplicate mailings. Accept now; add idempotency later.\n- **No `organization_id` on domain tables**: matches the current one-workspace decision; future true multi-workspace support will need migrations.\n- **No unsubscribe-link enforcement before SES sending**: creation can be allowed because this slice does not send; the future SES sender must enforce marketing unsubscribe link policy before actual delivery.\n- **Duplicate recipients are rejected**: safer for personalization vars but may be friction for batch clients; can revisit later.\n- **Contact lookup for explicit recipients is optional value**: useful for linking history, but if it complicates implementation, it can be skipped without breaking core behavior.\n\n## Alternatives Considered\n\n1. **Add SES worker now**\n   - Rejected: too large. Persist/queue/auth should be proven independently.\n2. **Add `organization_id` to `mailings`/`deliveries` now**\n   - Rejected: conflicts with current one-workspace-per-deployment simplification.\n3. **Use a validation library**\n   - Rejected: current project intentionally avoids unnecessary dependencies; hand-written validation is sufficient.\n4. **Silently de-duplicate recipients**\n   - Rejected: ambiguous when duplicates have different `vars`.\n5. **Auto-create contacts for explicit recipients**\n   - Rejected: transactional recipients should not pollute contact/list data.\n6. **Create audit-only all-suppressed mailings**\n   - Rejected for now: produces no runnable work and adds clutter. Partial suppression still creates audit rows for the mailing.\n7. **Leave `scheduled_at = NULL` for immediate sends**\n   - Rejected: `state = scheduled` plus `scheduled_at = NULL` is ambiguous for future worker queries. Store the effective scheduled time consistently.\n\n## Review Notes\n\nThis plan incorporates independent Claude review feedback, especially:\n\n- DB/route tests must use Bun subprocesses under the current Vitest-on-Node setup.\n- `AppOptions.auth` must be widened for `requirePrincipal`.\n- `scheduled_at` and `job.run_at` should always be populated consistently.\n- Add session-route and transaction-rollback tests.\n\n## Implementation Progress\n\nStatus legend: `[ ]` not started, `[~]` in progress, `[x]` complete.\n\n- [x] Read full plan before editing implementation files.\n- [x] Created implementation progress tracker in this plan.\n- [x] Decomposed work and inspected relevant repo context.\n- [x] Used read-only subagent context/review where safe.\n- [x] Implement validation module and validation tests.\n- [x] Implement create-mailing domain service and DB integration tests.\n- [x] Implement route factory and wire into app/main.\n- [x] Add route integration tests.\n- [x] Update README API docs.\n- [x] Run formatting and full validation.\n- [x] Perform independent review pass after major implementation.\n- [x] Incorporate review feedback or document rejected/deferred feedback.\n- [x] Perform final validation and final independent review.\n\n### Implementation Notes\n\n- Progress tracker created before implementation edits.\n- Work decomposition: validation first, DB service second, route/app wiring third, docs/tests/validation last.\n- Parallelism decision: implementation edits are tightly coupled, so main agent implemented sequentially. Safe read-only scout subagent ran in parallel and confirmed code context/test constraints.\n- Added optional `CreateMailingOptions` test seam (`createId`, `now`) to make scheduling and rollback tests deterministic.\n- Focused validation: `pnpm --filter @nusend/service typecheck` passed; `pnpm test -- apps/service/src/mailings` passed with 52 tests.\n- Full validation: `pnpm format && pnpm check` passed with 52 tests.\n- Independent review session `16059f2f-f9ae-4350-b87e-fe8407b41fb4` found no blockers. Addressed useful low-severity feedback by removing redundant suppression filtering logic, avoiding unused transactional query params, rewriting a suppression matrix test to use a reachable list-send input shape, and documenting persisted suppressed deliveries. Reviewer follow-up confirmed all concerns resolved. Deferred: conditional mailings route mounting when `auth + db` are present (intentional for health-only app construction); `vars: null` remains invalid because the plan requires vars, if present, to be an object.\n- Final validation: `pnpm check` passed with 10 test files and 52 tests.\n- Final independent review session `09b997c3-c8a0-4a07-ae71-78dd1f0b686c` found no blockers and approved shipping. Non-blocking notes: explicit marketing recipients have no list context for list-scoped unsubscribes; `vars: null` is rejected; simple email validation accepts dotless domains. These are consistent with the plan and deferred/future sender responsibilities.\n";
+  const button = document.querySelector('[data-copy-response]');
+  if (!button) return;
+
+  async function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.setAttribute('readonly', '');
+    textarea.style.position = 'fixed';
+    textarea.style.left = '-9999px';
+    textarea.style.top = '0';
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    const ok = document.execCommand('copy');
+    textarea.remove();
+    if (!ok) throw new Error('Copy command failed');
+  }
+
+  button.addEventListener('click', async () => {
+    const original = button.textContent;
+    try {
+      await copyText(source);
+      button.dataset.state = 'copied';
+      button.textContent = 'Copied';
+    } catch (error) {
+      button.dataset.state = 'error';
+      button.textContent = 'Copy failed';
+      console.error(error);
+    }
+    window.setTimeout(() => {
+      button.dataset.state = '';
+      button.textContent = original;
+    }, 1600);
+  });
+})();
+</script>
+</body>
+</html>

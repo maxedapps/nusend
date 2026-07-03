@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import type { AuthInstance } from "./auth/auth.ts";
 import { createApp } from "./app.ts";
 
 describe("createApp", () => {
@@ -37,7 +38,7 @@ describe("createApp", () => {
     const app = createApp({
       auth: {
         handler: async () => Response.json({ handled: true }),
-      },
+      } as unknown as AuthInstance,
     });
 
     const response = await app.fetch(new Request("http://localhost/api/auth/sign-in/google"));

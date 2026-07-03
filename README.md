@@ -54,3 +54,58 @@ http://localhost:3000/api/auth/callback/google
 ```
 
 Nusend uses Google-only Better Auth login with public signup disabled. Precreate allowed users with `auth:bootstrap`; unknown Google accounts should be rejected. Programmatic clients should send organization-owned API keys via `x-api-key`.
+
+## Mailings API
+
+Create a protected mailing and enqueue delivery jobs without sending via SES yet:
+
+```sh
+curl -i http://localhost:3000/api/mailings \
+  -H 'content-type: application/json' \
+  -H 'x-api-key: nusend_...' \
+  --data '{
+    "purpose": "transactional",
+    "subject": "Reset your password",
+    "html": "<p>Reset your password</p>",
+    "text": "Reset your password",
+    "recipients": [{ "email": "user@example.com" }]
+  }'
+```
+
+`POST /api/mailings` requires a Better Auth session or an organization-owned API key with `mailings:create`.
+
+Request body:
+
+```json
+{
+  "purpose": "transactional",
+  "name": "Password reset",
+  "subject": "Reset your password",
+  "html": "<p>Reset your password</p>",
+  "text": "Reset your password",
+  "scheduledAt": "2026-07-03T12:00:00.000Z",
+  "recipients": [{ "email": "user@example.com", "vars": { "firstName": "Max" } }]
+}
+```
+
+Use exactly one recipient source: `recipients` or `listId`. Transactional mailings must use `recipients`; marketing mailings may use either.
+
+Success response:
+
+```json
+{
+  "mailing": {
+    "id": "...",
+    "purpose": "transactional",
+    "state": "scheduled",
+    "scheduledAt": "2026-07-03T12:00:00.000Z"
+  },
+  "counts": {
+    "deliveries": 1,
+    "queued": 1,
+    "suppressed": 0
+  }
+}
+```
+
+A request that resolves to no sendable recipients returns `422 empty_recipient_set`, including when all recipients are suppressed. Suppressed recipients in a partially sendable mailing still get persisted `deliveries` rows, so `counts.deliveries = counts.queued + counts.suppressed`. `scope=all` suppressions block transactional and marketing mail; marketing/list suppressions only block marketing mail.

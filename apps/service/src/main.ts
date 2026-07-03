@@ -8,6 +8,7 @@ const db = openDatabase(config.databasePath);
 const auth = createAuth(requireAuthConfig(config), db);
 const app = createApp({
   auth,
+  db,
   pingDatabase: () => pingDatabase(db),
 });
 

@@ -1,9 +1,12 @@
+import type { Database } from "bun:sqlite";
 import { Hono } from "hono";
 
 import type { AuthInstance } from "./auth/auth.ts";
+import { createMailingsRoutes } from "./mailings/routes.ts";
 
 type AppOptions = {
-  auth?: Pick<AuthInstance, "handler">;
+  auth?: AuthInstance;
+  db?: Database;
   pingDatabase?: () => boolean;
 };
 
@@ -28,6 +31,10 @@ export function createApp(options: AppOptions = {}): Hono {
   if (options.auth) {
     const auth = options.auth;
     app.on(["GET", "POST"], ["/api/auth/*"], (context) => auth.handler(context.req.raw));
+  }
+
+  if (options.auth && options.db) {
+    app.route("/api/mailings", createMailingsRoutes({ auth: options.auth, db: options.db }));
   }
 
   app.notFound((context) =>
