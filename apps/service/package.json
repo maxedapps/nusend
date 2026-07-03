@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "auth:bootstrap": "bun src/auth/bootstrap.ts",
     "db:migrate": "bun src/db/migrate.ts up",
     "db:rollback": "bun src/db/migrate.ts down",
     "db:status": "bun src/db/migrate.ts status",
@@ -11,6 +12,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@better-auth/api-key": "1.6.23",
+    "better-auth": "1.6.23",
     "hono": "^4.12.27"
   }
 }

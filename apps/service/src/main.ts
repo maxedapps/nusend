@@ -1,10 +1,13 @@
 import { createApp } from "./app.ts";
-import { loadConfig } from "./config.ts";
+import { createAuth } from "./auth/auth.ts";
+import { loadConfig, requireAuthConfig } from "./config.ts";
 import { closeDatabase, openDatabase, pingDatabase } from "./db/index.ts";
 
 const config = loadConfig();
 const db = openDatabase(config.databasePath);
+const auth = createAuth(requireAuthConfig(config), db);
 const app = createApp({
+  auth,
   pingDatabase: () => pingDatabase(db),
 });
 

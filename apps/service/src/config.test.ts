@@ -7,6 +7,7 @@ describe("loadConfig", () => {
   it("loads defaults", () => {
     const config = loadConfig({});
 
+    expect(config.auth).toBeNull();
     expect(config.host).toBe("0.0.0.0");
     expect(config.port).toBe(3000);
     expect(config.databasePath).toMatch(/\.data\/nusend\.sqlite$/);
@@ -28,5 +29,39 @@ describe("loadConfig", () => {
 
   it("rejects invalid ports", () => {
     expect(() => loadConfig({ NUSEND_PORT: "70000" })).toThrow(/NUSEND_PORT/);
+  });
+
+  it("loads auth config", () => {
+    const config = loadConfig({
+      BETTER_AUTH_SECRET: "x".repeat(32),
+      BETTER_AUTH_URL: "http://localhost:3000/",
+      GOOGLE_CLIENT_ID: "google-client-id",
+      GOOGLE_CLIENT_SECRET: "google-client-secret",
+      NUSEND_AUTH_TRUSTED_ORIGINS: "http://localhost:3000, https://admin.example.com/path",
+    });
+
+    expect(config.auth).toEqual({
+      baseUrl: "http://localhost:3000",
+      googleClientId: "google-client-id",
+      googleClientSecret: "google-client-secret",
+      secret: "x".repeat(32),
+      trustedOrigins: ["http://localhost:3000", "https://admin.example.com"],
+    });
+  });
+
+  it("rejects incomplete auth config", () => {
+    expect(() => loadConfig({ BETTER_AUTH_SECRET: "x".repeat(32) })).toThrow(/BETTER_AUTH_URL/);
+  });
+
+  it("requires HTTPS auth URLs in production", () => {
+    expect(() =>
+      loadConfig({
+        BETTER_AUTH_SECRET: "x".repeat(32),
+        BETTER_AUTH_URL: "http://example.com",
+        GOOGLE_CLIENT_ID: "google-client-id",
+        GOOGLE_CLIENT_SECRET: "google-client-secret",
+        NODE_ENV: "production",
+      }),
+    ).toThrow(/HTTPS/);
   });
 });
