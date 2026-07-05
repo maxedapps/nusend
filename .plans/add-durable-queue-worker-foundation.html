@@ -1,0 +1,553 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plan: Add Durable Queue and Worker Foundation</title>
+<style>
+:root { color-scheme: light dark; }
+body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; line-height: 1.6; background: #f6f7f9; color: #1f2937; }
+main { max-width: 920px; margin: 48px auto; padding: 48px 56px; background: #fff; border: 1px solid #e5e7eb; border-radius: 18px; box-shadow: 0 18px 50px rgba(15, 23, 42, 0.08); }
+.header-meta { margin: -18px 0 34px; color: #6b7280; font-size: 13px; }
+.copy-button-wrap { position: fixed; top: 16px; right: 16px; z-index: 99999; }
+.copy-button { border: 1px solid #d1d5db; border-radius: 999px; padding: 9px 14px; background: #fff; color: #111827; font: 600 13px/1 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; box-shadow: 0 8px 24px rgba(15, 23, 42, 0.14); cursor: pointer; }
+.copy-button:hover { background: #f9fafb; }
+.copy-button:focus-visible { outline: 3px solid #93c5fd; outline-offset: 2px; }
+.copy-button[data-state="copied"] { background: #ecfdf5; border-color: #10b981; color: #065f46; }
+.copy-button[data-state="error"] { background: #fef2f2; border-color: #ef4444; color: #991b1b; }
+h1, h2, h3, h4 { line-height: 1.25; color: #111827; }
+h1 { margin-top: 0; font-size: 2.2rem; }
+h2 { margin-top: 2.2rem; padding-top: 1rem; border-top: 1px solid #e5e7eb; }
+h3 { margin-top: 1.7rem; }
+a { color: #2563eb; }
+code { padding: 0.15em 0.35em; border-radius: 0.35em; background: #f3f4f6; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.92em; }
+pre { overflow-x: auto; padding: 18px; border-radius: 12px; background: #111827; color: #f9fafb; }
+pre code { padding: 0; background: transparent; color: inherit; }
+blockquote { margin-left: 0; padding-left: 1rem; color: #4b5563; border-left: 4px solid #d1d5db; }
+table { border-collapse: collapse; width: 100%; display: block; overflow-x: auto; }
+th, td { border: 1px solid #d1d5db; padding: 8px 10px; }
+th { background: #f3f4f6; }
+li + li { margin-top: 0.25rem; }
+input[type="checkbox"] { margin-right: 0.45rem; }
+@media (prefers-color-scheme: dark) {
+  body { background: #0b1020; color: #d1d5db; }
+  main { background: #111827; border-color: #253044; box-shadow: none; }
+  h1, h2, h3, h4 { color: #f9fafb; }
+  h2 { border-top-color: #253044; }
+  .header-meta { color: #9ca3af; }
+  .copy-button { background: #111827; border-color: #374151; color: #f9fafb; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35); }
+  .copy-button:hover { background: #1f2937; }
+  .copy-button[data-state="copied"] { background: #052e24; border-color: #10b981; color: #a7f3d0; }
+  .copy-button[data-state="error"] { background: #450a0a; border-color: #ef4444; color: #fecaca; }
+  code { background: #1f2937; }
+  pre { background: #030712; }
+  blockquote { color: #9ca3af; border-left-color: #4b5563; }
+  th, td { border-color: #374151; }
+  th { background: #1f2937; }
+  a { color: #60a5fa; }
+}
+@media print { body { background: white; } main { box-shadow: none; border: 0; margin: 0; padding: 0; max-width: none; } .copy-button-wrap { display: none; } }
+</style>
+</head>
+<body>
+<div class="copy-button-wrap"><button class="copy-button" type="button" data-copy-response>Copy plan</button></div>
+<main>
+<div class="header-meta">Source: /Users/maximilianschwarzmuller/development/projects/nusend/.plans/add-durable-queue-worker-foundation.md<br>Rendered: 2026-07-04T07:04:44.105Z</div>
+<h1 id="plan-add-durable-queue-and-worker-foundation">Plan: Add Durable Queue and Worker Foundation</h1>
+<h2 id="summary">Summary</h2>
+<p>Implement Nusend’s durable SQLite queue foundation before adding SES sending. This slice adds atomic job claiming, leases, retries, backoff, expired-lease recovery, completion/dead-letter transitions, and a testable worker runner with injected processors.</p>
+<p>This plan intentionally does <strong>not</strong> send email and does <strong>not</strong> add a production worker command that can consume real <code>send_delivery</code> jobs without a real SES processor.</p>
+<h2 id="confirmed-requirements-and-assumptions">Confirmed Requirements and Assumptions</h2>
+<ul>
+<li>Keep the codebase lean: no external queue package, no ORM, no new workspace packages.</li>
+<li>Continue using Bun runtime and <code>bun:sqlite</code>.</li>
+<li>Use the existing <code>jobs</code> table in <code>apps/service/src/db/migrations/sql/0001_initial_schema.sql</code>.</li>
+<li>Do not integrate AWS SES in this slice.</li>
+<li>Do not mark real <code>send_delivery</code> jobs as succeeded via fake/no-op processing.</li>
+<li>Preserve current <code>POST /api/mailings</code> behavior: it creates <code>send_delivery</code> jobs with <code>state='queued'</code> and <code>run_at=scheduledAt</code>.</li>
+<li>Use root Vitest tests that spawn Bun subprocesses for code that imports <code>bun:sqlite</code>, matching the current pattern.</li>
+<li>Treat this as queue/worker <strong>foundation</strong>: runtime <code>apps/service/src/worker.ts</code> and package scripts should wait until a real SES processor exists, unless the entrypoint exits safely without claiming jobs.</li>
+</ul>
+<h2 id="research-findings">Research Findings</h2>
+<ul>
+<li>Bun <code>Database({ strict: true })</code> controls parameter binding behavior, not transaction semantics. Queue correctness must come from SQL predicates and transactions. Source: https://bun.sh/docs/runtime/sqlite</li>
+<li>SQLite supports <code>UPDATE ... RETURNING</code>; returned rows reflect post-update values. This fits an atomic job-claim statement. Sources: https://www.sqlite.org/lang_returning.html and https://www.sqlite.org/lang_update.html</li>
+<li><code>RETURNING</code> row order is not guaranteed. Candidate fairness should be controlled in the selection subquery, not by relying on returned row order. Source: https://www.sqlite.org/lang_returning.html</li>
+<li>SQLite WAL improves reader/writer concurrency but still uses single-writer behavior and can still hit <code>SQLITE_BUSY</code>; the existing <code>PRAGMA busy_timeout = 5000</code> should remain and test file DBs should mirror production pragmas. Sources: https://www.sqlite.org/wal.html and https://sqlite.org/lang_transaction.html</li>
+<li>Time values stored as ISO strings only compare correctly if every value uses the same fixed-width UTC format. Nusend currently uses <code>new Date().toISOString()</code> and SQLite defaults like <code>%Y-%m-%dT%H:%M:%fZ</code>; queue code must not mix in SQLite <code>datetime()</code> strings such as <code>YYYY-MM-DD HH:MM:SS</code>.</li>
+</ul>
+<h2 id="current-state-findings">Current-State Findings</h2>
+<ul>
+<li><code>PROJECT.md:480-532</code> defines the queue model: atomic claims, leases, retry with backoff, <code>dead</code> as DLQ, lease expiry recovery.</li>
+<li><code>PROJECT.md:554-572</code> defines the future SES worker flow, but SES itself is not present yet.</li>
+<li><code>apps/service/src/db/migrations/sql/0001_initial_schema.sql</code> already has:
+<ul>
+<li><code>jobs(id, kind, state, run_at, attempts, max_attempts, locked_by, locked_until, ref_id, last_error, created_at, updated_at)</code></li>
+<li>indexes on <code>(state, run_at)</code>, <code>locked_until</code>, and <code>(kind, ref_id)</code></li>
+</ul>
+</li>
+<li><code>apps/service/src/mailings/create-mailing.ts</code> already enqueues <code>send_delivery</code> jobs for unsuppressed deliveries.</li>
+<li>There is no <code>apps/service/src/queue/</code> folder, no queue transition module, and no worker runner.</li>
+<li><code>pnpm check</code> currently passes: 10 test files, 52 tests.</li>
+</ul>
+<h2 id="chosen-strategy">Chosen Strategy</h2>
+<p>Build small internal queue modules plus a processor-injected runner:</p>
+<ol>
+<li><code>queue/time.ts</code>: one ISO UTC time helper used by queue code.</li>
+<li><code>queue/backoff.ts</code>: deterministic retry delay calculation.</li>
+<li><code>queue/jobs.ts</code>: atomic SQLite queue operations.</li>
+<li><code>queue/runner.ts</code>: <code>runOnce()</code> / <code>drainOnce()</code> with an injected processor.</li>
+<li>Tests using real SQLite databases and fake processors.</li>
+</ol>
+<p>Do <strong>not</strong> add a package-level <code>start:worker</code> script yet. A real runtime worker should be added with the SES <code>send_delivery</code> processor, otherwise queued email jobs could be consumed without being sent.</p>
+<h2 id="alternatives-considered">Alternatives Considered</h2>
+<h3 id="alternative-a-implement-ses-sender-directly-now">Alternative A: Implement SES sender directly now</h3>
+<p>Rejected for this slice. SES adds AWS credentials, provider errors, configuration sets, message IDs, send attempts, and at-least-once ambiguity. Queue correctness should be isolated first.</p>
+<h3 id="alternative-b-add-a-no-op-worker-that-marks-senddelivery-jobs-succeeded">Alternative B: Add a no-op worker that marks <code>send_delivery</code> jobs succeeded</h3>
+<p>Rejected. It would corrupt delivery state and make unsent emails appear sent.</p>
+<h3 id="alternative-c-add-an-external-queue-library">Alternative C: Add an external queue library</h3>
+<p>Rejected. The project intentionally uses a lean SQLite-backed queue, and the schema already exists.</p>
+<h3 id="alternative-d-use-select-then-update-in-separate-statements-for-claimsfailures">Alternative D: Use <code>SELECT</code> then <code>UPDATE</code> in separate statements for claims/failures</h3>
+<p>Rejected where avoidable. Use single-statement <code>UPDATE ... RETURNING</code> for claims and <code>UPDATE ... CASE ... RETURNING</code> for fail/release transitions.</p>
+<h3 id="alternative-e-implement-a-continuous-polling-loop-now">Alternative E: Implement a continuous polling loop now</h3>
+<p>Mostly deferred. With no real processor, <code>runOnce()</code> / <code>drainOnce()</code> provides the useful foundation. A long-running loop, <code>AbortSignal</code> handling, runtime config, and package scripts can be added with SES sender integration.</p>
+<h2 id="implementation-tasks">Implementation Tasks</h2>
+<h3 id="1-add-queue-time-helper">1. Add queue time helper</h3>
+<p>Create <code>apps/service/src/queue/time.ts</code>.</p>
+<p>Required helpers:</p>
+<pre><code class="language-ts">export function nowIso(): string;
+export function addSecondsIso(isoTime: string, seconds: number): string;
+</code></pre>
+<p>Rules:</p>
+<ul>
+<li>Always return <code>Date#toISOString()</code> format.</li>
+<li>Do not use SQLite <code>datetime()</code> for queue timestamps.</li>
+<li>Add tests asserting fixed shape, UTC <code>Z</code>, and chronological lexicographic order for representative values.</li>
+</ul>
+<p>This protects <code>run_at &lt;= $now</code> and <code>locked_until &lt;= $now</code> string comparisons.</p>
+<h3 id="2-add-queue-types-and-row-mapping">2. Add queue types and row mapping</h3>
+<p>Create <code>apps/service/src/queue/jobs.ts</code> with types:</p>
+<pre><code class="language-ts">export type JobKind = &quot;process_ses_event&quot; | &quot;send_delivery&quot;;
+export type JobState = &quot;queued&quot; | &quot;leased&quot; | &quot;succeeded&quot; | &quot;failed&quot; | &quot;dead&quot; | &quot;cancelled&quot;;
+
+export type QueueJob = {
+  id: string;
+  kind: JobKind;
+  state: JobState;
+  runAt: string;
+  attempts: number;
+  maxAttempts: number;
+  lockedBy: string | null;
+  lockedUntil: string | null;
+  refId: string;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+</code></pre>
+<p>Use SQL aliases in every <code>RETURNING</code> / <code>SELECT</code>, e.g. <code>run_at AS runAt</code>, because <code>bun:sqlite</code> returns column names as queried.</p>
+<h3 id="3-implement-atomic-job-claiming">3. Implement atomic job claiming</h3>
+<p>Add <code>claimJobs(db, options)</code>.</p>
+<p>Inputs:</p>
+<ul>
+<li><code>workerId: string</code></li>
+<li><code>now?: string</code></li>
+<li><code>leaseSeconds?: number</code></li>
+<li><code>limit?: number</code></li>
+<li>optional <code>kinds?: JobKind[]</code></li>
+</ul>
+<p>Behavior:</p>
+<ul>
+<li>Claim only <code>state='queued'</code> jobs with <code>run_at &lt;= now</code>.</li>
+<li>Order candidate IDs by <code>run_at ASC, created_at ASC, id ASC</code> in the subquery.</li>
+<li>Update selected rows to:
+<ul>
+<li><code>state='leased'</code></li>
+<li><code>attempts = attempts + 1</code></li>
+<li><code>locked_by = workerId</code></li>
+<li><code>locked_until = addSecondsIso(now, leaseSeconds)</code></li>
+<li><code>updated_at = now</code></li>
+</ul>
+</li>
+<li>Return claimed rows via <code>.all()</code> on <code>UPDATE ... RETURNING</code>.</li>
+<li>Use defensive outer predicates and parameterized kind filters.</li>
+</ul>
+<p>Reference SQL shape:</p>
+<pre><code class="language-sql">UPDATE jobs
+SET state = 'leased',
+    attempts = attempts + 1,
+    locked_by = $workerId,
+    locked_until = $lockedUntil,
+    updated_at = $now
+WHERE state = 'queued'
+  AND run_at &lt;= $now
+  AND id IN (
+    SELECT id
+    FROM jobs
+    WHERE state = 'queued'
+      AND run_at &lt;= $now
+      -- optional AND kind IN (...)
+    ORDER BY run_at ASC, created_at ASC, id ASC
+    LIMIT $limit
+  )
+RETURNING
+  id,
+  kind,
+  state,
+  run_at AS runAt,
+  attempts,
+  max_attempts AS maxAttempts,
+  locked_by AS lockedBy,
+  locked_until AS lockedUntil,
+  ref_id AS refId,
+  last_error AS lastError,
+  created_at AS createdAt,
+  updated_at AS updatedAt;
+</code></pre>
+<h3 id="4-implement-completion-with-ownership-checks">4. Implement completion with ownership checks</h3>
+<p>Add <code>completeJob(db, options)</code>.</p>
+<p>Inputs:</p>
+<ul>
+<li><code>jobId</code></li>
+<li><code>workerId</code></li>
+<li><code>now</code></li>
+</ul>
+<p>Behavior:</p>
+<ul>
+<li>Only complete rows where <code>id=$jobId</code>, <code>state='leased'</code>, and <code>locked_by=$workerId</code>.</li>
+<li>Set:
+<ul>
+<li><code>state='succeeded'</code></li>
+<li><code>locked_by=NULL</code></li>
+<li><code>locked_until=NULL</code></li>
+<li><code>last_error=NULL</code></li>
+<li><code>updated_at=now</code></li>
+</ul>
+</li>
+<li>Return a discriminated result such as:</li>
+</ul>
+<pre><code class="language-ts">{ ok: true; job: QueueJob } | { ok: false; reason: &quot;not_leased_by_worker&quot; }
+</code></pre>
+<p>Do not throw for ordinary stale lease / wrong worker cases.</p>
+<h3 id="5-implement-retry-and-dead-letter-failure-handling">5. Implement retry and dead-letter failure handling</h3>
+<p>Add <code>failJob(db, options)</code>.</p>
+<p>Inputs:</p>
+<ul>
+<li><code>jobId</code></li>
+<li><code>workerId</code></li>
+<li><code>errorMessage</code></li>
+<li><code>now</code></li>
+</ul>
+<p>Behavior:</p>
+<ul>
+<li>Only affect rows where <code>id=$jobId</code>, <code>state='leased'</code>, and <code>locked_by=$workerId</code>.</li>
+<li>Because <code>attempts</code> increments on claim, compare current <code>attempts</code> against <code>max_attempts</code>.</li>
+<li>Use one <code>UPDATE ... CASE ... RETURNING</code> statement.</li>
+<li>If <code>attempts &gt;= max_attempts</code>:
+<ul>
+<li>set <code>state='dead'</code></li>
+<li>clear lock fields</li>
+<li>store truncated <code>last_error</code></li>
+<li>set <code>updated_at=now</code></li>
+</ul>
+</li>
+<li>Else:
+<ul>
+<li>set <code>state='queued'</code></li>
+<li>set <code>run_at = addSecondsIso(now, backoffSeconds(attempts))</code></li>
+<li>clear lock fields</li>
+<li>store truncated <code>last_error</code></li>
+<li>set <code>updated_at=now</code></li>
+</ul>
+</li>
+</ul>
+<p>The <code>failed</code> state exists in the schema but should remain unused in this slice. This intentionally skips the transient <code>leased -&gt; failed -&gt; queued</code> state from <code>PROJECT.md</code> to keep retries simple; <code>dead</code> is the operational DLQ.</p>
+<h3 id="6-implement-expired-lease-recovery">6. Implement expired lease recovery</h3>
+<p>Add <code>releaseExpiredLeases(db, options)</code>.</p>
+<p>Inputs:</p>
+<ul>
+<li><code>now</code></li>
+<li>optional <code>limit</code></li>
+</ul>
+<p>Behavior:</p>
+<ul>
+<li>Find <code>state='leased' AND locked_until &lt;= now</code>.</li>
+<li>Use one <code>UPDATE ... CASE ... RETURNING</code> statement where possible.</li>
+<li>For expired jobs with <code>attempts &gt;= max_attempts</code>, set <code>state='dead'</code>.</li>
+<li>For expired jobs with attempts remaining:
+<ul>
+<li>set <code>state='queued'</code></li>
+<li>set <code>run_at = addSecondsIso(now, backoffSeconds(attempts))</code></li>
+</ul>
+</li>
+<li>Clear lock fields and update <code>updated_at</code>.</li>
+<li>Return affected rows or counts.</li>
+</ul>
+<p>Backoff on lease expiry is required to avoid hot crash loops that burn all attempts immediately.</p>
+<h3 id="7-implement-backoff-helper">7. Implement backoff helper</h3>
+<p>Create <code>apps/service/src/queue/backoff.ts</code>.</p>
+<p>Recommended helper:</p>
+<pre><code class="language-ts">export function calculateBackoffSeconds(attempts: number): number;
+</code></pre>
+<p>Use simple capped exponential backoff:</p>
+<pre><code class="language-txt">attempt 1 -&gt; 60s
+attempt 2 -&gt; 120s
+attempt 3 -&gt; 240s
+...
+cap at 3600s
+</code></pre>
+<p>No random jitter in this slice; deterministic tests matter more.</p>
+<h3 id="8-implement-processor-injected-runner">8. Implement processor-injected runner</h3>
+<p>Create <code>apps/service/src/queue/runner.ts</code>.</p>
+<p>Types:</p>
+<pre><code class="language-ts">export type JobProcessor = (job: QueueJob) =&gt; Promise&lt;void&gt;;
+
+export type RunOnceOptions = {
+  db: Database;
+  workerId: string;
+  processJob: JobProcessor;
+  now?: () =&gt; string;
+  leaseSeconds?: number;
+  batchSize?: number;
+  kinds?: JobKind[];
+};
+</code></pre>
+<p>Behavior for <code>runOnce()</code>:</p>
+<ol>
+<li>Compute a single <code>now</code> value for lease release/claim.</li>
+<li>Call <code>releaseExpiredLeases()</code>.</li>
+<li>Call <code>claimJobs()</code>.</li>
+<li>For each claimed job:
+<ul>
+<li>call the injected <code>processJob(job)</code> outside claim/transition statements</li>
+<li>on success call <code>completeJob()</code></li>
+<li>on failure call <code>failJob()</code> with the thrown error message</li>
+</ul>
+</li>
+<li>Return counts: released, claimed, succeeded, failed, dead, skipped/stale.</li>
+</ol>
+<p>Optional <code>drainOnce()</code>:</p>
+<ul>
+<li>Repeatedly call <code>runOnce()</code> until no jobs are claimed, with a max iteration guard.</li>
+<li>Useful for tests only.</li>
+</ul>
+<p>Do not add a long-running sleep/poll loop yet unless it is fully tested and still cannot process real <code>send_delivery</code> jobs without SES.</p>
+<h3 id="9-do-not-add-runtime-worker-scripts-yet">9. Do not add runtime worker scripts yet</h3>
+<p>Preferred for this slice:</p>
+<ul>
+<li>Do not add <code>apps/service/src/worker.ts</code>.</li>
+<li>Do not add <code>start:worker</code> or <code>dev:worker</code> to <code>apps/service/package.json</code>.</li>
+</ul>
+<p>Reason: there is no real <code>send_delivery</code> processor. A production command that claims jobs now is unsafe.</p>
+<p>If an entrypoint is added anyway, it must exit before claiming jobs and must clearly say that runtime processors are not registered yet.</p>
+<h3 id="10-add-tests">10. Add tests</h3>
+<p>Use Vitest tests that spawn Bun scripts via <code>apps/service/src/testing/bun-scenario.ts</code>, as current DB tests do.</p>
+<p>Because only the process runner is shared today, either:</p>
+<ul>
+<li>accept some local scenario preamble duplication, matching current tests; or</li>
+<li>first extract a tiny reusable test preamble/helper for migrated SQLite DB creation.</li>
+</ul>
+<p>Do not assume <code>createMigratedDatabase()</code> already exists globally; it is currently inline in test files.</p>
+<p>Recommended tests:</p>
+<h4 id="appsservicesrcqueuetimetestts"><code>apps/service/src/queue/time.test.ts</code></h4>
+<ul>
+<li><code>nowIso()</code> / <code>addSecondsIso()</code> return <code>toISOString()</code>-shaped values.</li>
+<li>adding seconds preserves fixed-width UTC format.</li>
+<li>lexicographic order matches chronological order for generated values.</li>
+</ul>
+<h4 id="appsservicesrcqueuebackofftestts"><code>apps/service/src/queue/backoff.test.ts</code></h4>
+<ul>
+<li>deterministic delays for attempts 1, 2, 3.</li>
+<li>cap behavior.</li>
+<li>invalid attempts are handled predictably.</li>
+</ul>
+<h4 id="appsservicesrcqueuejobstestts"><code>apps/service/src/queue/jobs.test.ts</code></h4>
+<ul>
+<li>claims due queued jobs only.</li>
+<li>does not claim future scheduled jobs.</li>
+<li>respects <code>limit</code>.</li>
+<li>optionally respects <code>kinds</code>.</li>
+<li>increments <code>attempts</code> on claim.</li>
+<li>sets <code>locked_by</code> and <code>locked_until</code>.</li>
+<li><code>completeJob()</code> succeeds only for the owning worker.</li>
+<li><code>failJob()</code> requeues with ISO <code>run_at</code> and backoff while attempts remain.</li>
+<li><code>failJob()</code> marks <code>dead</code> at <code>max_attempts</code>.</li>
+<li><code>releaseExpiredLeases()</code> requeues with backoff or dead-letters correctly.</li>
+<li>cancelled/succeeded/dead jobs are never claimed; seed those states directly unless a <code>cancelJob()</code> helper is added.</li>
+<li>file-based DB tests should use the same pragmas as production: foreign keys, WAL, busy timeout, synchronous normal, trusted schema off where supported.</li>
+</ul>
+<h4 id="appsservicesrcqueuerunnertestts"><code>apps/service/src/queue/runner.test.ts</code></h4>
+<ul>
+<li>successful fake processor completes a job.</li>
+<li>throwing fake processor requeues or dead-letters a job.</li>
+<li>processor is called after the job is claimed and no long transaction is held around processor execution as far as observable.</li>
+<li>stale completion/failure results do not crash the runner.</li>
+</ul>
+<h4 id="concurrency-smoke">Concurrency smoke</h4>
+<p>Add a meaningful two-process smoke only if practical:</p>
+<ul>
+<li>create a temporary SQLite file with many queued jobs.</li>
+<li>spawn two Bun child processes that repeatedly call <code>claimJobs()</code> against the same DB file.</li>
+<li>assert no claimed job ID appears in both processes.</li>
+</ul>
+<p>If this is too much for the slice, skip it and rely on single-statement SQL correctness; do not add a single-process “two connections” test and call it a concurrency guarantee.</p>
+<h3 id="11-update-docs-minimally">11. Update docs minimally</h3>
+<p>Update <code>README.md</code> only if useful:</p>
+<ul>
+<li>mailings enqueue jobs.</li>
+<li>queue primitives exist.</li>
+<li>jobs are not sent until the SES sender/worker slice is implemented.</li>
+</ul>
+<p>Avoid documenting internal module APIs heavily.</p>
+<h2 id="likely-files-to-add-or-change">Likely Files to Add or Change</h2>
+<p>Add:</p>
+<ul>
+<li><code>apps/service/src/queue/time.ts</code></li>
+<li><code>apps/service/src/queue/backoff.ts</code></li>
+<li><code>apps/service/src/queue/jobs.ts</code></li>
+<li><code>apps/service/src/queue/runner.ts</code></li>
+<li><code>apps/service/src/queue/time.test.ts</code></li>
+<li><code>apps/service/src/queue/backoff.test.ts</code></li>
+<li><code>apps/service/src/queue/jobs.test.ts</code></li>
+<li><code>apps/service/src/queue/runner.test.ts</code></li>
+</ul>
+<p>Possibly change:</p>
+<ul>
+<li><code>apps/service/src/testing/bun-scenario.ts</code> if extracting reusable migrated-DB test setup is worth it.</li>
+<li><code>README.md</code> for a short status note.</li>
+</ul>
+<p>Avoid changing:</p>
+<ul>
+<li><code>apps/service/src/db/migrations/sql/0001_initial_schema.sql</code> unless a concrete schema issue is found.</li>
+<li>auth files.</li>
+<li>mailings route/service behavior.</li>
+<li><code>apps/service/package.json</code> worker scripts until a real processor exists.</li>
+</ul>
+<h2 id="data-schema-changes">Data / Schema Changes</h2>
+<p>Expected: none.</p>
+<p>The existing <code>jobs</code> table has the columns required for this slice. If a schema issue is discovered, add a new <code>0003_queue.sql</code> migration instead of editing applied migrations.</p>
+<p>Known schema handoff for the SES slice:</p>
+<ul>
+<li><code>jobs_kind_ref_id_idx</code> is non-unique today. Before actual SES sending, decide whether to add a partial unique index for active <code>send_delivery</code> jobs or enforce duplicate-job prevention in enqueue/sender logic. Duplicate <code>send_delivery</code> jobs can become duplicate emails.</li>
+</ul>
+<h2 id="api-interface-changes">API / Interface Changes</h2>
+<p>Expected: no public HTTP API changes.</p>
+<p>This slice creates internal TypeScript APIs. Queue admin API/CLI remains a later task unless explicitly approved separately.</p>
+<h2 id="testing-and-verification-plan">Testing and Verification Plan</h2>
+<p>Run:</p>
+<pre><code class="language-sh">pnpm format
+pnpm check
+pnpm test -- apps/service/src/queue
+</code></pre>
+<p>If adding a two-process concurrency smoke, run it as part of the queue test suite or document the focused command.</p>
+<p>Expected verification:</p>
+<ul>
+<li>existing tests still pass.</li>
+<li>new queue tests pass.</li>
+<li>no runtime command consumes <code>send_delivery</code> jobs.</li>
+<li>queued jobs remain queued unless tests explicitly invoke queue primitives.</li>
+</ul>
+<h2 id="rollout-compatibility-notes">Rollout / Compatibility Notes</h2>
+<ul>
+<li>Existing databases already have the <code>jobs</code> schema from migration <code>0001_initial_schema.sql</code>; no migration should be required.</li>
+<li>Existing queued jobs remain untouched until queue functions or a future worker/processor intentionally run.</li>
+<li>Once SES sending is implemented, the runtime worker can register a <code>send_delivery</code> processor and reuse these queue primitives.</li>
+</ul>
+<h2 id="risks-and-mitigations">Risks and Mitigations</h2>
+<ul>
+<li><strong>Risk: broken time comparisons due to mixed timestamp formats.</strong>
+<ul>
+<li>Mitigation: central ISO helper; no SQLite <code>datetime()</code> strings; tests for format and lexicographic order.</li>
+</ul>
+</li>
+<li><strong>Risk: accidentally consuming real email jobs without sending.</strong>
+<ul>
+<li>Mitigation: no no-op production worker; no worker package script until SES processor exists.</li>
+</ul>
+</li>
+<li><strong>Risk: duplicate job claims under concurrency.</strong>
+<ul>
+<li>Mitigation: single-statement <code>UPDATE ... RETURNING</code>, defensive predicates, optional true two-process smoke.</li>
+</ul>
+</li>
+<li><strong>Risk: permanently stuck leased jobs after worker crash.</strong>
+<ul>
+<li>Mitigation: <code>releaseExpiredLeases()</code> before claim cycles.</li>
+</ul>
+</li>
+<li><strong>Risk: hot crash loops.</strong>
+<ul>
+<li>Mitigation: release expired leases back to <code>queued</code> with backoff, or <code>dead</code> if attempts are exhausted.</li>
+</ul>
+</li>
+<li><strong>Risk: duplicate SES sends in future.</strong>
+<ul>
+<li>Mitigation: explicitly address duplicate <code>send_delivery</code> jobs before SES sender is enabled.</li>
+</ul>
+</li>
+<li><strong>Risk: processing time exceeds lease duration.</strong>
+<ul>
+<li>Mitigation: future SES worker should use small batch sizes, conservative lease durations, and accept at-least-once semantics. For slow processors, claim one job at a time or add lease extension later.</li>
+</ul>
+</li>
+<li><strong>Risk: SQLite busy/locking behavior differs in tests.</strong>
+<ul>
+<li>Mitigation: file-based queue tests should mirror production pragmas.</li>
+</ul>
+</li>
+<li><strong>Risk: lack of operator visibility for dead jobs.</strong>
+<ul>
+<li>Mitigation: runner should log or return dead-letter transitions. Full queue admin UI/API can follow later.</li>
+</ul>
+</li>
+</ul>
+<h2 id="open-questions">Open Questions</h2>
+<p>None blocking.</p>
+<p>Implementation-time choice: whether to extract shared Bun scenario DB setup before adding queue tests. Prefer extraction only if it reduces obvious duplication without creating a broad test framework.</p>
+
+</main>
+<script>
+(() => {
+  const source = "# Plan: Add Durable Queue and Worker Foundation\n\n## Summary\n\nImplement Nusend’s durable SQLite queue foundation before adding SES sending. This slice adds atomic job claiming, leases, retries, backoff, expired-lease recovery, completion/dead-letter transitions, and a testable worker runner with injected processors.\n\nThis plan intentionally does **not** send email and does **not** add a production worker command that can consume real `send_delivery` jobs without a real SES processor.\n\n## Confirmed Requirements and Assumptions\n\n- Keep the codebase lean: no external queue package, no ORM, no new workspace packages.\n- Continue using Bun runtime and `bun:sqlite`.\n- Use the existing `jobs` table in `apps/service/src/db/migrations/sql/0001_initial_schema.sql`.\n- Do not integrate AWS SES in this slice.\n- Do not mark real `send_delivery` jobs as succeeded via fake/no-op processing.\n- Preserve current `POST /api/mailings` behavior: it creates `send_delivery` jobs with `state='queued'` and `run_at=scheduledAt`.\n- Use root Vitest tests that spawn Bun subprocesses for code that imports `bun:sqlite`, matching the current pattern.\n- Treat this as queue/worker **foundation**: runtime `apps/service/src/worker.ts` and package scripts should wait until a real SES processor exists, unless the entrypoint exits safely without claiming jobs.\n\n## Research Findings\n\n- Bun `Database({ strict: true })` controls parameter binding behavior, not transaction semantics. Queue correctness must come from SQL predicates and transactions. Source: https://bun.sh/docs/runtime/sqlite\n- SQLite supports `UPDATE ... RETURNING`; returned rows reflect post-update values. This fits an atomic job-claim statement. Sources: https://www.sqlite.org/lang_returning.html and https://www.sqlite.org/lang_update.html\n- `RETURNING` row order is not guaranteed. Candidate fairness should be controlled in the selection subquery, not by relying on returned row order. Source: https://www.sqlite.org/lang_returning.html\n- SQLite WAL improves reader/writer concurrency but still uses single-writer behavior and can still hit `SQLITE_BUSY`; the existing `PRAGMA busy_timeout = 5000` should remain and test file DBs should mirror production pragmas. Sources: https://www.sqlite.org/wal.html and https://sqlite.org/lang_transaction.html\n- Time values stored as ISO strings only compare correctly if every value uses the same fixed-width UTC format. Nusend currently uses `new Date().toISOString()` and SQLite defaults like `%Y-%m-%dT%H:%M:%fZ`; queue code must not mix in SQLite `datetime()` strings such as `YYYY-MM-DD HH:MM:SS`.\n\n## Current-State Findings\n\n- `PROJECT.md:480-532` defines the queue model: atomic claims, leases, retry with backoff, `dead` as DLQ, lease expiry recovery.\n- `PROJECT.md:554-572` defines the future SES worker flow, but SES itself is not present yet.\n- `apps/service/src/db/migrations/sql/0001_initial_schema.sql` already has:\n  - `jobs(id, kind, state, run_at, attempts, max_attempts, locked_by, locked_until, ref_id, last_error, created_at, updated_at)`\n  - indexes on `(state, run_at)`, `locked_until`, and `(kind, ref_id)`\n- `apps/service/src/mailings/create-mailing.ts` already enqueues `send_delivery` jobs for unsuppressed deliveries.\n- There is no `apps/service/src/queue/` folder, no queue transition module, and no worker runner.\n- `pnpm check` currently passes: 10 test files, 52 tests.\n\n## Chosen Strategy\n\nBuild small internal queue modules plus a processor-injected runner:\n\n1. `queue/time.ts`: one ISO UTC time helper used by queue code.\n2. `queue/backoff.ts`: deterministic retry delay calculation.\n3. `queue/jobs.ts`: atomic SQLite queue operations.\n4. `queue/runner.ts`: `runOnce()` / `drainOnce()` with an injected processor.\n5. Tests using real SQLite databases and fake processors.\n\nDo **not** add a package-level `start:worker` script yet. A real runtime worker should be added with the SES `send_delivery` processor, otherwise queued email jobs could be consumed without being sent.\n\n## Alternatives Considered\n\n### Alternative A: Implement SES sender directly now\n\nRejected for this slice. SES adds AWS credentials, provider errors, configuration sets, message IDs, send attempts, and at-least-once ambiguity. Queue correctness should be isolated first.\n\n### Alternative B: Add a no-op worker that marks `send_delivery` jobs succeeded\n\nRejected. It would corrupt delivery state and make unsent emails appear sent.\n\n### Alternative C: Add an external queue library\n\nRejected. The project intentionally uses a lean SQLite-backed queue, and the schema already exists.\n\n### Alternative D: Use `SELECT` then `UPDATE` in separate statements for claims/failures\n\nRejected where avoidable. Use single-statement `UPDATE ... RETURNING` for claims and `UPDATE ... CASE ... RETURNING` for fail/release transitions.\n\n### Alternative E: Implement a continuous polling loop now\n\nMostly deferred. With no real processor, `runOnce()` / `drainOnce()` provides the useful foundation. A long-running loop, `AbortSignal` handling, runtime config, and package scripts can be added with SES sender integration.\n\n## Implementation Tasks\n\n### 1. Add queue time helper\n\nCreate `apps/service/src/queue/time.ts`.\n\nRequired helpers:\n\n```ts\nexport function nowIso(): string;\nexport function addSecondsIso(isoTime: string, seconds: number): string;\n```\n\nRules:\n\n- Always return `Date#toISOString()` format.\n- Do not use SQLite `datetime()` for queue timestamps.\n- Add tests asserting fixed shape, UTC `Z`, and chronological lexicographic order for representative values.\n\nThis protects `run_at \u003c= $now` and `locked_until \u003c= $now` string comparisons.\n\n### 2. Add queue types and row mapping\n\nCreate `apps/service/src/queue/jobs.ts` with types:\n\n```ts\nexport type JobKind = \"process_ses_event\" | \"send_delivery\";\nexport type JobState = \"queued\" | \"leased\" | \"succeeded\" | \"failed\" | \"dead\" | \"cancelled\";\n\nexport type QueueJob = {\n  id: string;\n  kind: JobKind;\n  state: JobState;\n  runAt: string;\n  attempts: number;\n  maxAttempts: number;\n  lockedBy: string | null;\n  lockedUntil: string | null;\n  refId: string;\n  lastError: string | null;\n  createdAt: string;\n  updatedAt: string;\n};\n```\n\nUse SQL aliases in every `RETURNING` / `SELECT`, e.g. `run_at AS runAt`, because `bun:sqlite` returns column names as queried.\n\n### 3. Implement atomic job claiming\n\nAdd `claimJobs(db, options)`.\n\nInputs:\n\n- `workerId: string`\n- `now?: string`\n- `leaseSeconds?: number`\n- `limit?: number`\n- optional `kinds?: JobKind[]`\n\nBehavior:\n\n- Claim only `state='queued'` jobs with `run_at \u003c= now`.\n- Order candidate IDs by `run_at ASC, created_at ASC, id ASC` in the subquery.\n- Update selected rows to:\n  - `state='leased'`\n  - `attempts = attempts + 1`\n  - `locked_by = workerId`\n  - `locked_until = addSecondsIso(now, leaseSeconds)`\n  - `updated_at = now`\n- Return claimed rows via `.all()` on `UPDATE ... RETURNING`.\n- Use defensive outer predicates and parameterized kind filters.\n\nReference SQL shape:\n\n```sql\nUPDATE jobs\nSET state = 'leased',\n    attempts = attempts + 1,\n    locked_by = $workerId,\n    locked_until = $lockedUntil,\n    updated_at = $now\nWHERE state = 'queued'\n  AND run_at \u003c= $now\n  AND id IN (\n    SELECT id\n    FROM jobs\n    WHERE state = 'queued'\n      AND run_at \u003c= $now\n      -- optional AND kind IN (...)\n    ORDER BY run_at ASC, created_at ASC, id ASC\n    LIMIT $limit\n  )\nRETURNING\n  id,\n  kind,\n  state,\n  run_at AS runAt,\n  attempts,\n  max_attempts AS maxAttempts,\n  locked_by AS lockedBy,\n  locked_until AS lockedUntil,\n  ref_id AS refId,\n  last_error AS lastError,\n  created_at AS createdAt,\n  updated_at AS updatedAt;\n```\n\n### 4. Implement completion with ownership checks\n\nAdd `completeJob(db, options)`.\n\nInputs:\n\n- `jobId`\n- `workerId`\n- `now`\n\nBehavior:\n\n- Only complete rows where `id=$jobId`, `state='leased'`, and `locked_by=$workerId`.\n- Set:\n  - `state='succeeded'`\n  - `locked_by=NULL`\n  - `locked_until=NULL`\n  - `last_error=NULL`\n  - `updated_at=now`\n- Return a discriminated result such as:\n\n```ts\n{ ok: true; job: QueueJob } | { ok: false; reason: \"not_leased_by_worker\" }\n```\n\nDo not throw for ordinary stale lease / wrong worker cases.\n\n### 5. Implement retry and dead-letter failure handling\n\nAdd `failJob(db, options)`.\n\nInputs:\n\n- `jobId`\n- `workerId`\n- `errorMessage`\n- `now`\n\nBehavior:\n\n- Only affect rows where `id=$jobId`, `state='leased'`, and `locked_by=$workerId`.\n- Because `attempts` increments on claim, compare current `attempts` against `max_attempts`.\n- Use one `UPDATE ... CASE ... RETURNING` statement.\n- If `attempts >= max_attempts`:\n  - set `state='dead'`\n  - clear lock fields\n  - store truncated `last_error`\n  - set `updated_at=now`\n- Else:\n  - set `state='queued'`\n  - set `run_at = addSecondsIso(now, backoffSeconds(attempts))`\n  - clear lock fields\n  - store truncated `last_error`\n  - set `updated_at=now`\n\nThe `failed` state exists in the schema but should remain unused in this slice. This intentionally skips the transient `leased -> failed -> queued` state from `PROJECT.md` to keep retries simple; `dead` is the operational DLQ.\n\n### 6. Implement expired lease recovery\n\nAdd `releaseExpiredLeases(db, options)`.\n\nInputs:\n\n- `now`\n- optional `limit`\n\nBehavior:\n\n- Find `state='leased' AND locked_until \u003c= now`.\n- Use one `UPDATE ... CASE ... RETURNING` statement where possible.\n- For expired jobs with `attempts >= max_attempts`, set `state='dead'`.\n- For expired jobs with attempts remaining:\n  - set `state='queued'`\n  - set `run_at = addSecondsIso(now, backoffSeconds(attempts))`\n- Clear lock fields and update `updated_at`.\n- Return affected rows or counts.\n\nBackoff on lease expiry is required to avoid hot crash loops that burn all attempts immediately.\n\n### 7. Implement backoff helper\n\nCreate `apps/service/src/queue/backoff.ts`.\n\nRecommended helper:\n\n```ts\nexport function calculateBackoffSeconds(attempts: number): number;\n```\n\nUse simple capped exponential backoff:\n\n```txt\nattempt 1 -> 60s\nattempt 2 -> 120s\nattempt 3 -> 240s\n...\ncap at 3600s\n```\n\nNo random jitter in this slice; deterministic tests matter more.\n\n### 8. Implement processor-injected runner\n\nCreate `apps/service/src/queue/runner.ts`.\n\nTypes:\n\n```ts\nexport type JobProcessor = (job: QueueJob) => Promise\u003cvoid>;\n\nexport type RunOnceOptions = {\n  db: Database;\n  workerId: string;\n  processJob: JobProcessor;\n  now?: () => string;\n  leaseSeconds?: number;\n  batchSize?: number;\n  kinds?: JobKind[];\n};\n```\n\nBehavior for `runOnce()`:\n\n1. Compute a single `now` value for lease release/claim.\n2. Call `releaseExpiredLeases()`.\n3. Call `claimJobs()`.\n4. For each claimed job:\n   - call the injected `processJob(job)` outside claim/transition statements\n   - on success call `completeJob()`\n   - on failure call `failJob()` with the thrown error message\n5. Return counts: released, claimed, succeeded, failed, dead, skipped/stale.\n\nOptional `drainOnce()`:\n\n- Repeatedly call `runOnce()` until no jobs are claimed, with a max iteration guard.\n- Useful for tests only.\n\nDo not add a long-running sleep/poll loop yet unless it is fully tested and still cannot process real `send_delivery` jobs without SES.\n\n### 9. Do not add runtime worker scripts yet\n\nPreferred for this slice:\n\n- Do not add `apps/service/src/worker.ts`.\n- Do not add `start:worker` or `dev:worker` to `apps/service/package.json`.\n\nReason: there is no real `send_delivery` processor. A production command that claims jobs now is unsafe.\n\nIf an entrypoint is added anyway, it must exit before claiming jobs and must clearly say that runtime processors are not registered yet.\n\n### 10. Add tests\n\nUse Vitest tests that spawn Bun scripts via `apps/service/src/testing/bun-scenario.ts`, as current DB tests do.\n\nBecause only the process runner is shared today, either:\n\n- accept some local scenario preamble duplication, matching current tests; or\n- first extract a tiny reusable test preamble/helper for migrated SQLite DB creation.\n\nDo not assume `createMigratedDatabase()` already exists globally; it is currently inline in test files.\n\nRecommended tests:\n\n#### `apps/service/src/queue/time.test.ts`\n\n- `nowIso()` / `addSecondsIso()` return `toISOString()`-shaped values.\n- adding seconds preserves fixed-width UTC format.\n- lexicographic order matches chronological order for generated values.\n\n#### `apps/service/src/queue/backoff.test.ts`\n\n- deterministic delays for attempts 1, 2, 3.\n- cap behavior.\n- invalid attempts are handled predictably.\n\n#### `apps/service/src/queue/jobs.test.ts`\n\n- claims due queued jobs only.\n- does not claim future scheduled jobs.\n- respects `limit`.\n- optionally respects `kinds`.\n- increments `attempts` on claim.\n- sets `locked_by` and `locked_until`.\n- `completeJob()` succeeds only for the owning worker.\n- `failJob()` requeues with ISO `run_at` and backoff while attempts remain.\n- `failJob()` marks `dead` at `max_attempts`.\n- `releaseExpiredLeases()` requeues with backoff or dead-letters correctly.\n- cancelled/succeeded/dead jobs are never claimed; seed those states directly unless a `cancelJob()` helper is added.\n- file-based DB tests should use the same pragmas as production: foreign keys, WAL, busy timeout, synchronous normal, trusted schema off where supported.\n\n#### `apps/service/src/queue/runner.test.ts`\n\n- successful fake processor completes a job.\n- throwing fake processor requeues or dead-letters a job.\n- processor is called after the job is claimed and no long transaction is held around processor execution as far as observable.\n- stale completion/failure results do not crash the runner.\n\n#### Concurrency smoke\n\nAdd a meaningful two-process smoke only if practical:\n\n- create a temporary SQLite file with many queued jobs.\n- spawn two Bun child processes that repeatedly call `claimJobs()` against the same DB file.\n- assert no claimed job ID appears in both processes.\n\nIf this is too much for the slice, skip it and rely on single-statement SQL correctness; do not add a single-process “two connections” test and call it a concurrency guarantee.\n\n### 11. Update docs minimally\n\nUpdate `README.md` only if useful:\n\n- mailings enqueue jobs.\n- queue primitives exist.\n- jobs are not sent until the SES sender/worker slice is implemented.\n\nAvoid documenting internal module APIs heavily.\n\n## Likely Files to Add or Change\n\nAdd:\n\n- `apps/service/src/queue/time.ts`\n- `apps/service/src/queue/backoff.ts`\n- `apps/service/src/queue/jobs.ts`\n- `apps/service/src/queue/runner.ts`\n- `apps/service/src/queue/time.test.ts`\n- `apps/service/src/queue/backoff.test.ts`\n- `apps/service/src/queue/jobs.test.ts`\n- `apps/service/src/queue/runner.test.ts`\n\nPossibly change:\n\n- `apps/service/src/testing/bun-scenario.ts` if extracting reusable migrated-DB test setup is worth it.\n- `README.md` for a short status note.\n\nAvoid changing:\n\n- `apps/service/src/db/migrations/sql/0001_initial_schema.sql` unless a concrete schema issue is found.\n- auth files.\n- mailings route/service behavior.\n- `apps/service/package.json` worker scripts until a real processor exists.\n\n## Data / Schema Changes\n\nExpected: none.\n\nThe existing `jobs` table has the columns required for this slice. If a schema issue is discovered, add a new `0003_queue.sql` migration instead of editing applied migrations.\n\nKnown schema handoff for the SES slice:\n\n- `jobs_kind_ref_id_idx` is non-unique today. Before actual SES sending, decide whether to add a partial unique index for active `send_delivery` jobs or enforce duplicate-job prevention in enqueue/sender logic. Duplicate `send_delivery` jobs can become duplicate emails.\n\n## API / Interface Changes\n\nExpected: no public HTTP API changes.\n\nThis slice creates internal TypeScript APIs. Queue admin API/CLI remains a later task unless explicitly approved separately.\n\n## Testing and Verification Plan\n\nRun:\n\n```sh\npnpm format\npnpm check\npnpm test -- apps/service/src/queue\n```\n\nIf adding a two-process concurrency smoke, run it as part of the queue test suite or document the focused command.\n\nExpected verification:\n\n- existing tests still pass.\n- new queue tests pass.\n- no runtime command consumes `send_delivery` jobs.\n- queued jobs remain queued unless tests explicitly invoke queue primitives.\n\n## Rollout / Compatibility Notes\n\n- Existing databases already have the `jobs` schema from migration `0001_initial_schema.sql`; no migration should be required.\n- Existing queued jobs remain untouched until queue functions or a future worker/processor intentionally run.\n- Once SES sending is implemented, the runtime worker can register a `send_delivery` processor and reuse these queue primitives.\n\n## Risks and Mitigations\n\n- **Risk: broken time comparisons due to mixed timestamp formats.**\n  - Mitigation: central ISO helper; no SQLite `datetime()` strings; tests for format and lexicographic order.\n- **Risk: accidentally consuming real email jobs without sending.**\n  - Mitigation: no no-op production worker; no worker package script until SES processor exists.\n- **Risk: duplicate job claims under concurrency.**\n  - Mitigation: single-statement `UPDATE ... RETURNING`, defensive predicates, optional true two-process smoke.\n- **Risk: permanently stuck leased jobs after worker crash.**\n  - Mitigation: `releaseExpiredLeases()` before claim cycles.\n- **Risk: hot crash loops.**\n  - Mitigation: release expired leases back to `queued` with backoff, or `dead` if attempts are exhausted.\n- **Risk: duplicate SES sends in future.**\n  - Mitigation: explicitly address duplicate `send_delivery` jobs before SES sender is enabled.\n- **Risk: processing time exceeds lease duration.**\n  - Mitigation: future SES worker should use small batch sizes, conservative lease durations, and accept at-least-once semantics. For slow processors, claim one job at a time or add lease extension later.\n- **Risk: SQLite busy/locking behavior differs in tests.**\n  - Mitigation: file-based queue tests should mirror production pragmas.\n- **Risk: lack of operator visibility for dead jobs.**\n  - Mitigation: runner should log or return dead-letter transitions. Full queue admin UI/API can follow later.\n\n## Open Questions\n\nNone blocking.\n\nImplementation-time choice: whether to extract shared Bun scenario DB setup before adding queue tests. Prefer extraction only if it reduces obvious duplication without creating a broad test framework.\n";
+  const button = document.querySelector('[data-copy-response]');
+  if (!button) return;
+
+  async function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.setAttribute('readonly', '');
+    textarea.style.position = 'fixed';
+    textarea.style.left = '-9999px';
+    textarea.style.top = '0';
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    const ok = document.execCommand('copy');
+    textarea.remove();
+    if (!ok) throw new Error('Copy command failed');
+  }
+
+  button.addEventListener('click', async () => {
+    const original = button.textContent;
+    try {
+      await copyText(source);
+      button.dataset.state = 'copied';
+      button.textContent = 'Copied';
+    } catch (error) {
+      button.dataset.state = 'error';
+      button.textContent = 'Copy failed';
+      console.error(error);
+    }
+    window.setTimeout(() => {
+      button.dataset.state = '';
+      button.textContent = original;
+    }, 1600);
+  });
+})();
+</script>
+</body>
+</html>
