@@ -1,38 +1,19 @@
 # Dependencies
 node_modules/
-.pnpm-store/
 
 # Build output
 dist/
-build/
-.out/
 coverage/
 
-# Runtime / local data
-.data/
-*.db
-*.db-shm
-*.db-wal
-*.sqlite
-*.sqlite-shm
-*.sqlite-wal
-*.log
-logs/
-.tmp/
-tmp/
+# Wrangler
+.wrangler/
+.dev.vars*
+!.dev.vars.example
 
-# Environment / secrets
-.env
-.env.*
-!.env.example
-
-# Bun / package manager
-bun.lockb
+# Generated types
+worker-configuration.d.ts
 
 # OS / editor
 .DS_Store
 .idea/
 .vscode/
-
-# Misc
-.cache/

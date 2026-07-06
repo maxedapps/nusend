@@ -1,111 +1,116 @@
 # Nusend
 
-Nusend is a self-hostable, API-first email orchestration service built on AWS SES.
+Nusend is a self-hostable, API-only email orchestration service built on AWS SES and Cloudflare (Workers, D1, Durable Objects).
 
-See [`PROJECT.md`](./PROJECT.md) for the product direction, architecture, and implementation phases.
+See [`PROJECT.md`](./PROJECT.md) for the product direction, architecture, and roadmap.
 
-## Development
+## Current Scope
+
+Implemented:
+
+- API-key-authenticated `/api` boundary (`Authorization: Bearer nusend_...`)
+- direct-recipient transactional mailings (`POST /api/mailings`, up to 100 recipients)
+- suppression filtering and delivery/job creation in one atomic D1 batch
+- mailing progress endpoint (`GET /api/mailings/:id`)
+- D1 job queue (leases, retries with backoff, dead-letter, priorities)
+- Dispatcher Durable Object processing `expand_mailing` jobs via alarms
+- cron watchdog (every 5 minutes) that releases expired leases and pokes the dispatcher
+- public route stubs (`/unsubscribe/:token`, `/webhooks/ses`) returning `501`
+
+Not implemented yet (see roadmap in `PROJECT.md`): actual SES sending, unsubscribe handling, SNS webhook processing, templates/placeholders, contacts/lists CRUD API, CLI. Marketing mailing creation is rejected with `422 marketing_unsubscribe_not_available` until unsubscribe support exists.
+
+## Setup
+
+Requirements: Node.js, pnpm, a Cloudflare account (Workers Paid for Durable Objects).
 
 ```sh
 pnpm install
-pnpm format:check
-pnpm lint
-pnpm typecheck
-pnpm test
-pnpm check
 ```
 
-## Service
+Create the D1 database and wire it up:
 
 ```sh
-pnpm --filter @nusend/service db:migrate
-pnpm --filter @nusend/service db:status
-pnpm --filter @nusend/service db:rollback
-pnpm --filter @nusend/service auth:bootstrap \
-  --email max@example.com \
-  --name "Max" \
-  --workspace "Nusend" \
-  --slug nusend
-pnpm --filter @nusend/service dev
+pnpm exec wrangler d1 create nusend
+# copy the printed database_id into wrangler.jsonc
 ```
 
-Default service environment:
+Apply migrations:
 
 ```sh
-NUSEND_HOST=0.0.0.0
-NUSEND_PORT=3000
-NUSEND_DB_PATH=.data/nusend.sqlite
+pnpm db:migrate:local    # local dev database
+pnpm db:migrate:remote   # production database
 ```
 
-Auth environment:
+## API Keys
+
+Generate a key (printed once) plus the insert commands:
 
 ```sh
-BETTER_AUTH_SECRET=replace-with-at-least-32-random-characters
-BETTER_AUTH_URL=http://localhost:3000
-GOOGLE_CLIENT_ID=replace-with-google-client-id
-GOOGLE_CLIENT_SECRET=replace-with-google-client-secret
-NUSEND_AUTH_TRUSTED_ORIGINS=http://localhost:3000
+pnpm key:create my-key-name
 ```
 
-Google OAuth callback URL:
+Run the printed `wrangler d1 execute` command (`--local` and/or `--remote`) to register the key hash.
 
-```txt
-http://localhost:3000/api/auth/callback/google
-```
-
-Nusend uses Google-only Better Auth login with public signup disabled. Precreate allowed users with `auth:bootstrap`; unknown Google accounts should be rejected. Programmatic clients should send organization-owned API keys via `x-api-key`.
-
-## Mailings API
-
-Create a protected mailing and enqueue delivery jobs without sending via SES yet:
+## Local Development
 
 ```sh
-curl -i http://localhost:3000/api/mailings \
+pnpm dev
+```
+
+```sh
+curl http://localhost:8787/health
+
+curl -i http://localhost:8787/api/mailings \
   -H 'content-type: application/json' \
-  -H 'x-api-key: nusend_...' \
+  -H 'authorization: Bearer nusend_...' \
   --data '{
     "purpose": "transactional",
     "subject": "Reset your password",
     "html": "<p>Reset your password</p>",
     "text": "Reset your password",
-    "recipients": [{ "email": "user@example.com" }]
+    "recipients": [{ "email": "user@example.com", "vars": { "firstName": "Max" } }]
   }'
 ```
 
-`POST /api/mailings` requires a Better Auth session or an organization-owned API key with `mailings:create`.
-
-Request body:
+Success response (`201`):
 
 ```json
 {
-  "purpose": "transactional",
-  "name": "Password reset",
-  "subject": "Reset your password",
-  "html": "<p>Reset your password</p>",
-  "text": "Reset your password",
-  "scheduledAt": "2026-07-03T12:00:00.000Z",
-  "recipients": [{ "email": "user@example.com", "vars": { "firstName": "Max" } }]
-}
-```
-
-Use exactly one recipient source: `recipients` or `listId`. Transactional mailings must use `recipients`; marketing mailings may use either.
-
-Success response:
-
-```json
-{
+  "counts": { "deliveries": 1, "queued": 1, "suppressed": 0 },
   "mailing": {
     "id": "...",
     "purpose": "transactional",
-    "state": "scheduled",
-    "scheduledAt": "2026-07-03T12:00:00.000Z"
-  },
-  "counts": {
-    "deliveries": 1,
-    "queued": 1,
-    "suppressed": 0
+    "scheduledAt": "2026-07-06T12:00:00.000Z",
+    "state": "scheduled"
   }
 }
 ```
 
-A request that resolves to no sendable recipients returns `422 empty_recipient_set`, including when all recipients are suppressed. Suppressed recipients in a partially sendable mailing still get persisted `deliveries` rows, so `counts.deliveries = counts.queued + counts.suppressed`. `scope=all` suppressions block transactional and marketing mail; marketing/list suppressions only block marketing mail.
+Use exactly one recipient source: `recipients` or `listId`. Transactional mailings must use `recipients`. A request that resolves to no sendable recipients returns `422 empty_recipient_set`. Suppressed recipients still get `deliveries` rows, so `counts.deliveries = counts.queued + counts.suppressed`. `scope=all` suppressions block all mail; marketing/list suppressions only block marketing mail.
+
+Check progress:
+
+```sh
+curl http://localhost:8787/api/mailings/<id> -H 'authorization: Bearer nusend_...'
+```
+
+Send jobs stay `queued` for now — the SES sender is a later phase.
+
+## Checks and Tests
+
+Tests run in the Workers runtime via `@cloudflare/vitest-pool-workers`, with D1 migrations applied in test setup.
+
+```sh
+pnpm format
+pnpm lint
+pnpm typecheck   # runs `wrangler types` first
+pnpm test
+pnpm check       # all of the above
+```
+
+## Deploy
+
+```sh
+pnpm db:migrate:remote
+pnpm deploy
+```
