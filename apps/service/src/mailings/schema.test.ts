@@ -5,7 +5,17 @@ import { Result } from "effect";
 import { describe, expect, it } from "vitest";
 
 import type { RequestValidationError } from "../errors.ts";
-import { decodeCreateMailingRequest, type CreateMailingInput } from "./schema.ts";
+import {
+  decodeCreateMailingRequest,
+  maxListIdLength,
+  maxMailingHtmlLength,
+  maxMailingNameLength,
+  maxMailingSubjectLength,
+  maxMailingTextLength,
+  maxRecipientEmailLength,
+  maxRecipientVarsJsonBytes,
+  type CreateMailingInput,
+} from "./schema.ts";
 
 const validRequest = {
   html: "<p>Hello</p>",
@@ -134,6 +144,32 @@ describe("decodeCreateMailingRequest", () => {
     });
 
     expect(failureMessage(result)).toContain("Duplicate recipient email: a@example.com.");
+  });
+
+  it("enforces field and serialized vars limits", () => {
+    const cases = [
+      { ...validRequest, subject: "x".repeat(maxMailingSubjectLength + 1) },
+      { ...validRequest, html: "x".repeat(maxMailingHtmlLength + 1) },
+      { ...validRequest, name: "x".repeat(maxMailingNameLength + 1) },
+      { ...validRequest, text: "x".repeat(maxMailingTextLength + 1) },
+      { ...validRequest, recipients: [{ email: `${"x".repeat(maxRecipientEmailLength)}@x` }] },
+      {
+        html: "<p>Hello</p>",
+        listId: "x".repeat(maxListIdLength + 1),
+        purpose: "marketing",
+        subject: "Hello",
+      },
+      {
+        ...validRequest,
+        recipients: [
+          { email: "user@example.com", vars: { value: "x".repeat(maxRecipientVarsJsonBytes) } },
+        ],
+      },
+    ];
+
+    for (const request of cases) {
+      expect(Result.isFailure(decodeCreateMailingRequest(request))).toBe(true);
+    }
   });
 
   it("enforces the recipient cap", () => {

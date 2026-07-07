@@ -7,7 +7,15 @@ import { Result, Schema, SchemaGetter } from "effect";
 import { RequestValidationError } from "../errors.ts";
 import { parseLenientDateToIso } from "../lib/iso-time.ts";
 
-const maxExplicitRecipients = 1000;
+export const maxExplicitRecipients = 1000;
+export const maxMailingRequestBodyBytes = 1_000_000;
+export const maxMailingNameLength = 120;
+export const maxMailingSubjectLength = 200;
+export const maxMailingHtmlLength = 200_000;
+export const maxMailingTextLength = 200_000;
+export const maxRecipientEmailLength = 320;
+export const maxListIdLength = 200;
+export const maxRecipientVarsJsonBytes = 10_000;
 
 export type MailingPurpose = "marketing" | "transactional";
 
@@ -27,21 +35,32 @@ export type CreateMailingInput = {
   text: string | null;
 };
 
-const TrimmedNonEmpty = Schema.String.pipe(
-  Schema.decodeTo(Schema.String, {
-    decode: SchemaGetter.transform((value: string) => value.trim()),
-    encode: SchemaGetter.passthrough(),
-  }),
-).check(Schema.isMinLength(1));
+function trimmedNonEmpty(maxLength: number) {
+  return Schema.String.pipe(
+    Schema.decodeTo(Schema.String, {
+      decode: SchemaGetter.transform((value: string) => value.trim()),
+      encode: SchemaGetter.passthrough(),
+    }),
+  ).check(Schema.isMinLength(1), Schema.isMaxLength(maxLength));
+}
 
-const TrimmedToNull = Schema.NullOr(Schema.String).pipe(
-  Schema.decodeTo(Schema.NullOr(Schema.String), {
-    decode: SchemaGetter.transform((value: string | null) =>
-      value === null ? null : value.trim() || null,
-    ),
-    encode: SchemaGetter.passthrough(),
-  }),
-);
+function trimmedToNull(maxLength: number) {
+  return Schema.NullOr(Schema.String)
+    .pipe(
+      Schema.decodeTo(Schema.NullOr(Schema.String), {
+        decode: SchemaGetter.transform((value: string | null) =>
+          value === null ? null : value.trim() || null,
+        ),
+        encode: SchemaGetter.passthrough(),
+      }),
+    )
+    .check(
+      Schema.makeFilter<string | null>(
+        (value) =>
+          value === null || value.length <= maxLength || `must be at most ${maxLength} characters`,
+      ),
+    );
+}
 
 // Same acceptance rules as the pre-Schema validator: at least one character
 // before and after a single "@", no whitespace.
@@ -62,14 +81,22 @@ const Email = Schema.String.pipe(
     decode: SchemaGetter.transform((value: string) => value.trim().toLowerCase()),
     encode: SchemaGetter.passthrough(),
   }),
-).check(emailFilter);
+).check(emailFilter, Schema.isMaxLength(maxRecipientEmailLength));
 
-const VarsJson = Schema.Record(Schema.String, Schema.Unknown).pipe(
-  Schema.decodeTo(Schema.String, {
-    decode: SchemaGetter.transform((value: Record<string, unknown>) => JSON.stringify(value)),
-    encode: SchemaGetter.forbidden(() => "encoding is not supported"),
-  }),
-);
+const VarsJson = Schema.Record(Schema.String, Schema.Unknown)
+  .pipe(
+    Schema.decodeTo(Schema.String, {
+      decode: SchemaGetter.transform((value: Record<string, unknown>) => JSON.stringify(value)),
+      encode: SchemaGetter.forbidden(() => "encoding is not supported"),
+    }),
+  )
+  .check(
+    Schema.makeFilter<string>(
+      (value) =>
+        utf8ByteLength(value) <= maxRecipientVarsJsonBytes ||
+        `serialized vars must be at most ${maxRecipientVarsJsonBytes} bytes`,
+    ),
+  );
 
 const Recipient = Schema.Struct({
   email: Email,
@@ -110,13 +137,13 @@ const LenientDateIso = Schema.String.pipe(
 
 const CreateMailingRequest = Schema.Struct({
   purpose: Schema.Literals(["transactional", "marketing"]),
-  subject: TrimmedNonEmpty,
-  html: TrimmedNonEmpty,
-  name: Schema.optional(TrimmedToNull),
-  text: Schema.optional(TrimmedToNull),
+  subject: trimmedNonEmpty(maxMailingSubjectLength),
+  html: trimmedNonEmpty(maxMailingHtmlLength),
+  name: Schema.optional(trimmedToNull(maxMailingNameLength)),
+  text: Schema.optional(trimmedToNull(maxMailingTextLength)),
   scheduledAt: Schema.optional(Schema.NullOr(LenientDateIso)),
   recipients: Schema.optional(Recipients),
-  listId: Schema.optional(TrimmedNonEmpty),
+  listId: Schema.optional(trimmedNonEmpty(maxListIdLength)),
 });
 
 export function decodeCreateMailingRequest(
@@ -172,4 +199,8 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 function fail(message: string): Result.Result<never, RequestValidationError> {
   return Result.fail(new RequestValidationError({ message }));
+}
+
+function utf8ByteLength(value: string): number {
+  return new TextEncoder().encode(value).length;
 }

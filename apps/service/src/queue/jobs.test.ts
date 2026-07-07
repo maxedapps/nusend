@@ -22,8 +22,8 @@ describe("queue jobs", () => {
           runAt: "2026-07-03T11:59:00.000Z",
         });
         yield* seedJob({
-          id: "event_1",
-          kind: "process_ses_event",
+          id: "due_0",
+          kind: "send_delivery",
           runAt: "2026-07-03T11:58:00.000Z",
         });
         yield* seedJob({
@@ -55,25 +55,25 @@ describe("queue jobs", () => {
       }),
     );
 
-    expect(outcome.claimed.map((job) => job.id)).toEqual(["due_1"]);
+    expect(outcome.claimed.map((job) => job.id)).toEqual(["due_0"]);
     expect(outcome.claimed[0]).toEqual({
       attempts: 1,
-      createdAt: "2026-07-03T11:59:00.000Z",
-      id: "due_1",
+      createdAt: "2026-07-03T11:00:00.000Z",
+      id: "due_0",
       kind: "send_delivery",
       lastError: null,
       lockedBy: "worker_1",
       lockedUntil: "2026-07-03T12:00:30.000Z",
       maxAttempts: 10,
-      refId: "ref_due_1",
-      runAt: "2026-07-03T11:59:00.000Z",
+      refId: "ref_due_0",
+      runAt: "2026-07-03T11:58:00.000Z",
       state: "leased",
       updatedAt: "2026-07-03T12:00:00.000Z",
     });
     expect(outcome.rows).toEqual([
-      { attempts: 1, id: "due_1", lockedBy: "worker_1", state: "leased" },
+      { attempts: 1, id: "due_0", lockedBy: "worker_1", state: "leased" },
+      { attempts: 0, id: "due_1", lockedBy: null, state: "queued" },
       { attempts: 0, id: "due_2", lockedBy: null, state: "queued" },
-      { attempts: 0, id: "event_1", lockedBy: null, state: "queued" },
       { attempts: 0, id: "future", lockedBy: null, state: "queued" },
     ]);
     expect(outcome.future).toEqual({

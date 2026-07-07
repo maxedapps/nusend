@@ -43,37 +43,6 @@ export const authSchema = {
   },
 } as const;
 
-export const organizationSchema = {
-  session: {
-    fields: {
-      activeOrganizationId: "active_organization_id",
-    },
-  },
-  organization: {
-    modelName: "organizations",
-    fields: {
-      createdAt: "created_at",
-    },
-  },
-  member: {
-    modelName: "organization_members",
-    fields: {
-      organizationId: "organization_id",
-      userId: "user_id",
-      createdAt: "created_at",
-    },
-  },
-  invitation: {
-    modelName: "organization_invitations",
-    fields: {
-      organizationId: "organization_id",
-      expiresAt: "expires_at",
-      createdAt: "created_at",
-      inviterId: "inviter_id",
-    },
-  },
-} as const;
-
 export const apiKeySchema = {
   apikey: {
     modelName: "api_keys",

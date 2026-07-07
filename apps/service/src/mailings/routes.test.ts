@@ -4,8 +4,9 @@
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { Database, type DatabaseService } from "../services/database.ts";
+import { Database } from "../services/database.ts";
 import { withTestApp, type FakeAuthBehavior, type TestRuntime } from "../testing/layers.ts";
+import { maxMailingHtmlLength, maxMailingRequestBodyBytes } from "./schema.ts";
 
 const validBody = {
   html: "<p>Hello</p>",
@@ -46,31 +47,6 @@ function countRows(runtime: TestRuntime) {
       };
     }),
   );
-}
-
-function seedMember(db: DatabaseService) {
-  const now = "2026-07-03T12:00:00.000Z";
-
-  return Effect.gen(function* () {
-    yield* db.run(
-      "seed:user",
-      `INSERT INTO users (id, name, email, email_verified, image, created_at, updated_at)
-       VALUES ('user_1', 'User', 'user@example.com', 1, NULL, $now, $now);`,
-      { now },
-    );
-    yield* db.run(
-      "seed:organization",
-      `INSERT INTO organizations (id, name, slug, logo, created_at, metadata)
-       VALUES ('org_1', 'Nusend', 'nusend', NULL, $now, NULL);`,
-      { now },
-    );
-    yield* db.run(
-      "seed:member",
-      `INSERT INTO organization_members (id, organization_id, user_id, role, created_at)
-       VALUES ('member_1', 'org_1', 'user_1', 'member', $now);`,
-      { now },
-    );
-  });
 }
 
 describe("mailings routes", () => {
@@ -132,29 +108,39 @@ describe("mailings routes", () => {
   });
 
   it("creates a mailing with a valid session principal", async () => {
-    await withTestApp(
-      { auth: { session: { activeOrganizationId: null, userId: "user_1" } } },
-      async (app, runtime) => {
-        await runtime.runPromise(Effect.flatMap(Database, seedMember));
+    await withTestApp({ auth: { session: { userId: "user_1" } } }, async (app, runtime) => {
+      const response = await app.fetch(
+        new Request("http://localhost/api/mailings", {
+          body: JSON.stringify(validBody),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        }),
+      );
 
-        const response = await app.fetch(
-          new Request("http://localhost/api/mailings", {
-            body: JSON.stringify(validBody),
-            headers: { "content-type": "application/json" },
-            method: "POST",
-          }),
-        );
+      expect(response.status).toBe(201);
+      const json = (await response.json()) as { counts: unknown };
+      expect(json.counts).toEqual({ deliveries: 1, queued: 1, suppressed: 0 });
+      await expect(countRows(runtime)).resolves.toEqual({
+        deliveries: 1,
+        jobs: 1,
+        mailings: 1,
+      });
+    });
+  });
 
-        expect(response.status).toBe(201);
-        const json = (await response.json()) as { counts: unknown };
-        expect(json.counts).toEqual({ deliveries: 1, queued: 1, suppressed: 0 });
-        await expect(countRows(runtime)).resolves.toEqual({
-          deliveries: 1,
-          jobs: 1,
-          mailings: 1,
-        });
+  it("rejects oversized request bodies before parsing", async () => {
+    const response = await postMailing(
+      { apiKeyPermissions: { mailings: ["create"] } },
+      {
+        body: JSON.stringify({ payload: "x".repeat(maxMailingRequestBodyBytes + 1) }),
+        headers: { "x-api-key": "valid" },
       },
     );
+
+    expect(response.status).toBe(413);
+    await expect(response.json()).resolves.toEqual({
+      error: { code: "request_too_large", message: "Request body is too large." },
+    });
   });
 
   it("maps malformed JSON, invalid payloads, missing lists, and empty recipient sets", async () => {
@@ -174,6 +160,14 @@ describe("mailings routes", () => {
     expect(invalid.status).toBe(400);
     const invalidJson = (await invalid.json()) as { error: { code: string } };
     expect(invalidJson.error.code).toBe("invalid_request");
+
+    const oversizedField = await postMailing(canCreate, {
+      body: JSON.stringify({ ...validBody, html: "x".repeat(maxMailingHtmlLength + 1) }),
+      ...keyHeaders,
+    });
+    expect(oversizedField.status).toBe(400);
+    const oversizedJson = (await oversizedField.json()) as { error: { code: string } };
+    expect(oversizedJson.error.code).toBe("invalid_request");
 
     const missingList = await postMailing(canCreate, {
       body: JSON.stringify({

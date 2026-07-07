@@ -1,17 +1,10 @@
 import { Cause, Effect, Exit } from "effect";
 import type { MiddlewareHandler } from "hono";
 
-import {
-  ForbiddenError,
-  UnauthenticatedError,
-  type AuthError,
-  type DatabaseError,
-} from "../errors.ts";
-import { Auth, type AuthService } from "../services/auth.ts";
-import { Database, type DatabaseService } from "../services/database.ts";
+import { ForbiddenError, UnauthenticatedError, type AuthError } from "../errors.ts";
 import { errorEnvelope, logCause, type AppRuntime } from "../http/respond.ts";
-import { singleOrganizationForUserSql } from "./auth.ts";
-import { hasPermissions, permissionsForRole, type PermissionSet } from "./permissions.ts";
+import { Auth, type AuthService } from "../services/auth.ts";
+import { hasPermissions, type PermissionSet } from "./permissions.ts";
 import type { Principal } from "./principal.ts";
 
 type AuthContext = {
@@ -23,18 +16,14 @@ type AuthContext = {
 export function resolvePrincipal(
   headers: Headers,
   required?: PermissionSet,
-): Effect.Effect<
-  Principal,
-  AuthError | DatabaseError | ForbiddenError | UnauthenticatedError,
-  AuthService | DatabaseService
-> {
+): Effect.Effect<Principal, AuthError | ForbiddenError | UnauthenticatedError, AuthService> {
   const apiKey = headers.get("x-api-key");
 
   if (apiKey) {
     return resolveApiKeyPrincipal(apiKey, required);
   }
 
-  return resolveSessionPrincipal(headers, required);
+  return resolveSessionPrincipal(headers);
 }
 
 type RequirePrincipalOptions = {
@@ -55,8 +44,6 @@ export function requirePrincipal(options: RequirePrincipalOptions): MiddlewareHa
       Effect.map((principal) => ({ kind: "principal" as const, principal })),
       Effect.catchTags({
         AuthError: (error) =>
-          Effect.succeed({ kind: "response" as const, response: internalError(Cause.fail(error)) }),
-        DatabaseError: (error) =>
           Effect.succeed({ kind: "response" as const, response: internalError(Cause.fail(error)) }),
         ForbiddenError: (error) =>
           Effect.succeed({
@@ -102,78 +89,28 @@ function resolveApiKeyPrincipal(
     return {
       apiKeyId: result.key.id,
       kind: "api_key" as const,
-      organizationId: result.key.referenceId,
       permissions: result.key.permissions ?? {},
+      userId: result.key.referenceId,
     };
   });
 }
 
 function resolveSessionPrincipal(
   headers: Headers,
-  required: PermissionSet | undefined,
-): Effect.Effect<
-  Principal,
-  AuthError | DatabaseError | ForbiddenError | UnauthenticatedError,
-  AuthService | DatabaseService
-> {
+): Effect.Effect<Principal, AuthError | UnauthenticatedError, AuthService> {
   return Effect.gen(function* () {
     const auth = yield* Auth;
-    const db = yield* Database;
-
     const sessionData = yield* auth.getSession(headers);
 
+    // Single-user/self-hosted model: any valid session is the instance owner and
+    // therefore bypasses per-route permission checks. API keys remain permission-scoped.
     if (!sessionData) {
       return yield* Effect.fail(new UnauthenticatedError({ message: "Authentication required." }));
     }
 
-    const session = sessionData.session;
-    const organizationId =
-      session.activeOrganizationId ?? (yield* findSingleOrganization(db, session.userId));
-
-    if (!organizationId) {
-      return yield* Effect.fail(
-        new ForbiddenError({ message: "No active organization found for this session." }),
-      );
-    }
-
-    const member = yield* db.get<{ role: string }>(
-      "auth:find-member",
-      `SELECT role
-       FROM organization_members
-       WHERE organization_id = $organizationId AND user_id = $userId
-       LIMIT 1;`,
-      { organizationId, userId: session.userId },
-    );
-
-    if (!member) {
-      return yield* Effect.fail(
-        new ForbiddenError({ message: "Session is not a member of the active organization." }),
-      );
-    }
-
-    if (!hasPermissions(permissionsForRole(member.role), required)) {
-      return yield* Effect.fail(
-        new ForbiddenError({ message: "Session does not have the required permissions." }),
-      );
-    }
-
     return {
       kind: "session" as const,
-      organizationId,
-      role: member.role,
-      userId: session.userId,
+      userId: sessionData.session.userId,
     };
   });
-}
-
-function findSingleOrganization(
-  db: DatabaseService,
-  userId: string,
-): Effect.Effect<string | null, DatabaseError> {
-  return Effect.map(
-    db.all<{ organizationId: string }>("auth:single-organization", singleOrganizationForUserSql, {
-      userId,
-    }),
-    (rows) => (rows.length === 1 ? rows[0].organizationId : null),
-  );
 }

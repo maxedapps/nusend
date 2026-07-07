@@ -10,6 +10,7 @@ import {
   DatabaseError,
   EmptyRecipientSetError,
   ForbiddenError,
+  RecipientLimitExceededError,
   ListNotFoundError,
   RequestValidationError,
   UnauthenticatedError,
@@ -49,6 +50,12 @@ describe("runRoute error mapping", () => {
       "empty_recipient_set",
       "No recipients.",
     ],
+    [
+      new RecipientLimitExceededError({ limit: 5000 }),
+      422,
+      "recipient_limit_exceeded",
+      "Recipient source exceeds the maximum of 5000 recipients.",
+    ],
   ] as const)("maps %o", async (error, status, code, message) => {
     const response = await respondWith(Effect.fail(error));
 
@@ -69,6 +76,7 @@ describe("runRoute error mapping", () => {
       error: { code: "internal_error", message: "Internal error." },
     });
     expect(errorSpy).toHaveBeenCalled();
+    expect(errorSpy.mock.calls.join("\n")).not.toContain("secret");
   });
 
   it("maps defects to a sanitized 500", async () => {
@@ -81,6 +89,7 @@ describe("runRoute error mapping", () => {
       error: { code: "internal_error", message: "Internal error." },
     });
     expect(errorSpy).toHaveBeenCalled();
+    expect(errorSpy.mock.calls.join("\n")).not.toContain("unexpected crash detail");
   });
 
   it("runs onSuccess for successful programs", async () => {

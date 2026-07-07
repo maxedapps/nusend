@@ -5,10 +5,11 @@
 import type { Database as BunDatabase } from "bun:sqlite";
 import { Effect, Layer, Redacted } from "effect";
 
-import { createAuth, organizationApiKeyConfigId } from "../auth/auth.ts";
+import { createAuth } from "../auth/auth.ts";
 import type { AuthConfig } from "../config.ts";
 import { AuthError } from "../errors.ts";
-import { Auth, type ApiKeyVerification, type AuthService, type SessionData } from "./auth.ts";
+import { decodeApiKeyVerification, decodeSessionData } from "./auth-decode.ts";
+import { Auth, type AuthService } from "./auth.ts";
 import { SqliteHandle } from "./database-bun.ts";
 
 export function AuthLive(authConfig: AuthConfig): Layer.Layer<AuthService, never, BunDatabase> {
@@ -30,23 +31,18 @@ export function AuthLive(authConfig: AuthConfig): Layer.Layer<AuthService, never
       return {
         getSession: (headers) =>
           Effect.tryPromise({
-            try: async () => {
-              const result = await instance.api.getSession({ headers });
-              return result ? (result as unknown as SessionData) : null;
-            },
+            try: async () => instance.api.getSession({ headers }),
             catch: (cause) => new AuthError({ cause, operation: "getSession" }),
-          }),
+          }).pipe(Effect.flatMap(decodeSessionData)),
         handler: (request) => instance.handler(request),
         verifyApiKey: (key) =>
           Effect.tryPromise({
-            try: async () => {
-              const result = await instance.api.verifyApiKey({
-                body: { configId: organizationApiKeyConfigId, key },
-              });
-              return result as unknown as ApiKeyVerification;
-            },
+            try: async () =>
+              instance.api.verifyApiKey({
+                body: { key },
+              }),
             catch: (cause) => new AuthError({ cause, operation: "verifyApiKey" }),
-          }),
+          }).pipe(Effect.flatMap(decodeApiKeyVerification)),
       } satisfies AuthService;
     }),
   );

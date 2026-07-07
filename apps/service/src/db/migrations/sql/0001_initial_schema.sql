@@ -1,16 +1,84 @@
 -- migrate:up
-CREATE TABLE templates (
-  id TEXT PRIMARY KEY,
+CREATE TABLE users (
+  id TEXT NOT NULL PRIMARY KEY,
   name TEXT NOT NULL,
-  purpose TEXT NOT NULL CHECK (purpose IN ('transactional', 'marketing')),
-  subject TEXT NOT NULL,
-  html TEXT NOT NULL,
-  text TEXT,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  email TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  email_verified INTEGER NOT NULL,
+  image TEXT,
+  created_at DATE NOT NULL,
+  updated_at DATE NOT NULL
 );
 
-CREATE INDEX templates_purpose_idx ON templates (purpose);
+CREATE TABLE sessions (
+  id TEXT NOT NULL PRIMARY KEY,
+  expires_at DATE NOT NULL,
+  token TEXT NOT NULL UNIQUE,
+  created_at DATE NOT NULL,
+  updated_at DATE NOT NULL,
+  ip_address TEXT,
+  user_agent TEXT,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX sessions_user_id_idx ON sessions (user_id);
+
+CREATE TABLE accounts (
+  id TEXT NOT NULL PRIMARY KEY,
+  account_id TEXT NOT NULL,
+  provider_id TEXT NOT NULL,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  access_token TEXT,
+  refresh_token TEXT,
+  id_token TEXT,
+  access_token_expires_at DATE,
+  refresh_token_expires_at DATE,
+  scope TEXT,
+  password TEXT,
+  created_at DATE NOT NULL,
+  updated_at DATE NOT NULL
+);
+
+CREATE INDEX accounts_user_id_idx ON accounts (user_id);
+
+CREATE TABLE verifications (
+  id TEXT NOT NULL PRIMARY KEY,
+  identifier TEXT NOT NULL,
+  value TEXT NOT NULL,
+  expires_at DATE NOT NULL,
+  created_at DATE NOT NULL,
+  updated_at DATE NOT NULL
+);
+
+CREATE INDEX verifications_identifier_idx ON verifications (identifier);
+
+CREATE TABLE api_keys (
+  id TEXT NOT NULL PRIMARY KEY,
+  config_id TEXT NOT NULL,
+  name TEXT,
+  start TEXT,
+  reference_id TEXT NOT NULL,
+  prefix TEXT,
+  key TEXT NOT NULL,
+  refill_interval INTEGER,
+  refill_amount INTEGER,
+  last_refill_at DATE,
+  enabled INTEGER,
+  rate_limit_enabled INTEGER,
+  rate_limit_time_window INTEGER,
+  rate_limit_max INTEGER,
+  request_count INTEGER,
+  remaining INTEGER,
+  last_request DATE,
+  expires_at DATE,
+  created_at DATE NOT NULL,
+  updated_at DATE NOT NULL,
+  permissions TEXT,
+  metadata TEXT
+);
+
+CREATE INDEX api_keys_config_id_idx ON api_keys (config_id);
+CREATE INDEX api_keys_reference_id_idx ON api_keys (reference_id);
+CREATE INDEX api_keys_key_idx ON api_keys (key);
 
 CREATE TABLE lists (
   id TEXT PRIMARY KEY,
@@ -23,7 +91,6 @@ CREATE INDEX lists_name_idx ON lists (name);
 CREATE TABLE contacts (
   id TEXT PRIMARY KEY,
   email TEXT NOT NULL COLLATE NOCASE,
-  attrs_json TEXT,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
@@ -66,8 +133,6 @@ CREATE TABLE deliveries (
   contact_id TEXT REFERENCES contacts(id) ON DELETE SET NULL,
   vars_json TEXT,
   status TEXT NOT NULL CHECK (status IN ('scheduled', 'queued', 'sending', 'sent', 'delivered', 'bounced', 'complained', 'failed', 'suppressed', 'cancelled')),
-  ses_message_id TEXT,
-  last_error TEXT,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
@@ -76,7 +141,6 @@ CREATE INDEX deliveries_mailing_id_idx ON deliveries (mailing_id);
 CREATE INDEX deliveries_mailing_status_idx ON deliveries (mailing_id, status);
 CREATE INDEX deliveries_email_idx ON deliveries (email);
 CREATE INDEX deliveries_contact_id_idx ON deliveries (contact_id);
-CREATE UNIQUE INDEX deliveries_ses_message_id_idx ON deliveries (ses_message_id) WHERE ses_message_id IS NOT NULL;
 
 CREATE TABLE suppressions (
   id TEXT PRIMARY KEY,
@@ -94,7 +158,7 @@ CREATE UNIQUE INDEX suppressions_email_list_idx ON suppressions (email, list_id)
 
 CREATE TABLE jobs (
   id TEXT PRIMARY KEY,
-  kind TEXT NOT NULL CHECK (kind IN ('send_delivery', 'process_ses_event')),
+  kind TEXT NOT NULL CHECK (kind IN ('send_delivery')),
   state TEXT NOT NULL CHECK (state IN ('queued', 'leased', 'succeeded', 'failed', 'dead', 'cancelled')),
   run_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
@@ -111,41 +175,7 @@ CREATE INDEX jobs_state_run_at_idx ON jobs (state, run_at);
 CREATE INDEX jobs_locked_until_idx ON jobs (locked_until);
 CREATE INDEX jobs_kind_ref_id_idx ON jobs (kind, ref_id);
 
-CREATE TABLE send_attempts (
-  id TEXT PRIMARY KEY,
-  delivery_id TEXT NOT NULL REFERENCES deliveries(id) ON DELETE CASCADE,
-  job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
-  attempt_no INTEGER NOT NULL CHECK (attempt_no > 0),
-  status TEXT NOT NULL CHECK (status IN ('started', 'succeeded', 'failed', 'ambiguous')),
-  ses_message_id TEXT,
-  error_message TEXT,
-  started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-  finished_at TEXT
-);
-
-CREATE INDEX send_attempts_delivery_id_idx ON send_attempts (delivery_id);
-CREATE INDEX send_attempts_job_id_idx ON send_attempts (job_id);
-CREATE UNIQUE INDEX send_attempts_delivery_attempt_no_idx ON send_attempts (delivery_id, attempt_no);
-
-CREATE TABLE ses_events (
-  id TEXT PRIMARY KEY,
-  sns_message_id TEXT NOT NULL,
-  ses_message_id TEXT,
-  event_type TEXT NOT NULL,
-  delivery_id TEXT REFERENCES deliveries(id) ON DELETE SET NULL,
-  raw_json TEXT NOT NULL,
-  processed_at TEXT,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-);
-
-CREATE UNIQUE INDEX ses_events_sns_message_id_idx ON ses_events (sns_message_id);
-CREATE INDEX ses_events_ses_message_id_idx ON ses_events (ses_message_id);
-CREATE INDEX ses_events_delivery_id_idx ON ses_events (delivery_id);
-CREATE INDEX ses_events_event_type_idx ON ses_events (event_type);
-
 -- migrate:down
-DROP TABLE IF EXISTS ses_events;
-DROP TABLE IF EXISTS send_attempts;
 DROP TABLE IF EXISTS jobs;
 DROP TABLE IF EXISTS suppressions;
 DROP TABLE IF EXISTS deliveries;
@@ -153,4 +183,8 @@ DROP TABLE IF EXISTS mailings;
 DROP TABLE IF EXISTS list_memberships;
 DROP TABLE IF EXISTS contacts;
 DROP TABLE IF EXISTS lists;
-DROP TABLE IF EXISTS templates;
+DROP TABLE IF EXISTS api_keys;
+DROP TABLE IF EXISTS verifications;
+DROP TABLE IF EXISTS accounts;
+DROP TABLE IF EXISTS sessions;
+DROP TABLE IF EXISTS users;

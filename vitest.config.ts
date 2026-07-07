@@ -5,7 +5,6 @@ export default defineConfig({
     clearMocks: true,
     environment: "node",
     globals: false,
-    passWithNoTests: true,
     restoreMocks: true,
   },
 });

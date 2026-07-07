@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import type { DatabaseError } from "../errors.ts";
 import { Database, type DatabaseService } from "../services/database.ts";
 import { runTest } from "../testing/layers.ts";
-import { createMailing } from "./create-mailing.ts";
+import { createMailing, maxListRecipients, suppressionBatchSize } from "./create-mailing.ts";
 import type { CreateMailingInput } from "./schema.ts";
 
 const fixedTime = Date.parse("2026-07-03T12:00:00.000Z");
@@ -38,14 +38,14 @@ function seedList(
     );
     yield* db.run(
       "seed:contact",
-      `INSERT INTO contacts (id, email, attrs_json, created_at, updated_at)
-       VALUES ('contact_1', 'subscribed@example.com', '{"firstName":"Sub"}', $now, $now);`,
+      `INSERT INTO contacts (id, email, created_at, updated_at)
+       VALUES ('contact_1', 'subscribed@example.com', $now, $now);`,
       { now },
     );
     yield* db.run(
       "seed:contact",
-      `INSERT INTO contacts (id, email, attrs_json, created_at, updated_at)
-       VALUES ('contact_2', 'unsubscribed@example.com', NULL, $now, $now);`,
+      `INSERT INTO contacts (id, email, created_at, updated_at)
+       VALUES ('contact_2', 'unsubscribed@example.com', $now, $now);`,
       { now },
     );
     yield* db.run(
@@ -61,6 +61,27 @@ function seedList(
       { now },
     );
   });
+}
+
+function seedManySubscribedContacts(
+  db: DatabaseService,
+  count: number,
+): Effect.Effect<void, DatabaseError> {
+  const contactValues: string[] = [];
+  const membershipValues: string[] = [];
+
+  for (let index = 0; index < count; index += 1) {
+    const id = `bulk_${index}`;
+    contactValues.push(`('${id}', 'bulk-${index}@example.com', '${now}', '${now}')`);
+    membershipValues.push(`('list_bulk', '${id}', '${now}', NULL)`);
+  }
+
+  return db.exec(
+    "seed:bulk-list",
+    `INSERT INTO lists (id, name, created_at) VALUES ('list_bulk', 'Bulk', '${now}');
+     INSERT INTO contacts (id, email, created_at, updated_at) VALUES ${contactValues.join(",")};
+     INSERT INTO list_memberships (list_id, contact_id, subscribed_at, unsubscribed_at) VALUES ${membershipValues.join(",")};`,
+  );
 }
 
 function countRows(db: DatabaseService) {
@@ -163,8 +184,8 @@ describe("createMailing", () => {
 
         yield* db.run(
           "seed:contact",
-          `INSERT INTO contacts (id, email, attrs_json, created_at, updated_at)
-           VALUES ('contact_1', 'USER@example.com', NULL, $now, $now);`,
+          `INSERT INTO contacts (id, email, created_at, updated_at)
+           VALUES ('contact_1', 'USER@example.com', $now, $now);`,
           { now },
         );
 
@@ -244,8 +265,8 @@ describe("createMailing", () => {
         ] as const) {
           yield* db.run(
             "seed:contact",
-            `INSERT INTO contacts (id, email, attrs_json, created_at, updated_at)
-             VALUES ($id, $email, NULL, $now, $now);`,
+            `INSERT INTO contacts (id, email, created_at, updated_at)
+             VALUES ($id, $email, $now, $now);`,
             { email, id, now },
           );
           yield* db.run(
@@ -296,6 +317,90 @@ describe("createMailing", () => {
     expect(outcome.marketing.counts).toEqual({ deliveries: 5, queued: 2, suppressed: 3 });
     expect(outcome.jobCount?.count).toBe(2);
     expect(outcome.transactional.counts).toEqual({ deliveries: 4, queued: 3, suppressed: 1 });
+  });
+
+  it("allows list mailings at the configured recipient cap", async () => {
+    const outcome = await runTest(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(fixedTime);
+        const db = yield* Database;
+        yield* seedManySubscribedContacts(db, maxListRecipients);
+
+        const result = yield* createMailing(
+          baseInput({ listId: "list_bulk", purpose: "marketing" }),
+        );
+
+        return { counts: yield* countRows(db), result };
+      }),
+    );
+
+    expect(outcome.result.counts).toEqual({
+      deliveries: maxListRecipients,
+      queued: maxListRecipients,
+      suppressed: 0,
+    });
+    expect(outcome.counts).toEqual({
+      deliveries: maxListRecipients,
+      jobs: maxListRecipients,
+      mailings: 1,
+    });
+  });
+
+  it("rejects list mailings over the configured recipient cap before writes", async () => {
+    const outcome = await runTest(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(fixedTime);
+        const db = yield* Database;
+        yield* seedManySubscribedContacts(db, maxListRecipients + 1);
+
+        const result = yield* createMailing(
+          baseInput({ listId: "list_bulk", purpose: "marketing" }),
+        ).pipe(
+          Effect.map(() => "unexpected success"),
+          Effect.catchTag("RecipientLimitExceededError", (error) =>
+            Effect.succeed(`recipient_limit_exceeded:${error.limit}`),
+          ),
+        );
+
+        return { counts: yield* countRows(db), result };
+      }),
+    );
+
+    expect(outcome.result).toBe(`recipient_limit_exceeded:${maxListRecipients}`);
+    expect(outcome.counts).toEqual({ deliveries: 0, jobs: 0, mailings: 0 });
+  });
+
+  it("checks suppressions across batches", async () => {
+    const outcome = await runTest(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(fixedTime);
+        const db = yield* Database;
+        const recipients = Array.from({ length: suppressionBatchSize + 1 }, (_, index) => ({
+          email: `batch-${index}@example.com`,
+          varsJson: null,
+        }));
+
+        const suppressionValues = recipients
+          .slice(0, suppressionBatchSize)
+          .map(
+            (recipient, index) =>
+              `('sup_batch_${index}', '${recipient.email}', 'all', NULL, 'manual', '${now}')`,
+          );
+        yield* db.exec(
+          "seed:batch-suppressions",
+          `INSERT INTO suppressions (id, email, scope, list_id, reason, created_at)
+           VALUES ${suppressionValues.join(",")};`,
+        );
+
+        return yield* createMailing(baseInput({ recipients }));
+      }),
+    );
+
+    expect(outcome.counts).toEqual({
+      deliveries: suppressionBatchSize + 1,
+      queued: 1,
+      suppressed: suppressionBatchSize,
+    });
   });
 
   it("rejects empty, all-suppressed, and missing-list requests without writes", async () => {

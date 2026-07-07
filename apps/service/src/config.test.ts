@@ -142,6 +142,17 @@ describe("serviceConfig", () => {
     ).rejects.toThrow(/absolute http\(s\) URL/);
   });
 
+  it("requires HTTPS trusted origins in production", async () => {
+    await expect(
+      load({
+        ...validAuthFixture,
+        BETTER_AUTH_URL: "https://example.com",
+        NODE_ENV: "production",
+        NUSEND_AUTH_TRUSTED_ORIGINS: "https://admin.example.com, http://localhost:3000",
+      }),
+    ).rejects.toThrow(/NUSEND_AUTH_TRUSTED_ORIGINS must use HTTPS/);
+  });
+
   it("requires HTTPS auth URLs in production", async () => {
     await expect(
       load({

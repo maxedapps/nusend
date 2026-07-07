@@ -8,18 +8,16 @@ const serviceRoot = fileURLToPath(new URL("../../", import.meta.url));
 afterEach(() => cleanupBunScenarios());
 
 describe("createAuth", () => {
-  it("creates and verifies an organization-owned API key with the mapped schema", () => {
+  it("creates and verifies a user-owned API key with the mapped schema", () => {
     const result = runBunScenario(
       `
-      import { createAuth, organizationApiKeyConfigId } from ${JSON.stringify(`${serviceRoot}src/auth/auth.ts`)};
-      import { createMigratedBunDatabase, seedOwner } from ${JSON.stringify(`${serviceRoot}src/testing/bun-fixtures.ts`)};
+      import { createAuth } from ${JSON.stringify(`${serviceRoot}src/auth/auth.ts`)};
+      import { createMigratedBunDatabase, seedUser } from ${JSON.stringify(`${serviceRoot}src/testing/bun-fixtures.ts`)};
 
       const db = createMigratedBunDatabase();
-      const bootstrap = seedOwner(db, {
+      const bootstrap = seedUser(db, {
         email: "max@example.com",
         name: "Max",
-        slug: "nusend",
-        workspace: "Nusend",
       });
       const auth = createAuth({
         baseUrl: "http://localhost:3000",
@@ -30,16 +28,13 @@ describe("createAuth", () => {
       }, db);
       const created = await auth.api.createApiKey({
         body: {
-          configId: organizationApiKeyConfigId,
           name: "test-key",
-          organizationId: bootstrap.organizationId,
-          permissions: { mailings: ["send"] },
+          permissions: { mailings: ["create"] },
           userId: bootstrap.userId,
         },
       });
       const verified = await auth.api.verifyApiKey({
         body: {
-          configId: organizationApiKeyConfigId,
           key: created.key,
         },
       });
@@ -48,6 +43,7 @@ describe("createAuth", () => {
           rateLimitEnabled: created.rateLimitEnabled,
           referenceId: created.referenceId,
         },
+        userId: bootstrap.userId,
         valid: verified.valid,
         verified: verified.key && {
           permissions: verified.key.permissions,
@@ -62,13 +58,15 @@ describe("createAuth", () => {
     expect(result.status, result.stderr).toBe(0);
     const output = JSON.parse(result.stdout.trim().split("\n").at(-1) ?? "") as {
       created: { rateLimitEnabled: boolean; referenceId: string };
+      userId: string;
       valid: boolean;
       verified: { permissions: Record<string, string[]>; referenceId: string };
     };
 
     expect(output.valid).toBe(true);
     expect(output.created.rateLimitEnabled).toBe(false);
-    expect(output.verified.referenceId).toBe(output.created.referenceId);
-    expect(output.verified.permissions).toEqual({ mailings: ["send"] });
+    expect(output.created.referenceId).toBe(output.userId);
+    expect(output.verified.referenceId).toBe(output.userId);
+    expect(output.verified.permissions).toEqual({ mailings: ["create"] });
   });
 });

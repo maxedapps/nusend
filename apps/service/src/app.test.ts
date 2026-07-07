@@ -43,12 +43,25 @@ describe("createApp", () => {
     }
   });
 
-  it("mounts auth routes before not found", async () => {
+  it("mounts standard auth route methods before not found", async () => {
     await withTestApp({}, async (app) => {
-      const response = await app.fetch(new Request("http://localhost/api/auth/sign-in/google"));
+      const results = await Promise.all(
+        ["DELETE", "GET", "PATCH", "POST", "PUT"].map(async (method) => {
+          const response = await app.fetch(
+            new Request("http://localhost/api/auth/sign-in/google", { method }),
+          );
 
-      expect(response.status).toBe(200);
-      await expect(response.json()).resolves.toEqual({ handled: true });
+          return { body: await response.json(), status: response.status };
+        }),
+      );
+
+      expect(results).toEqual([
+        { body: { handled: true }, status: 200 },
+        { body: { handled: true }, status: 200 },
+        { body: { handled: true }, status: 200 },
+        { body: { handled: true }, status: 200 },
+        { body: { handled: true }, status: 200 },
+      ]);
     });
   });
 

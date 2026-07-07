@@ -154,12 +154,12 @@ export function runTest<A, E>(
 }
 
 export type FakeAuthBehavior = {
-  readonly session?: { activeOrganizationId: string | null; userId: string } | null;
+  readonly session?: { userId: string } | null;
   readonly apiKeyValid?: boolean;
   readonly apiKeyPermissions?: Record<string, string[]>;
 };
 
-// Mirrors the fake Better Auth instance the pre-Effect scenario templates used.
+// Mirrors the fake Better Auth instance used by earlier scenario tests.
 export function FakeAuthLive(behavior: FakeAuthBehavior = {}): Layer.Layer<AuthService> {
   return Layer.succeed(Auth)({
     getSession: () => Effect.succeed(behavior.session ? { session: behavior.session } : null),
@@ -172,7 +172,7 @@ export function FakeAuthLive(behavior: FakeAuthBehavior = {}): Layer.Layer<AuthS
               key: {
                 id: "key_1",
                 permissions: behavior.apiKeyPermissions ?? {},
-                referenceId: "org_1",
+                referenceId: "user_1",
               },
               valid: true,
             },

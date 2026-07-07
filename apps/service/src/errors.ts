@@ -30,6 +30,10 @@ export class EmptyRecipientSetError extends Data.TaggedError("EmptyRecipientSetE
   readonly reason: string;
 }> {}
 
+export class RecipientLimitExceededError extends Data.TaggedError("RecipientLimitExceededError")<{
+  readonly limit: number;
+}> {}
+
 export class JobNotLeasedError extends Data.TaggedError("JobNotLeasedError")<{
   readonly jobId: string;
 }> {}

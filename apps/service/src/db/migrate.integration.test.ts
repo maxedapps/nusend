@@ -1,7 +1,7 @@
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -20,15 +20,15 @@ describe("migration runner", () => {
 
     const initialStatus = runMigrationCommand("status", databasePath).stdout;
     expect(initialStatus).toContain("pending  0001_initial_schema");
-    expect(initialStatus).toContain("pending  0002_auth");
+    expect(initialStatus).not.toContain("0002_auth");
 
     const migrateUp = runMigrationCommand("up", databasePath).stdout;
     expect(migrateUp).toContain("Applied migration 0001_initial_schema.");
-    expect(migrateUp).toContain("Applied migration 0002_auth.");
+    expect(migrateUp).not.toContain("0002_auth");
 
     const migratedStatus = runMigrationCommand("status", databasePath).stdout;
     expect(migratedStatus).toContain("applied  0001_initial_schema");
-    expect(migratedStatus).toContain("applied  0002_auth");
+    expect(migratedStatus).not.toContain("0002_auth");
 
     expect(readTableNames(databasePath)).toEqual([
       "accounts",
@@ -39,20 +39,15 @@ describe("migration runner", () => {
       "list_memberships",
       "lists",
       "mailings",
-      "organization_invitations",
-      "organization_members",
-      "organizations",
       "schema_migrations",
-      "send_attempts",
-      "ses_events",
       "sessions",
       "suppressions",
-      "templates",
       "users",
       "verifications",
     ]);
     expect(readColumnNames(databasePath, "users")).toContain("email_verified");
-    expect(readColumnNames(databasePath, "sessions")).toContain("active_organization_id");
+    expect(readColumnNames(databasePath, "sessions")).not.toContain("active_organization_id");
+    expect(readColumnNames(databasePath, "contacts")).not.toContain("attrs_json");
     expect(readColumnNames(databasePath, "api_keys")).toContain("reference_id");
 
     const drift = runBun(
@@ -79,16 +74,14 @@ describe("migration runner", () => {
     expect(restore.status).toBe(0);
 
     expect(runMigrationCommand("down", databasePath).stdout).toContain(
-      "Rolled back migration 0002_auth.",
-    );
-    expect(readTableNames(databasePath)).not.toContain("users");
-
-    expect(runMigrationCommand("down", databasePath).stdout).toContain(
       "Rolled back migration 0001_initial_schema.",
     );
     expect(readTableNames(databasePath)).toEqual(["schema_migrations"]);
+    expect(runMigrationCommand("down", databasePath).stdout).toContain(
+      "No applied migrations to roll back.",
+    );
     expect(runMigrationCommand("up", databasePath).stdout).toContain(
-      "Applied migration 0002_auth.",
+      "Applied migration 0001_initial_schema.",
     );
 
     const synthetic = runBun(

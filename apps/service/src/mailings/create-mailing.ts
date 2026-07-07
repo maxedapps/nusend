@@ -3,11 +3,20 @@
 // transaction (DB-only work, per the Database.transaction policy).
 import { Effect } from "effect";
 
-import { EmptyRecipientSetError, ListNotFoundError, type DatabaseError } from "../errors.ts";
+import {
+  EmptyRecipientSetError,
+  ListNotFoundError,
+  RecipientLimitExceededError,
+  type DatabaseError,
+} from "../errors.ts";
 import { currentIso } from "../lib/iso-time.ts";
 import { Database, type DatabaseService } from "../services/database.ts";
 import { IdGenerator, type IdGeneratorService } from "../services/ids.ts";
 import type { CreateMailingInput, MailingPurpose } from "./schema.ts";
+
+export const maxListRecipients = 5000;
+export const suppressionBatchSize = 500;
+const contactLookupBatchSize = 500;
 
 type RecipientCandidate = {
   contactId: string | null;
@@ -97,7 +106,7 @@ export function createMailing(
   input: CreateMailingInput,
 ): Effect.Effect<
   CreateMailingResult,
-  DatabaseError | EmptyRecipientSetError | ListNotFoundError,
+  DatabaseError | EmptyRecipientSetError | ListNotFoundError | RecipientLimitExceededError,
   DatabaseService | IdGeneratorService
 > {
   return Effect.gen(function* () {
@@ -199,7 +208,10 @@ export function createMailing(
 function resolveRecipients(
   db: DatabaseService,
   input: CreateMailingInput,
-): Effect.Effect<RecipientCandidate[], DatabaseError | ListNotFoundError> {
+): Effect.Effect<
+  RecipientCandidate[],
+  DatabaseError | ListNotFoundError | RecipientLimitExceededError
+> {
   return Effect.gen(function* () {
     if (input.recipients) {
       const contactIds = yield* findContactIdsByEmail(
@@ -233,9 +245,14 @@ function resolveRecipients(
        INNER JOIN list_memberships ON list_memberships.contact_id = contacts.id
        WHERE list_memberships.list_id = $listId
          AND list_memberships.unsubscribed_at IS NULL
-       ORDER BY contacts.email ASC;`,
-      { listId: input.listId },
+       ORDER BY contacts.email ASC
+       LIMIT $limit;`,
+      { limit: maxListRecipients + 1, listId: input.listId },
     );
+
+    if (rows.length > maxListRecipients) {
+      return yield* Effect.fail(new RecipientLimitExceededError({ limit: maxListRecipients }));
+    }
 
     return rows.map((row) => ({ contactId: row.contactId, email: row.email, varsJson: null }));
   });
@@ -247,16 +264,19 @@ function findContactIdsByEmail(
 ): Effect.Effect<Map<string, string>, DatabaseError> {
   if (emails.length === 0) return Effect.succeed(new Map());
 
-  return Effect.map(
-    db.all<{ email: string; id: string }>(
-      "contacts:find-by-email",
-      `SELECT lower(email) AS email, id
-       FROM contacts
-       WHERE email IN (${createPlaceholders(emails, "email")});`,
-      createParams(emails, "email"),
-    ),
-    (rows) => new Map(rows.map((row) => [row.email, row.id])),
-  );
+  return Effect.gen(function* () {
+    const rows = yield* Effect.forEach(chunks(emails, contactLookupBatchSize), (chunk, index) =>
+      db.all<{ email: string; id: string }>(
+        `contacts:find-by-email:${index}`,
+        `SELECT lower(email) AS email, id
+         FROM contacts
+         WHERE email IN (${createPlaceholders(chunk, "email")});`,
+        createParams(chunk, "email"),
+      ),
+    );
+
+    return new Map(rows.flat().map((row) => [row.email, row.id]));
+  });
 }
 
 function findSuppressedEmails(
@@ -265,24 +285,30 @@ function findSuppressedEmails(
 ): Effect.Effect<Set<string>, DatabaseError> {
   if (input.emails.length === 0) return Effect.succeed(new Set());
 
-  const params = createParams(input.emails, "email");
-  const isMarketing = input.purpose === "marketing";
-  const scopePredicate = isMarketing
-    ? "(scope IN ('all', 'marketing') OR (scope = 'list' AND list_id = $listId))"
-    : "scope = 'all'";
-  const queryParams = isMarketing ? { ...params, listId: input.listId } : params;
+  return Effect.gen(function* () {
+    const isMarketing = input.purpose === "marketing";
+    const scopePredicate = isMarketing
+      ? "(scope IN ('all', 'marketing') OR (scope = 'list' AND list_id = $listId))"
+      : "scope = 'all'";
+    const rows = yield* Effect.forEach(
+      chunks(input.emails, suppressionBatchSize),
+      (chunk, index) => {
+        const params = createParams(chunk, "email");
+        const queryParams = isMarketing ? { ...params, listId: input.listId } : params;
 
-  return Effect.map(
-    db.all<{ email: string }>(
-      "suppressions:find",
-      `SELECT lower(email) AS email
-       FROM suppressions
-       WHERE email IN (${createPlaceholders(input.emails, "email")})
-         AND ${scopePredicate};`,
-      queryParams,
-    ),
-    (rows) => new Set(rows.map((row) => row.email)),
-  );
+        return db.all<{ email: string }>(
+          `suppressions:find:${index}`,
+          `SELECT lower(email) AS email
+         FROM suppressions
+         WHERE email IN (${createPlaceholders(chunk, "email")})
+           AND ${scopePredicate};`,
+          queryParams,
+        );
+      },
+    );
+
+    return new Set(rows.flat().map((row) => row.email));
+  });
 }
 
 function createPlaceholders(values: string[], prefix: string): string {
@@ -291,4 +317,14 @@ function createPlaceholders(values: string[], prefix: string): string {
 
 function createParams(values: string[], prefix: string): Record<string, string> {
   return Object.fromEntries(values.map((value, index) => [`${prefix}${index}`, value]));
+}
+
+function chunks<T>(values: T[], size: number): T[][] {
+  const result: T[][] = [];
+
+  for (let index = 0; index < values.length; index += size) {
+    result.push(values.slice(index, index + size));
+  }
+
+  return result;
 }

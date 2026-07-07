@@ -104,10 +104,9 @@ const authConfig: Effect.Effect<Option.Option<AuthConfig>, Config.ConfigError> =
       return yield* configFailure("BETTER_AUTH_URL must be an absolute http(s) URL.");
     }
 
-    if (
-      Option.getOrElse(nodeEnv, () => "") === "production" &&
-      parsedBaseUrl.protocol !== "https:"
-    ) {
+    const isProduction = Option.getOrElse(nodeEnv, () => "") === "production";
+
+    if (isProduction && parsedBaseUrl.protocol !== "https:") {
       return yield* configFailure("BETTER_AUTH_URL must use HTTPS in production.");
     }
 
@@ -121,6 +120,11 @@ const authConfig: Effect.Effect<Option.Option<AuthConfig>, Config.ConfigError> =
         if (!url) {
           return yield* configFailure(
             "NUSEND_AUTH_TRUSTED_ORIGINS must be a comma-separated list of absolute http(s) URLs.",
+          );
+        }
+        if (isProduction && url.protocol !== "https:") {
+          return yield* configFailure(
+            "NUSEND_AUTH_TRUSTED_ORIGINS must use HTTPS origins in production.",
           );
         }
         origins.push(url.origin);

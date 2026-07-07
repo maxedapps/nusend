@@ -3,7 +3,7 @@
 // defect, not an expected error.
 import { Schema } from "effect";
 
-export const JobKind = Schema.Literals(["process_ses_event", "send_delivery"]);
+export const JobKind = Schema.Literals(["send_delivery"]);
 export type JobKind = typeof JobKind.Type;
 
 export const JobState = Schema.Literals([

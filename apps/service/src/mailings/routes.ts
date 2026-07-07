@@ -1,11 +1,16 @@
 import { Effect, Result } from "effect";
 import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 
 import { requirePrincipal } from "../auth/middleware.ts";
 import { RequestValidationError } from "../errors.ts";
-import { runRoute, type AppRuntime } from "../http/respond.ts";
+import { errorEnvelope, runRoute, type AppRuntime } from "../http/respond.ts";
 import { createMailing } from "./create-mailing.ts";
-import { decodeCreateMailingRequest, type CreateMailingInput } from "./schema.ts";
+import {
+  decodeCreateMailingRequest,
+  maxMailingRequestBodyBytes,
+  type CreateMailingInput,
+} from "./schema.ts";
 
 type MailingsRoutesOptions = {
   runtime: AppRuntime;
@@ -16,6 +21,11 @@ export function createMailingsRoutes(options: MailingsRoutesOptions): Hono {
 
   routes.post(
     "/",
+    bodyLimit({
+      maxSize: maxMailingRequestBodyBytes,
+      onError: (context) =>
+        context.json(errorEnvelope("request_too_large", "Request body is too large."), 413),
+    }),
     requirePrincipal({ permissions: { mailings: ["create"] }, runtime: options.runtime }),
     (context) => {
       const program = Effect.gen(function* () {

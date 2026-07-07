@@ -1,5 +1,4 @@
-// Owner bootstrap CLI: bun src/auth/bootstrap.ts --email <email> --name <name>
-// --workspace <name> --slug <slug> [--force]
+// Owner bootstrap CLI: bun src/auth/bootstrap.ts --email <email> --name <name> [--force]
 import { ConfigProvider, Effect, Exit, Layer, ManagedRuntime } from "effect";
 
 import { serviceConfig } from "../config.ts";
@@ -12,12 +11,9 @@ type BootstrapOptions = {
   email: string;
   force?: boolean;
   name: string;
-  slug: string;
-  workspace: string;
 };
 
 export type BootstrapResult = {
-  organizationId: string;
   userId: string;
 };
 
@@ -33,9 +29,6 @@ export function bootstrapOwner(
     const ids = yield* IdGenerator;
     const now = yield* currentIso;
 
-    // One transaction for the whole bootstrap (intentional improvement over the
-    // pre-Effect version's independent upserts). Check order matches the
-    // pre-Effect version: schema, then existing owner, then email validity.
     return yield* db.transaction(
       Effect.gen(function* () {
         const hasAuthUsers = yield* db.get(
@@ -51,12 +44,12 @@ export function bootstrapOwner(
         if (!options.force) {
           const owner = yield* db.get(
             "bootstrap:owner-exists",
-            "SELECT 1 AS ok FROM organization_members WHERE role = 'owner' LIMIT 1;",
+            "SELECT 1 AS ok FROM users LIMIT 1;",
           );
           if (owner !== null) {
             return yield* Effect.fail(
               new BootstrapError({
-                reason: "An owner already exists. Use --force to add another owner.",
+                reason: "An owner already exists. Use --force to add or update an owner.",
               }),
             );
           }
@@ -70,14 +63,8 @@ export function bootstrapOwner(
         }
 
         const userId = yield* upsertUser(db, ids, { email, name: options.name.trim(), now });
-        const organizationId = yield* upsertOrganization(db, ids, {
-          name: options.workspace.trim(),
-          now,
-          slug: options.slug.trim(),
-        });
-        yield* upsertOwnerMember(db, ids, { now, organizationId, userId });
 
-        return { organizationId, userId };
+        return { userId };
       }),
     );
   });
@@ -118,72 +105,6 @@ function upsertUser(
   });
 }
 
-function upsertOrganization(
-  db: DatabaseService,
-  ids: IdGeneratorService,
-  input: { name: string; now: string; slug: string },
-): Effect.Effect<string, DatabaseError> {
-  return Effect.gen(function* () {
-    const existing = yield* db.get<{ id: string }>(
-      "bootstrap:find-organization",
-      "SELECT id FROM organizations WHERE slug = $slug LIMIT 1;",
-      { slug: input.slug },
-    );
-
-    if (existing) {
-      yield* db.run(
-        "bootstrap:update-organization",
-        "UPDATE organizations SET name = $name WHERE id = $id;",
-        { id: existing.id, name: input.name },
-      );
-      return existing.id;
-    }
-
-    const id = yield* ids.next;
-    yield* db.run(
-      "bootstrap:insert-organization",
-      `INSERT INTO organizations (id, name, slug, logo, created_at, metadata)
-       VALUES ($id, $name, $slug, NULL, $now, NULL);`,
-      { id, name: input.name, now: input.now, slug: input.slug },
-    );
-
-    return id;
-  });
-}
-
-function upsertOwnerMember(
-  db: DatabaseService,
-  ids: IdGeneratorService,
-  input: { now: string; organizationId: string; userId: string },
-): Effect.Effect<void, DatabaseError> {
-  return Effect.gen(function* () {
-    const existing = yield* db.get<{ id: string }>(
-      "bootstrap:find-member",
-      `SELECT id FROM organization_members
-       WHERE organization_id = $organizationId AND user_id = $userId
-       LIMIT 1;`,
-      { organizationId: input.organizationId, userId: input.userId },
-    );
-
-    if (existing) {
-      yield* db.run(
-        "bootstrap:update-member",
-        "UPDATE organization_members SET role = 'owner' WHERE id = $id;",
-        { id: existing.id },
-      );
-      return;
-    }
-
-    const id = yield* ids.next;
-    yield* db.run(
-      "bootstrap:insert-member",
-      `INSERT INTO organization_members (id, organization_id, user_id, role, created_at)
-       VALUES ($id, $organizationId, $userId, 'owner', $now);`,
-      { id, now: input.now, organizationId: input.organizationId, userId: input.userId },
-    );
-  });
-}
-
 function normalizeEmail(email: string): string | null {
   const normalized = email.trim().toLowerCase();
 
@@ -220,27 +141,35 @@ function parseArgs(argv: string[]): BootstrapOptions {
 
   const email = values.get("email");
   const name = values.get("name");
-  const workspace = values.get("workspace");
-  const slug = values.get("slug");
 
-  if (!email || !name || !workspace || !slug) {
-    throw new Error(
-      "Usage: bun src/auth/bootstrap.ts --email <email> --name <name> --workspace <name> --slug <slug> [--force]",
-    );
+  if (!email || !name) {
+    throw new Error("Usage: bun src/auth/bootstrap.ts --email <email> --name <name> [--force]");
   }
 
-  return { email, force, name, slug, workspace };
+  return { email, force, name };
 }
 
 if (import.meta.main) {
   // Lazy so importing `bootstrapOwner` in vitest (Node) never loads bun:sqlite.
   const { DatabaseBunLive } = await import("../services/database-bun.ts");
-  const options = parseArgs(process.argv.slice(2));
+  const options = (() => {
+    try {
+      return parseArgs(process.argv.slice(2));
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exit(1);
+    }
+  })();
   const config = await Effect.runPromise(
     serviceConfig.pipe(
       Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromEnv()),
     ),
-  );
+  ).catch((error: unknown) => {
+    console.error(
+      `Invalid configuration: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return process.exit(1);
+  });
   const runtime = ManagedRuntime.make(
     Layer.mergeAll(DatabaseBunLive(config.databasePath), IdGeneratorLive),
   );
@@ -250,9 +179,7 @@ if (import.meta.main) {
       bootstrapOwner(options).pipe(
         Effect.tap((result) =>
           Effect.sync(() => {
-            console.log(
-              `Bootstrapped owner ${options.email.toLowerCase()} in workspace ${result.organizationId}.`,
-            );
+            console.log(`Bootstrapped owner ${options.email.toLowerCase()} (${result.userId}).`);
           }),
         ),
         Effect.catchTags({

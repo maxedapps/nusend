@@ -1,6 +1,6 @@
 // HTTP boundary: the error envelope, the exhaustive tagged-error → status/code
 // table, and runRoute — the only place route programs are executed.
-import { Cause, Effect, Exit, type ManagedRuntime } from "effect";
+import { Cause, Effect, Exit, Result, type ManagedRuntime } from "effect";
 import type { Context } from "hono";
 
 import type {
@@ -8,6 +8,7 @@ import type {
   DatabaseError,
   EmptyRecipientSetError,
   ForbiddenError,
+  RecipientLimitExceededError,
   ListNotFoundError,
   RequestValidationError,
   UnauthenticatedError,
@@ -27,6 +28,7 @@ export type RouteError =
   | DatabaseError
   | EmptyRecipientSetError
   | ForbiddenError
+  | RecipientLimitExceededError
   | ListNotFoundError
   | RequestValidationError
   | UnauthenticatedError;
@@ -37,10 +39,44 @@ export function errorEnvelope(code: string, message: string): ErrorBody {
   return { error: { code, message } };
 }
 
-// Sanitized: tagged errors carry only non-sensitive fields (operation labels,
-// reasons) — never SQL params or request payloads.
+// Sanitized: never print raw third-party causes, request payloads, SQL params, or API keys.
 export function logCause(cause: Cause.Cause<unknown>): void {
-  console.error(Cause.pretty(cause));
+  const failure = Cause.findFail(cause);
+
+  if (Result.isSuccess(failure)) {
+    console.error(summarizeFailure(failure.success.error));
+    return;
+  }
+
+  console.error("Internal defect (details redacted).");
+}
+
+function summarizeFailure(error: unknown): string {
+  if (isTaggedOperation(error, "AuthError")) return `Auth error during ${error.operation}.`;
+  if (isTaggedOperation(error, "DatabaseError")) return `Database error during ${error.operation}.`;
+
+  if (isTaggedMessage(error)) return `${getTag(error)}: ${error.message}`;
+
+  return "Internal failure (details redacted).";
+}
+
+function isTaggedOperation(
+  error: unknown,
+  tag: "AuthError" | "DatabaseError",
+): error is { operation: string } {
+  return isObject(error) && getTag(error) === tag && typeof error.operation === "string";
+}
+
+function isTaggedMessage(error: unknown): error is { message: string } {
+  return isObject(error) && typeof getTag(error) === "string" && typeof error.message === "string";
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function getTag(value: Record<string, unknown>): unknown {
+  return Reflect.get(value, "_tag");
 }
 
 export async function runRoute<A>(
@@ -56,6 +92,16 @@ export async function runRoute<A>(
       DatabaseError: (error) => internalError(context, error),
       EmptyRecipientSetError: (error) =>
         Effect.succeed(context.json(errorEnvelope("empty_recipient_set", error.reason), 422)),
+      RecipientLimitExceededError: (error) =>
+        Effect.succeed(
+          context.json(
+            errorEnvelope(
+              "recipient_limit_exceeded",
+              `Recipient source exceeds the maximum of ${error.limit} recipients.`,
+            ),
+            422,
+          ),
+        ),
       ForbiddenError: (error) =>
         Effect.succeed(context.json(errorEnvelope("forbidden", error.message), 403)),
       ListNotFoundError: () =>

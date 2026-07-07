@@ -30,7 +30,7 @@ export function createApp(options: AppOptions): Hono {
   );
 
   // Raw passthrough — Better Auth owns these routes entirely.
-  app.on(["GET", "POST"], ["/api/auth/*"], (context) =>
+  app.on(["DELETE", "GET", "PATCH", "POST", "PUT"], ["/api/auth/*"], (context) =>
     runRoute(
       context,
       options.runtime,

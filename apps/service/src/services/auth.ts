@@ -6,7 +6,6 @@ import type { AuthError } from "../errors.ts";
 
 export type SessionData = {
   session: {
-    activeOrganizationId?: string | null;
     userId: string;
   };
 };

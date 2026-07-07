@@ -203,12 +203,22 @@ function mapAppliedMigrations(
   return new Map(appliedMigrations.map((migration) => [migration.version, migration]));
 }
 
-const command = parseCommand(process.argv[2]);
+const command = (() => {
+  try {
+    return parseCommand(process.argv[2]);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
+})();
 const config = await Effect.runPromise(
   serviceConfig.pipe(
     Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromEnv()),
   ),
-);
+).catch((error: unknown) => {
+  console.error(`Invalid configuration: ${error instanceof Error ? error.message : String(error)}`);
+  return process.exit(1);
+});
 const runtime = ManagedRuntime.make(DatabaseBunLive(config.databasePath));
 
 try {

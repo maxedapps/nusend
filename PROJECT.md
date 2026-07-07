@@ -4,24 +4,32 @@
 
 Nusend is a self-hostable, open-source MIT email sending service built on top of AWS SES.
 
-It is not a Mailchimp clone. It is a lean, API-first SES orchestration layer for developers and agents that supports:
+It is not a Mailchimp clone. It is a lean, API-first SES orchestration layer for developers and agents.
 
-- transactional email
-- marketing email / campaigns
-- one-off/ad-hoc messages
+Current implemented scope is intentionally smaller than the roadmap:
+
+- single-user, self-hosted instance auth
+- Google-only Better Auth login with signup disabled
+- user-owned API keys for the implemented API
+- protected `POST /api/mailings`
+- transactional and marketing mailing records
+- explicit-recipient and list-recipient snapshots into `deliveries`
+- suppressions during mailing creation
+- durable `send_delivery` queue primitives with retries and dead-letter states
+
+Roadmap capabilities include:
+
 - reusable templates
-- scheduled sending
-- durable queueing with retries and dead-letter states
-- bounce, complaint, delivery, reject, and delay handling from SES events
-- contacts, lists, suppressions, and unsubscribe handling
-- final HTML email sending, with HTML generation handled by `mdtoemail`
+- real AWS SES sending
+- send attempts and SES event ingestion
+- unsubscribe routes/pages for marketing recipients
 - public email assets hosted on Cloudflare R2
+- contacts/list management APIs
+- optional CLI/client tooling
 
-Initial interfaces:
+Current interface:
 
 - HTTP API
-- CLI
-- one public unsubscribe page for marketing recipients
 
 Initial deployment target:
 
@@ -38,9 +46,9 @@ Initial deployment target:
 - Bun
 - Hono (thin HTTP shell over Effect programs)
 - SQLite via Bun's SQLite client
-- AWS SES v2
-- AWS SNS HTTPS webhook for SES events
-- Cloudflare R2 / S3-compatible API for assets
+- AWS SES v2 (roadmap delivery integration)
+- AWS SNS HTTPS webhook for SES events (roadmap)
+- Cloudflare R2 / S3-compatible API for assets (roadmap)
 - pnpm-managed monorepo
 - MIT license
 
@@ -48,7 +56,7 @@ Initial deployment target:
 
 Recommended positioning:
 
-> A self-hosted, API-first email service for AWS SES with transactional and marketing sends, scheduling, durable delivery state, SES feedback handling, contacts, campaigns, unsubscribe management, reusable templates, and ad-hoc messages.
+> A self-hosted, API-first email service for AWS SES with transactional and marketing sends, scheduling, durable delivery state, and a roadmap for SES feedback handling, contacts, campaigns, unsubscribe management, reusable templates, and ad-hoc messages.
 
 Keep the product focused on infrastructure and automation. Avoid early scope such as:
 
@@ -353,13 +361,12 @@ Keep contact/list models simple.
 contacts(
   id,
   email,
-  attrs_json,
   created_at,
   updated_at
 )
 ```
 
-`attrs_json` stores optional personalization data:
+Roadmap: add contact-level personalization only when list personalization is implemented. A future column such as `attrs_json` could store optional data:
 
 ```json
 {
@@ -489,7 +496,7 @@ Conceptual schema:
 ```sql
 jobs(
   id,
-  kind, -- send_delivery | process_ses_event
+  kind, -- send_delivery
   state, -- queued | leased | succeeded | failed | dead | cancelled
 
   run_at,
@@ -520,7 +527,7 @@ Recommended queue behavior:
 - retry with backoff
 - mark as `dead` after max attempts
 - keep job payloads tiny
-- store detailed send history in `send_attempts`
+- roadmap: store detailed send history in `send_attempts` once real SES sending exists
 
 Possible state transitions:
 
@@ -765,29 +772,30 @@ Recommendations:
 
 R2 asset URLs should be resolved before the final HTML is stored on a mailing.
 
-## API and CLI
+## API and Future Clients
 
-Initial interfaces:
+Current interface:
 
 - Hono HTTP API
-- Bun-powered CLI
 
-The CLI should call the public HTTP API. It should not import service internals such as DB, queue, or SES modules.
+Future client tooling can include a Bun-powered CLI or typed SDK after the HTTP API is stable. Any future CLI should call the public HTTP API and must not import service internals such as DB, queue, or SES modules.
 
 Agent-friendly API traits:
 
 - predictable REST resources
 - JSON request/response bodies
 - machine-readable errors
-- idempotency keys for create/send operations
-- dry-run/preview endpoints
+- idempotency keys for create/send operations before real delivery
+- dry-run/preview endpoints later
 - health endpoint
 - OpenAPI later
-- CLI supports JSON output
 
-Potential API areas:
+Current API area:
 
-- mailings
+- protected mailing creation
+
+Potential future API areas:
+
 - deliveries
 - templates
 - contacts
@@ -800,16 +808,13 @@ Potential API areas:
 
 ## pnpm Monorepo Structure
 
-Keep the monorepo lean.
-
-Initial structure:
+Keep the monorepo lean. Current structure:
 
 ```txt
 nusend/
   package.json
   pnpm-workspace.yaml
   tsconfig.base.json
-  .env.example
   README.md
   LICENSE
   PROJECT.md
@@ -820,99 +825,28 @@ nusend/
       tsconfig.json
       src/
         main.ts
-        worker.ts
         app.ts
         config.ts
-
-        routes/
-          mailings.ts
-          deliveries.ts
-          templates.ts
-          contacts.ts
-          lists.ts
-          suppressions.ts
-          webhooks-ses.ts
-          unsubscribe.ts
-
+        auth/
         db/
-          index.ts
-          migrate.ts
-          schema.sql
-          migrations/
-
+        http/
+        mailings/
         queue/
-          jobs.ts
-          worker.ts
-          backoff.ts
-
-        email/
-          render.ts
-          unsubscribe-policy.ts
-
-        ses/
-          send.ts
-          events.ts
-          sns-signature.ts
-
-        contacts/
-        suppressions/
-        assets/
-
-    cli/
-      package.json
-      tsconfig.json
-      src/
-        main.ts
-        commands/
-          send.ts
-          templates.ts
-          mailings.ts
-          contacts.ts
-          queue.ts
-        api.ts
-        config.ts
+        services/
+        testing/
 ```
 
-No `packages/` folder initially.
-
-Add packages only when code is truly shared between apps.
+No `packages/` folder initially. Add packages only when code is truly shared between real apps/consumers.
 
 ### API and Worker in One App
 
-Do not split API and worker into separate workspace apps initially.
+Do not split API and worker into separate workspace apps initially. They share too much: DB access, queue logic, delivery state transitions, suppression logic, SES integration, rendering logic, and config/env loading.
 
-They share too much:
+When the send worker is implemented, keep it in `apps/service` as another entrypoint rather than a separate app.
 
-- DB access
-- queue logic
-- delivery state transitions
-- suppression logic
-- SES integration
-- rendering logic
-- config/env loading
+### Future CLI
 
-Instead, `apps/service` has multiple entrypoints:
-
-```txt
-src/main.ts    -> API server
-src/worker.ts  -> worker loop
-```
-
-Deployment can still run them as separate processes:
-
-```bash
-pnpm --filter @nusend/service start:api
-pnpm --filter @nusend/service start:worker
-```
-
-### CLI as Separate App
-
-The CLI is separate because it is a distinct distributable:
-
-- has a `bin`
-- talks to the service over HTTP
-- can be installed independently later
-- can be used by agents or remote users
+A CLI is deferred. Add it only when there is a concrete distributable/client need. It should be a separate app then because it would have a `bin`, talk to the service over HTTP, and be installable independently.
 
 ### No Premature Shared Packages
 
@@ -925,7 +859,7 @@ Do not create these initially:
 - `packages/types`
 - `packages/client`
 
-Create `packages/client` only after there are at least two real consumers of shared client code, for example CLI plus SDK users or integration tests.
+Create `packages/client` only after there are at least two real consumers of shared client code, for example a future CLI plus SDK users or integration tests.
 
 ### Workspace Config
 
@@ -936,58 +870,52 @@ packages:
   - "apps/*"
 ```
 
-Use pnpm catalogs for shared dependency versions when useful, especially for Hono and TypeScript:
-
-```yaml
-catalog:
-  typescript: ^6.0.0
-  hono: ^4.0.0
-  zod: ^4.0.0
-```
-
 ### TypeScript Notes
 
-Use strict TypeScript.
-
-Hono RPC type sharing requires care in monorepos:
-
-- both client and server tsconfigs should use `strict: true`
-- Hono versions must match
-- large Hono route types can hurt IDE performance
-- avoid tightly coupling CLI to server internals initially
-
-Prefer stable HTTP/OpenAPI behavior first. Add a typed SDK/client package later only if needed.
+Use strict TypeScript. Prefer stable HTTP/OpenAPI behavior first. Add a typed SDK/client package later only if needed.
 
 ## Initial Build Phases
 
 ### Phase 1: Repository and Service Foundation
 
+Implemented/current:
+
 - pnpm workspace
 - `apps/service`
-- `apps/cli`
 - Hono server
 - config/env loading
 - SQLite connection
 - migrations
 - health endpoint
 
+Deferred:
+
+- CLI, if/when a concrete client need exists
+
 ### Phase 2: Durable Queue
 
 - jobs table
 - queue claim/release/complete/fail/dead logic
-- worker process
 - retries/backoff
 - lease expiration
-- basic queue admin CLI/API
+
+Deferred:
+
+- worker process
+- queue admin API/CLI
 
 ### Phase 3: Mailings and Transactional Sending
 
 - `mailings`
 - `deliveries`
-- ad-hoc transactional send
+- ad-hoc transactional mailing creation
+
+Deferred before real sending:
+
 - SES send integration
 - send attempts
 - delivery status updates
+- idempotency keys
 
 ### Phase 4: Templates and Variable Rendering
 
@@ -1025,7 +953,7 @@ Prefer stable HTTP/OpenAPI behavior first. Add a typed SDK/client package later 
 
 ### Phase 8: R2 Assets
 
-- asset upload API/CLI
+- asset upload API/CLI (future)
 - R2 storage
 - public custom-domain URLs
 - final HTML asset URL validation/integration
@@ -1035,7 +963,7 @@ Prefer stable HTTP/OpenAPI behavior first. Add a typed SDK/client package later 
 - structured errors
 - idempotency keys
 - dry-run endpoints
-- JSON CLI output
+- JSON CLI output (future, if CLI is added)
 - OpenAPI generation
 - deployment docs
 - systemd/Docker guidance
@@ -1059,18 +987,16 @@ Prefer stable HTTP/OpenAPI behavior first. Add a typed SDK/client package later 
 
 These should be resolved during implementation:
 
-- exact SQLite migration tool/strategy
-- exact Hono validation library, likely Zod or Valibot
 - exact template variable syntax and renderer
 - whether text body is required or optional for MVP
 - exact SES configuration set setup automation/docs
 - exact SES suppression configuration recommendation for transactional vs marketing
 - exact R2 public URL/custom-domain strategy
-- whether to use Hono RPC, generated OpenAPI client, or hand-written HTTP client for CLI initially
+- whether to add a CLI and, if so, whether to use Hono RPC, generated OpenAPI client, or a hand-written HTTP client
 
 Default lean choices:
 
-- hand-written CLI HTTP client initially
+- no CLI until there is a concrete need; use a hand-written HTTP client if added
 - no shared workspace packages initially
 - `mailings` + `deliveries` as the core model
 - no stored Markdown source

@@ -1,8 +1,0 @@
-{
-  "name": "@nusend/cli",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "typecheck": "tsc --noEmit -p tsconfig.json"
-  }
-}
