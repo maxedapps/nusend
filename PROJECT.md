@@ -20,6 +20,7 @@ Implemented today:
 - owner bootstrap CLI
 - user-owned Better Auth API keys
 - protected `POST /api/mailings`
+- protected read-only `/api/operations/*` inspection endpoints
 - transactional mailing creation with explicit recipients
 - marketing mailing creation from existing list data
 - recipient snapshotting into `deliveries`
@@ -55,6 +56,9 @@ Available routes:
 - `GET /health/db`
 - `/api/auth/*` Better Auth passthrough for standard auth methods
 - `POST /api/mailings`
+- `GET /api/operations/summary`
+- `GET /api/operations/deliveries`
+- `GET /api/operations/deliveries/:id`
 
 Current service scripts:
 
@@ -132,7 +136,7 @@ Rules:
 - a valid session is the instance owner
 - session principals bypass per-route permissions intentionally
 - API keys are user-owned and permission-scoped
-- current API-key permission surface is `mailings:create`
+- current API-key permission surface is `mailings:create` and `operations:read`
 - Better Auth organizations/workspaces are intentionally not used
 - no organization tables or active-organization fields exist in the live schema
 
@@ -374,6 +378,28 @@ Optional `Idempotency-Key` behavior:
 - same key + same normalized request returns the original creation response
 - same key + different normalized request returns `409 idempotency_conflict`
 - response snapshots are stored so later delivery status changes do not alter replay responses
+
+## Current Operations Inspection API
+
+The read-only operations surface helps the instance owner inspect queue, delivery, and send-attempt state during SES validation without direct SQLite queries.
+
+Routes:
+
+- `GET /api/operations/summary`
+- `GET /api/operations/deliveries`
+- `GET /api/operations/deliveries/:id`
+
+Auth:
+
+- Better Auth session owner, or
+- user-owned API key with `operations:read`
+
+Scope and privacy:
+
+- read-only: no retry, cancel, release, or queue mutation controls
+- delivery list/detail include job and latest/all attempt context
+- responses omit recipient `vars_json`, mailing HTML/text, auth/session data, and API-key data
+- standalone jobs/attempts endpoints, queue mutation APIs, and an admin UI remain future work
 
 ## Sending Architecture
 

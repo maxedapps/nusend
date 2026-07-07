@@ -13,6 +13,7 @@ import {
   IdempotencyConflictError,
   RecipientLimitExceededError,
   ListNotFoundError,
+  NotFoundError,
   RequestValidationError,
   UnauthenticatedError,
 } from "../errors.ts";
@@ -51,6 +52,7 @@ describe("runRoute error mapping", () => {
       "Idempotency key was already used for a different request.",
     ],
     [new ListNotFoundError({ listId: "missing" }), 404, "not_found", "List not found."],
+    [new NotFoundError({ message: "Thing not found." }), 404, "not_found", "Thing not found."],
     [
       new EmptyRecipientSetError({ reason: "No recipients." }),
       422,

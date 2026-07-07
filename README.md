@@ -72,7 +72,7 @@ Google OAuth callback URL:
 http://localhost:3000/api/auth/callback/google
 ```
 
-Nusend uses Google-only Better Auth login with public signup disabled. Precreate the instance owner with `auth:bootstrap`; unknown Google accounts should be rejected. Programmatic clients should send user-owned API keys via `x-api-key`; API keys require `mailings:create` for mailing creation.
+Nusend uses Google-only Better Auth login with public signup disabled. Precreate the instance owner with `auth:bootstrap`; unknown Google accounts should be rejected. Programmatic clients should send user-owned API keys via `x-api-key`; API keys require `mailings:create` for mailing creation and `operations:read` for read-only operations inspection.
 
 ## Mailings API
 
@@ -140,6 +140,36 @@ Success response:
 ```
 
 A request that resolves to no sendable recipients returns `422 empty_recipient_set`, including when all recipients are suppressed. Suppressed recipients in a partially sendable mailing still get persisted `deliveries` rows, so `counts.deliveries = counts.queued + counts.suppressed`. `scope=all` suppressions block transactional and marketing mail; marketing/list suppressions only block marketing mail.
+
+## Operations inspection
+
+Read-only inspection endpoints help validate SES sends without querying SQLite directly:
+
+```txt
+GET /api/operations/summary
+GET /api/operations/deliveries
+GET /api/operations/deliveries/:id
+```
+
+A Better Auth session owner can access these endpoints. API keys need `operations:read`.
+
+```sh
+curl -H 'x-api-key: nusend_...' http://localhost:3000/api/operations/summary
+curl -H 'x-api-key: nusend_...' \
+  'http://localhost:3000/api/operations/deliveries?issue=failed_or_ambiguous'
+curl -H 'x-api-key: nusend_...' \
+  http://localhost:3000/api/operations/deliveries/<delivery-id>
+```
+
+Manual transactional SES validation flow:
+
+1. create a transactional mailing
+2. run `pnpm --filter @nusend/service worker:send:once`
+3. inspect `/api/operations/summary`
+4. inspect `/api/operations/deliveries/<delivery-id>`
+5. verify the SES message ID or failure/ambiguous reason
+
+Responses include operational metadata but omit mailing HTML/text, recipient `vars_json`, auth/session data, and API keys.
 
 ## Sending
 

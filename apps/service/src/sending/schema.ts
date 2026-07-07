@@ -3,17 +3,24 @@ import { Data } from "effect";
 import type { MailingPurpose } from "../mailings/schema.ts";
 import type { QueueJob } from "../queue/schema.ts";
 
-export type DeliveryStatus =
-  | "scheduled"
-  | "queued"
-  | "sending"
-  | "sent"
-  | "delivered"
-  | "bounced"
-  | "complained"
-  | "failed"
-  | "suppressed"
-  | "cancelled";
+// Mirrors the deliveries.status SQLite CHECK constraint in 0001_initial_schema.sql.
+export const DeliveryStatusValues = [
+  "scheduled",
+  "queued",
+  "sending",
+  "sent",
+  "delivered",
+  "bounced",
+  "complained",
+  "failed",
+  "suppressed",
+  "cancelled",
+] as const;
+export type DeliveryStatus = (typeof DeliveryStatusValues)[number];
+
+// Mirrors the send_attempts.status SQLite CHECK constraint in 0001_initial_schema.sql.
+export const SendAttemptStatusValues = ["started", "succeeded", "failed", "ambiguous"] as const;
+export type SendAttemptStatus = (typeof SendAttemptStatusValues)[number];
 
 export type DeliveryContext = {
   readonly delivery: {

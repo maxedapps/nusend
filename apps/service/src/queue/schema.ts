@@ -3,17 +3,20 @@
 // defect, not an expected error.
 import { Schema } from "effect";
 
-export const JobKind = Schema.Literals(["send_delivery"]);
+export const JobKindValues = ["send_delivery"] as const;
+export const JobKind = Schema.Literals(JobKindValues);
 export type JobKind = typeof JobKind.Type;
 
-export const JobState = Schema.Literals([
+// Mirrors the jobs.state SQLite CHECK constraint in 0001_initial_schema.sql.
+export const JobStateValues = [
   "queued",
   "leased",
   "succeeded",
   "failed",
   "dead",
   "cancelled",
-]);
+] as const;
+export const JobState = Schema.Literals(JobStateValues);
 export type JobState = typeof JobState.Type;
 
 // Matches the aliased RETURNING column list in jobs.ts verbatim.

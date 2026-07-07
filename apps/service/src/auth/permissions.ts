@@ -1,5 +1,6 @@
 export const authStatements = {
   mailings: ["create"],
+  operations: ["read"],
 } as const;
 
 export type PermissionSet = Partial<Record<keyof typeof authStatements, string[]>>;

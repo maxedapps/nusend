@@ -3,6 +3,7 @@ import { Hono } from "hono";
 
 import { errorEnvelope, runRoute, type AppRuntime } from "./http/respond.ts";
 import { createMailingsRoutes } from "./mailings/routes.ts";
+import { createOperationsRoutes } from "./operations/routes.ts";
 import { Auth } from "./services/auth.ts";
 import { Database } from "./services/database.ts";
 
@@ -40,6 +41,7 @@ export function createApp(options: AppOptions): Hono {
   );
 
   app.route("/api/mailings", createMailingsRoutes({ runtime: options.runtime }));
+  app.route("/api/operations", createOperationsRoutes({ runtime: options.runtime }));
 
   app.notFound((context) => context.json(errorEnvelope("not_found", "Not found."), 404));
 

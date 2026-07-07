@@ -26,6 +26,10 @@ export class ListNotFoundError extends Data.TaggedError("ListNotFoundError")<{
   readonly listId: string;
 }> {}
 
+export class NotFoundError extends Data.TaggedError("NotFoundError")<{
+  readonly message: string;
+}> {}
+
 export class EmptyRecipientSetError extends Data.TaggedError("EmptyRecipientSetError")<{
   readonly reason: string;
 }> {}

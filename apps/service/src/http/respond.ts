@@ -11,6 +11,7 @@ import type {
   IdempotencyConflictError,
   RecipientLimitExceededError,
   ListNotFoundError,
+  NotFoundError,
   RequestValidationError,
   UnauthenticatedError,
 } from "../errors.ts";
@@ -32,6 +33,7 @@ export type RouteError =
   | IdempotencyConflictError
   | RecipientLimitExceededError
   | ListNotFoundError
+  | NotFoundError
   | RequestValidationError
   | UnauthenticatedError;
 
@@ -118,6 +120,8 @@ export async function runRoute<A>(
         ),
       ListNotFoundError: () =>
         Effect.succeed(context.json(errorEnvelope("not_found", "List not found."), 404)),
+      NotFoundError: (error) =>
+        Effect.succeed(context.json(errorEnvelope("not_found", error.message), 404)),
       RequestValidationError: (error) =>
         Effect.succeed(context.json(errorEnvelope("invalid_request", error.message), 400)),
       UnauthenticatedError: (error) =>
