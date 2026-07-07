@@ -1,53 +1,33 @@
-import type { Database } from "bun:sqlite";
+// Durable job-queue transitions. Retry/backoff is deliberately encoded in SQL
+// (the run_at CASE ladder) so it survives process restarts — never converted to
+// Effect.retry/Schedule, which only cover in-process repetition.
+import { Effect, Schema } from "effect";
 
+import { JobNotLeasedError, type DatabaseError } from "../errors.ts";
+import { addSecondsIso, currentIso } from "../lib/iso-time.ts";
+import { Database, type DatabaseService } from "../services/database.ts";
 import { calculateBackoffSeconds } from "./backoff.ts";
-import { addSecondsIso, nowIso } from "./time.ts";
-
-export type JobKind = "process_ses_event" | "send_delivery";
-export type JobState = "queued" | "leased" | "succeeded" | "failed" | "dead" | "cancelled";
-
-export type QueueJob = {
-  id: string;
-  kind: JobKind;
-  state: JobState;
-  runAt: string;
-  attempts: number;
-  maxAttempts: number;
-  lockedBy: string | null;
-  lockedUntil: string | null;
-  refId: string;
-  lastError: string | null;
-  createdAt: string;
-  updatedAt: string;
-};
+import { QueueJob, type JobKind } from "./schema.ts";
 
 export type ClaimJobsOptions = {
   workerId: string;
-  now?: string;
   leaseSeconds?: number;
   limit?: number;
   kinds?: JobKind[];
 };
 
-export type JobTransitionResult =
-  | { ok: true; job: QueueJob }
-  | { ok: false; reason: "not_leased_by_worker" };
-
 export type CompleteJobOptions = {
   jobId: string;
   workerId: string;
-  now?: string;
 };
 
 export type FailJobOptions = {
   jobId: string;
   workerId: string;
   errorMessage: string;
-  now?: string;
 };
 
 export type ReleaseExpiredLeasesOptions = {
-  now?: string;
   limit?: number;
 };
 
@@ -71,15 +51,31 @@ const returningQueueJobSql = `
   updated_at AS updatedAt
 `;
 
-export function claimJobs(db: Database, options: ClaimJobsOptions): QueueJob[] {
-  const now = options.now ?? nowIso();
-  const limit = normalizeLimit(options.limit, defaultClaimLimit);
-  const leaseSeconds = options.leaseSeconds ?? defaultLeaseSeconds;
-  const lockedUntil = addSecondsIso(now, leaseSeconds);
-  const kindFilter = createKindFilter(options.kinds);
+// Row decoding failures are defects (§ CHECK constraints in the schema file).
+const decodeJob = (row: unknown): Effect.Effect<QueueJob> =>
+  Schema.decodeUnknownEffect(QueueJob)(row).pipe(Effect.orDie);
 
-  return db
-    .query<QueueJob, Record<string, string | number>>(
+export function claimJobs(
+  options: ClaimJobsOptions,
+): Effect.Effect<QueueJob[], DatabaseError, DatabaseService> {
+  return Effect.flatMap(currentIso, (now) => claimJobsAt(now, options));
+}
+
+// Snapshot variant used by the runner so release + claim share one `now`
+// (matching the pre-Effect runOnce, which read time once for both).
+export function claimJobsAt(
+  now: string,
+  options: ClaimJobsOptions,
+): Effect.Effect<QueueJob[], DatabaseError, DatabaseService> {
+  return Effect.gen(function* () {
+    const db = yield* Database;
+    const limit = normalizeLimit(options.limit, defaultClaimLimit);
+    const leaseSeconds = options.leaseSeconds ?? defaultLeaseSeconds;
+    const lockedUntil = addSecondsIso(now, leaseSeconds);
+    const kindFilter = createKindFilter(options.kinds);
+
+    const rows = yield* db.all(
+      "jobs:claim",
       `
         UPDATE jobs
         SET state = 'leased',
@@ -101,20 +97,29 @@ export function claimJobs(db: Database, options: ClaimJobsOptions): QueueJob[] {
           )
         RETURNING ${returningQueueJobSql};
       `,
-    )
-    .all({
-      ...kindFilter.params,
-      limit,
-      lockedUntil,
-      now,
-      workerId: options.workerId,
-    })
-    .sort(compareJobsBySchedule);
+      {
+        ...kindFilter.params,
+        limit,
+        lockedUntil,
+        now,
+        workerId: options.workerId,
+      },
+    );
+
+    const jobs = yield* Effect.forEach(rows, decodeJob);
+    return jobs.sort(compareJobsBySchedule);
+  });
 }
 
-export function completeJob(db: Database, options: CompleteJobOptions): JobTransitionResult {
-  const job = db
-    .query<QueueJob, { jobId: string; now: string; workerId: string }>(
+export function completeJob(
+  options: CompleteJobOptions,
+): Effect.Effect<QueueJob, DatabaseError | JobNotLeasedError, DatabaseService> {
+  return Effect.gen(function* () {
+    const db = yield* Database;
+    const now = yield* currentIso;
+
+    const row = yield* db.get(
+      "jobs:complete",
       `
         UPDATE jobs
         SET state = 'succeeded',
@@ -127,19 +132,27 @@ export function completeJob(db: Database, options: CompleteJobOptions): JobTrans
           AND locked_by = $workerId
         RETURNING ${returningQueueJobSql};
       `,
-    )
-    .get({ jobId: options.jobId, now: options.now ?? nowIso(), workerId: options.workerId });
+      { jobId: options.jobId, now, workerId: options.workerId },
+    );
 
-  if (!job) return { ok: false, reason: "not_leased_by_worker" };
+    if (row === null) {
+      return yield* Effect.fail(new JobNotLeasedError({ jobId: options.jobId }));
+    }
 
-  return { job, ok: true };
+    return yield* decodeJob(row);
+  });
 }
 
-export function failJob(db: Database, options: FailJobOptions): JobTransitionResult {
-  const now = options.now ?? nowIso();
-  const retrySchedule = createRetrySchedule(now);
-  const job = db
-    .query<QueueJob, Record<string, string>>(
+export function failJob(
+  options: FailJobOptions,
+): Effect.Effect<QueueJob, DatabaseError | JobNotLeasedError, DatabaseService> {
+  return Effect.gen(function* () {
+    const db = yield* Database;
+    const now = yield* currentIso;
+    const retrySchedule = createRetrySchedule(now);
+
+    const row = yield* db.get(
+      "jobs:fail",
       `
         UPDATE jobs
         SET state = CASE
@@ -159,30 +172,41 @@ export function failJob(db: Database, options: FailJobOptions): JobTransitionRes
           AND locked_by = $workerId
         RETURNING ${returningQueueJobSql};
       `,
-    )
-    .get({
-      ...retrySchedule.params,
-      jobId: options.jobId,
-      lastError: truncateError(options.errorMessage),
-      now,
-      workerId: options.workerId,
-    });
+      {
+        ...retrySchedule.params,
+        jobId: options.jobId,
+        lastError: truncateError(options.errorMessage),
+        now,
+        workerId: options.workerId,
+      },
+    );
 
-  if (!job) return { ok: false, reason: "not_leased_by_worker" };
+    if (row === null) {
+      return yield* Effect.fail(new JobNotLeasedError({ jobId: options.jobId }));
+    }
 
-  return { job, ok: true };
+    return yield* decodeJob(row);
+  });
 }
 
 export function releaseExpiredLeases(
-  db: Database,
   options: ReleaseExpiredLeasesOptions = {},
-): QueueJob[] {
-  const now = options.now ?? nowIso();
-  const limit = normalizeLimit(options.limit, defaultReleaseLimit);
-  const retrySchedule = createRetrySchedule(now);
+): Effect.Effect<QueueJob[], DatabaseError, DatabaseService> {
+  return Effect.flatMap(currentIso, (now) => releaseExpiredLeasesAt(now, options));
+}
 
-  return db
-    .query<QueueJob, Record<string, string | number>>(
+// Snapshot variant used by the runner (see claimJobsAt).
+export function releaseExpiredLeasesAt(
+  now: string,
+  options: ReleaseExpiredLeasesOptions = {},
+): Effect.Effect<QueueJob[], DatabaseError, DatabaseService> {
+  return Effect.gen(function* () {
+    const db = yield* Database;
+    const limit = normalizeLimit(options.limit, defaultReleaseLimit);
+    const retrySchedule = createRetrySchedule(now);
+
+    const rows = yield* db.all(
+      "jobs:release-expired",
       `
         UPDATE jobs
         SET state = CASE
@@ -208,8 +232,11 @@ export function releaseExpiredLeases(
           )
         RETURNING ${returningQueueJobSql};
       `,
-    )
-    .all({ ...retrySchedule.params, limit, now });
+      { ...retrySchedule.params, limit, now },
+    );
+
+    return yield* Effect.forEach(rows, decodeJob);
+  });
 }
 
 function normalizeLimit(limit: number | undefined, fallback: number): number {

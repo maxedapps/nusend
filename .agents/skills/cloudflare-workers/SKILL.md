@@ -8,6 +8,11 @@ metadata:
 
 # Cloudflare Workers
 
+> **Dormant for this repo (2026-07):** Nusend reverted from Cloudflare Workers to a
+> Bun/VPS deployment; no Worker/Wrangler/D1 code exists in `apps/service`. Keep this
+> skill for a possible future Cloudflare R2 assets phase (S3-compatible API), which
+> may revive the R2/provisioning sections.
+
 ## Goal
 
 Help agents make correct Cloudflare Workers platform changes, avoiding local/remote data mistakes, stale Wrangler patterns, insecure logging, and runtime mismatch bugs.

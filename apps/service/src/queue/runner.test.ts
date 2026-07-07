@@ -1,85 +1,106 @@
-import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+// Scenario assertion values are ported 1:1 from the pre-Effect bun-scenario
+// bodies — all five counter paths (succeeded / failed / dead / stale-complete /
+// stale-fail) stay covered.
+import { Effect } from "effect";
+import { TestClock } from "effect/testing";
+import { describe, expect, it } from "vitest";
 
-import { cleanupBunScenarios, runBunScenario } from "../testing/bun-scenario.ts";
-
-const serviceRoot = fileURLToPath(new URL("../../", import.meta.url));
-
-afterEach(() => cleanupBunScenarios());
+import { Database } from "../services/database.ts";
+import { runTest, steppingClockLayer } from "../testing/layers.ts";
+import { seedJob } from "../testing/queue-fixtures.ts";
+import { drainOnce, runOnce } from "./runner.ts";
 
 describe("queue runner", () => {
-  it("completes jobs after a successful processor", () => {
-    const result = runBunScenario(
-      scenarioScript(`
-        const db = createMigratedDatabase();
-        seedJob(db, { id: "job_1" });
-        const seen = [];
-        const result = await runOnce({
-          db,
-          now: fixedNow(["2026-07-03T12:00:00.000Z", "2026-07-03T12:00:01.000Z"]),
-          processJob: async (job) => {
-            seen.push({ attempts: job.attempts, id: job.id, state: job.state });
-          },
+  it("completes jobs after a successful processor", async () => {
+    const seen: Array<{ attempts: number; id: string; state: string }> = [];
+
+    const outcome = await runTest(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(Date.parse("2026-07-03T12:00:00.000Z"));
+        yield* seedJob({ id: "job_1" });
+
+        const result = yield* runOnce({
+          processJob: (job) =>
+            Effect.gen(function* () {
+              seen.push({ attempts: job.attempts, id: job.id, state: job.state });
+              yield* TestClock.setTime(Date.parse("2026-07-03T12:00:01.000Z"));
+            }),
           workerId: "worker_1",
         });
 
-        assertEqual(seen, [{ attempts: 1, id: "job_1", state: "leased" }]);
-        assertEqual(result, { claimed: 1, dead: 0, failed: 0, released: 0, skippedStale: 0, succeeded: 1 });
-        assertEqual(selectSingle(db, "SELECT state, locked_by AS lockedBy FROM jobs WHERE id = 'job_1';"), {
-          lockedBy: null,
-          state: "succeeded",
-        });
-        db.close();
-      `),
-      serviceRoot,
+        const db = yield* Database;
+        return {
+          result,
+          row: yield* db.get(
+            "assert:row",
+            "SELECT state, locked_by AS lockedBy FROM jobs WHERE id = 'job_1';",
+          ),
+        };
+      }),
     );
 
-    expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain("OK");
+    expect(seen).toEqual([{ attempts: 1, id: "job_1", state: "leased" }]);
+    expect(outcome.result).toEqual({
+      claimed: 1,
+      dead: 0,
+      failed: 0,
+      released: 0,
+      skippedStale: 0,
+      succeeded: 1,
+    });
+    expect(outcome.row).toEqual({ lockedBy: null, state: "succeeded" });
   });
 
-  it("requeues or dead-letters jobs when processors throw", () => {
-    const result = runBunScenario(
-      scenarioScript(`
-        const db = createMigratedDatabase();
-        seedJob(db, { id: "retry" });
-        seedJob(db, { id: "dead", maxAttempts: 1 });
-        const result = await runOnce({
+  it("requeues or dead-letters jobs when processors fail", async () => {
+    const outcome = await runTest(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(Date.parse("2026-07-03T12:00:00.000Z"));
+        yield* seedJob({ id: "retry" });
+        yield* seedJob({ id: "dead", maxAttempts: 1 });
+
+        const result = yield* runOnce({
           batchSize: 2,
-          db,
-          now: () => "2026-07-03T12:00:00.000Z",
-          processJob: async () => {
-            throw new Error("send failed");
-          },
+          processJob: () => Effect.fail(new Error("send failed")),
           workerId: "worker_1",
         });
 
-        assertEqual(result, { claimed: 2, dead: 1, failed: 1, released: 0, skippedStale: 0, succeeded: 0 });
-        assertEqual(selectAll(db, "SELECT id, state, run_at AS runAt, last_error AS lastError FROM jobs ORDER BY id;"), [
-          { id: "dead", lastError: "send failed", runAt: "2026-07-03T11:00:00.000Z", state: "dead" },
-          { id: "retry", lastError: "send failed", runAt: "2026-07-03T12:01:00.000Z", state: "queued" },
-        ]);
-        db.close();
-      `),
-      serviceRoot,
+        const db = yield* Database;
+        return {
+          result,
+          rows: yield* db.all(
+            "assert:rows",
+            "SELECT id, state, run_at AS runAt, last_error AS lastError FROM jobs ORDER BY id;",
+          ),
+        };
+      }),
     );
 
-    expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain("OK");
+    expect(outcome.result).toEqual({
+      claimed: 2,
+      dead: 1,
+      failed: 1,
+      released: 0,
+      skippedStale: 0,
+      succeeded: 0,
+    });
+    expect(outcome.rows).toEqual([
+      { id: "dead", lastError: "send failed", runAt: "2026-07-03T11:00:00.000Z", state: "dead" },
+      { id: "retry", lastError: "send failed", runAt: "2026-07-03T12:01:00.000Z", state: "queued" },
+    ]);
   });
 
-  it("releases expired leases before claiming jobs", () => {
-    const result = runBunScenario(
-      scenarioScript(`
-        const db = createMigratedDatabase();
-        seedJob(db, {
+  it("releases expired leases before claiming jobs", async () => {
+    const outcome = await runTest(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(Date.parse("2026-07-03T12:00:00.000Z"));
+        yield* seedJob({
           attempts: 1,
           id: "expired",
           lockedBy: "old_worker",
           lockedUntil: "2026-07-03T11:59:00.000Z",
           state: "leased",
         });
-        seedJob(db, {
+        yield* seedJob({
           attempts: 1,
           id: "expired_dead",
           lockedBy: "old_worker",
@@ -87,178 +108,166 @@ describe("queue runner", () => {
           maxAttempts: 1,
           state: "leased",
         });
-        const result = await runOnce({
-          db,
-          now: fixedNow(["2026-07-03T12:00:00.000Z"]),
-          processJob: async () => {},
+
+        const result = yield* runOnce({
+          processJob: () => Effect.void,
           workerId: "worker_1",
         });
 
-        assertEqual(result, { claimed: 0, dead: 1, failed: 0, released: 2, skippedStale: 0, succeeded: 0 });
-        assertEqual(selectSingle(db, "SELECT state, run_at AS runAt, locked_by AS lockedBy FROM jobs WHERE id = 'expired';"), {
-          lockedBy: null,
-          runAt: "2026-07-03T12:01:00.000Z",
-          state: "queued",
-        });
-        db.close();
-      `),
-      serviceRoot,
+        const db = yield* Database;
+        return {
+          result,
+          row: yield* db.get(
+            "assert:row",
+            "SELECT state, run_at AS runAt, locked_by AS lockedBy FROM jobs WHERE id = 'expired';",
+          ),
+        };
+      }),
     );
 
-    expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain("OK");
+    expect(outcome.result).toEqual({
+      claimed: 0,
+      dead: 1,
+      failed: 0,
+      released: 2,
+      skippedStale: 0,
+      succeeded: 0,
+    });
+    expect(outcome.row).toEqual({
+      lockedBy: null,
+      runAt: "2026-07-03T12:01:00.000Z",
+      state: "queued",
+    });
   });
 
-  it("does not crash when completion or failure observes a stale lease", () => {
-    const result = runBunScenario(
-      scenarioScript(`
-        const successDb = createMigratedDatabase();
-        seedJob(successDb, { id: "success_stale" });
-        const success = await runOnce({
-          db: successDb,
-          now: fixedNow(["2026-07-03T12:00:00.000Z", "2026-07-03T12:00:01.000Z"]),
-          processJob: async (job) => {
-            successDb.query("UPDATE jobs SET locked_by = 'other' WHERE id = $id;").run({ id: job.id });
-          },
-          workerId: "worker_1",
-        });
-        assertEqual(success.skippedStale, 1);
-        successDb.close();
+  it("does not crash when completion observes a stale lease", async () => {
+    const result = await runTest(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(Date.parse("2026-07-03T12:00:00.000Z"));
+        yield* seedJob({ id: "success_stale" });
 
-        const failureDb = createMigratedDatabase();
-        seedJob(failureDb, { id: "failure_stale" });
-        const failure = await runOnce({
-          db: failureDb,
-          now: fixedNow(["2026-07-03T12:00:00.000Z", "2026-07-03T12:00:01.000Z"]),
-          processJob: async (job) => {
-            failureDb.query("UPDATE jobs SET locked_by = 'other' WHERE id = $id;").run({ id: job.id });
-            throw new Error("boom");
-          },
+        return yield* runOnce({
+          processJob: (job) =>
+            Effect.gen(function* () {
+              const db = yield* Database;
+              yield* db.run("steal-lease", "UPDATE jobs SET locked_by = 'other' WHERE id = $id;", {
+                id: job.id,
+              });
+              yield* TestClock.setTime(Date.parse("2026-07-03T12:00:01.000Z"));
+            }),
           workerId: "worker_1",
         });
-        assertEqual(failure.skippedStale, 1);
-        failureDb.close();
-      `),
-      serviceRoot,
+      }),
     );
 
-    expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain("OK");
+    expect(result.skippedStale).toBe(1);
   });
 
-  it("drains repeatedly until no due jobs remain", () => {
-    const result = runBunScenario(
-      scenarioScript(`
-        const db = createMigratedDatabase();
-        seedJob(db, { id: "job_1" });
-        seedJob(db, { id: "job_2" });
-        const result = await drainOnce({
+  it("does not crash when failure handling observes a stale lease", async () => {
+    const result = await runTest(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(Date.parse("2026-07-03T12:00:00.000Z"));
+        yield* seedJob({ id: "failure_stale" });
+
+        return yield* runOnce({
+          processJob: (job) =>
+            Effect.gen(function* () {
+              const db = yield* Database;
+              yield* db.run("steal-lease", "UPDATE jobs SET locked_by = 'other' WHERE id = $id;", {
+                id: job.id,
+              });
+              yield* TestClock.setTime(Date.parse("2026-07-03T12:00:01.000Z"));
+              return yield* Effect.die(new Error("boom"));
+            }),
+          workerId: "worker_1",
+        });
+      }),
+    );
+
+    expect(result.skippedStale).toBe(1);
+  });
+
+  it("shares one clock snapshot for release + claim and reads a later one to complete", async () => {
+    const outcome = await runTest(
+      Effect.gen(function* () {
+        yield* seedJob({ id: "due", runAt: "2026-07-03T11:00:00.000Z" });
+        // Between the snapshot and any later clock read — must NOT be claimed.
+        yield* seedJob({ id: "late", runAt: "2026-07-03T12:00:00.500Z" });
+        yield* seedJob({
+          attempts: 1,
+          id: "expired",
+          lockedBy: "old_worker",
+          lockedUntil: "2026-07-03T11:59:00.000Z",
+          state: "leased",
+        });
+
+        const result = yield* runOnce({
+          kinds: ["send_delivery"],
+          processJob: () => Effect.void,
+          workerId: "worker_1",
+        });
+
+        const db = yield* Database;
+        return {
+          due: yield* db.get(
+            "assert:due",
+            "SELECT state, updated_at AS updatedAt FROM jobs WHERE id = 'due';",
+          ),
+          expired: yield* db.get(
+            "assert:expired",
+            "SELECT state, run_at AS runAt, updated_at AS updatedAt FROM jobs WHERE id = 'expired';",
+          ),
+          late: yield* db.get("assert:late", "SELECT state FROM jobs WHERE id = 'late';"),
+          result,
+        };
+      }),
+      // First read = the runOnce snapshot (release + claim); later reads = complete.
+      { clock: steppingClockLayer(["2026-07-03T12:00:00.000Z", "2026-07-03T12:00:01.000Z"]) },
+    );
+
+    expect(outcome.result).toEqual({
+      claimed: 1,
+      dead: 0,
+      failed: 0,
+      released: 1,
+      skippedStale: 0,
+      succeeded: 1,
+    });
+    expect(outcome.late).toEqual({ state: "queued" });
+    // Release used the snapshot: backoff (60s at attempt 1) counts from 12:00:00.000.
+    expect(outcome.expired).toEqual({
+      runAt: "2026-07-03T12:01:00.000Z",
+      state: "queued",
+      updatedAt: "2026-07-03T12:00:00.000Z",
+    });
+    // Completion read fresh, later time.
+    expect(outcome.due).toEqual({ state: "succeeded", updatedAt: "2026-07-03T12:00:01.000Z" });
+  });
+
+  it("drains repeatedly until no due jobs remain", async () => {
+    const result = await runTest(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(Date.parse("2026-07-03T12:00:00.000Z"));
+        yield* seedJob({ id: "job_1" });
+        yield* seedJob({ id: "job_2" });
+
+        return yield* drainOnce({
           batchSize: 1,
-          db,
-          now: fixedNow([
-            "2026-07-03T12:00:00.000Z",
-            "2026-07-03T12:00:01.000Z",
-            "2026-07-03T12:00:02.000Z",
-            "2026-07-03T12:00:03.000Z",
-            "2026-07-03T12:00:04.000Z",
-          ]),
-          processJob: async () => {},
+          processJob: () => Effect.void,
           workerId: "worker_1",
         });
-        assertEqual(result, {
-          claimed: 2,
-          dead: 0,
-          failed: 0,
-          iterations: 3,
-          maxIterationsReached: false,
-          released: 0,
-          skippedStale: 0,
-          succeeded: 2,
-        });
-        db.close();
-      `),
-      serviceRoot,
+      }),
     );
 
-    expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain("OK");
+    expect(result).toEqual({
+      claimed: 2,
+      dead: 0,
+      failed: 0,
+      iterations: 3,
+      maxIterationsReached: false,
+      released: 0,
+      skippedStale: 0,
+      succeeded: 2,
+    });
   });
 });
-
-function scenarioScript(body: string): string {
-  return `
-    import { mkdtempSync, rmSync, readFileSync } from "node:fs";
-    import { tmpdir } from "node:os";
-    import { join } from "node:path";
-    import { parseMigrationFile } from ${JSON.stringify(`${serviceRoot}src/db/migration-files.ts`)};
-    import { openDatabase } from ${JSON.stringify(`${serviceRoot}src/db/index.ts`)};
-    import { drainOnce, runOnce } from ${JSON.stringify(`${serviceRoot}src/queue/runner.ts`)};
-
-    function createMigratedDatabase() {
-      const directory = mkdtempSync(join(tmpdir(), "nusend-queue-runner-db-"));
-      const db = openDatabase(join(directory, "queue.sqlite"));
-      db.__temporaryDirectory = directory;
-      const migration = parseMigrationFile("0001_initial_schema", readFileSync(${JSON.stringify(`${serviceRoot}src/db/migrations/sql/0001_initial_schema.sql`)}, "utf8"));
-      db.run(migration.upSql);
-      return db;
-    }
-
-    function closeDatabase(db) {
-      const directory = db.__temporaryDirectory;
-      db.close();
-      rmSync(directory, { force: true, recursive: true });
-    }
-
-    function seedJob(db, options) {
-      const id = options.id;
-      const now = options.createdAt ?? "2026-07-03T11:00:00.000Z";
-      db.query(\`
-        INSERT INTO jobs (id, kind, state, run_at, attempts, max_attempts, locked_by, locked_until, ref_id, last_error, created_at, updated_at)
-        VALUES ($id, $kind, $state, $runAt, $attempts, $maxAttempts, $lockedBy, $lockedUntil, $refId, NULL, $createdAt, $updatedAt);
-      \`).run({
-        attempts: options.attempts ?? 0,
-        createdAt: now,
-        id,
-        kind: options.kind ?? "send_delivery",
-        lockedBy: options.lockedBy ?? null,
-        lockedUntil: options.lockedUntil ?? null,
-        maxAttempts: options.maxAttempts ?? 10,
-        refId: options.refId ?? "ref_" + id,
-        runAt: options.runAt ?? "2026-07-03T11:00:00.000Z",
-        state: options.state ?? "queued",
-        updatedAt: now,
-      });
-    }
-
-    function fixedNow(values) {
-      return () => values.shift() ?? values.at(-1) ?? "2026-07-03T12:00:00.000Z";
-    }
-
-    function selectSingle(db, sql) {
-      return db.query(sql).get();
-    }
-
-    function selectAll(db, sql) {
-      return db.query(sql).all();
-    }
-
-    function assertEqual(actual, expected) {
-      const actualJson = stableJson(actual);
-      const expectedJson = stableJson(expected);
-      if (actualJson !== expectedJson) {
-        throw new Error("Assertion failed:\\nactual: " + actualJson + "\\nexpected: " + expectedJson);
-      }
-    }
-
-    function stableJson(value) {
-      if (Array.isArray(value)) return "[" + value.map(stableJson).join(",") + "]";
-      if (value && typeof value === "object") {
-        return "{" + Object.keys(value).sort().map((key) => JSON.stringify(key) + ":" + stableJson(value[key])).join(",") + "}";
-      }
-      return JSON.stringify(value);
-    }
-
-    ${body.replaceAll("db.close();", "closeDatabase(db);").replaceAll("successDb.close();", "closeDatabase(successDb);").replaceAll("failureDb.close();", "closeDatabase(failureDb);")}
-    console.log("OK");
-  `;
-}

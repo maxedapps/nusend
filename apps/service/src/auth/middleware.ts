@@ -1,10 +1,17 @@
-import type { Database } from "bun:sqlite";
-import type { Context, MiddlewareHandler } from "hono";
+import { Cause, Effect, Exit } from "effect";
+import type { MiddlewareHandler } from "hono";
 
-import type { AuthInstance } from "./auth.ts";
-import { findSingleOrganizationForUser, organizationApiKeyConfigId } from "./auth.ts";
-import type { PermissionSet } from "./permissions.ts";
-import { hasPermissions, permissionsForRole } from "./permissions.ts";
+import {
+  ForbiddenError,
+  UnauthenticatedError,
+  type AuthError,
+  type DatabaseError,
+} from "../errors.ts";
+import { Auth, type AuthService } from "../services/auth.ts";
+import { Database, type DatabaseService } from "../services/database.ts";
+import { errorEnvelope, logCause, type AppRuntime } from "../http/respond.ts";
+import { singleOrganizationForUserSql } from "./auth.ts";
+import { hasPermissions, permissionsForRole, type PermissionSet } from "./permissions.ts";
 import type { Principal } from "./principal.ts";
 
 type AuthContext = {
@@ -13,132 +20,160 @@ type AuthContext = {
   };
 };
 
-type AuthMiddlewareOptions = {
-  auth: AuthInstance;
-  db: Database;
+export function resolvePrincipal(
+  headers: Headers,
+  required?: PermissionSet,
+): Effect.Effect<
+  Principal,
+  AuthError | DatabaseError | ForbiddenError | UnauthenticatedError,
+  AuthService | DatabaseService
+> {
+  const apiKey = headers.get("x-api-key");
+
+  if (apiKey) {
+    return resolveApiKeyPrincipal(apiKey, required);
+  }
+
+  return resolveSessionPrincipal(headers, required);
+}
+
+type RequirePrincipalOptions = {
+  runtime: AppRuntime;
   permissions?: PermissionSet;
 };
 
-export function requirePrincipal(options: AuthMiddlewareOptions): MiddlewareHandler<AuthContext> {
+// Thin Hono shell: runs the resolvePrincipal program and maps its typed
+// failures to the exact envelopes the API has always returned.
+export function requirePrincipal(options: RequirePrincipalOptions): MiddlewareHandler<AuthContext> {
   return async (context, next) => {
-    const principal = await resolvePrincipal(context, options);
+    const internalError = (cause: Cause.Cause<unknown>): Response => {
+      logCause(cause);
+      return context.json(errorEnvelope("internal_error", "Internal error."), 500);
+    };
 
-    if (!principal.ok) {
-      return context.json(
-        {
-          error: {
-            code: principal.status === 401 ? "unauthenticated" : "forbidden",
-            message: principal.message,
-          },
-        },
-        principal.status,
-      );
-    }
+    const program = resolvePrincipal(context.req.raw.headers, options.permissions).pipe(
+      Effect.map((principal) => ({ kind: "principal" as const, principal })),
+      Effect.catchTags({
+        AuthError: (error) =>
+          Effect.succeed({ kind: "response" as const, response: internalError(Cause.fail(error)) }),
+        DatabaseError: (error) =>
+          Effect.succeed({ kind: "response" as const, response: internalError(Cause.fail(error)) }),
+        ForbiddenError: (error) =>
+          Effect.succeed({
+            kind: "response" as const,
+            response: context.json(errorEnvelope("forbidden", error.message), 403),
+          }),
+        UnauthenticatedError: (error) =>
+          Effect.succeed({
+            kind: "response" as const,
+            response: context.json(errorEnvelope("unauthenticated", error.message), 401),
+          }),
+      }),
+    );
 
-    context.set("principal", principal.principal);
+    const exit = await options.runtime.runPromiseExit(program);
+
+    if (Exit.isFailure(exit)) return internalError(exit.cause);
+    if (exit.value.kind === "response") return exit.value.response;
+
+    context.set("principal", exit.value.principal);
     await next();
   };
 }
 
-async function resolvePrincipal(
-  context: Context,
-  options: AuthMiddlewareOptions,
-): Promise<{ ok: true; principal: Principal } | { message: string; ok: false; status: 401 | 403 }> {
-  const apiKey = context.req.header("x-api-key");
-
-  if (apiKey) {
-    return resolveApiKeyPrincipal(apiKey, options);
-  }
-
-  return resolveSessionPrincipal(context.req.raw.headers, options);
-}
-
-async function resolveApiKeyPrincipal(
+function resolveApiKeyPrincipal(
   key: string,
-  options: AuthMiddlewareOptions,
-): Promise<{ ok: true; principal: Principal } | { message: string; ok: false; status: 401 | 403 }> {
-  const result = await options.auth.api.verifyApiKey({
-    body: {
-      configId: organizationApiKeyConfigId,
-      key,
-    },
-  });
+  required: PermissionSet | undefined,
+): Effect.Effect<Principal, AuthError | ForbiddenError | UnauthenticatedError, AuthService> {
+  return Effect.gen(function* () {
+    const auth = yield* Auth;
+    const result = yield* auth.verifyApiKey(key);
 
-  if (!result.valid || !result.key) {
-    return { message: "Invalid API key.", ok: false, status: 401 };
-  }
+    if (!result.valid || !result.key) {
+      return yield* Effect.fail(new UnauthenticatedError({ message: "Invalid API key." }));
+    }
 
-  if (!hasPermissions(result.key.permissions, options.permissions)) {
-    return { message: "API key does not have the required permissions.", ok: false, status: 403 };
-  }
+    if (!hasPermissions(result.key.permissions, required)) {
+      return yield* Effect.fail(
+        new ForbiddenError({ message: "API key does not have the required permissions." }),
+      );
+    }
 
-  return {
-    ok: true,
-    principal: {
+    return {
       apiKeyId: result.key.id,
-      kind: "api_key",
+      kind: "api_key" as const,
       organizationId: result.key.referenceId,
       permissions: result.key.permissions ?? {},
-    },
-  };
-}
-
-async function resolveSessionPrincipal(
-  headers: Headers,
-  options: AuthMiddlewareOptions,
-): Promise<{ ok: true; principal: Principal } | { message: string; ok: false; status: 401 | 403 }> {
-  const sessionData = await options.auth.api.getSession({ headers });
-
-  if (!sessionData) {
-    return { message: "Authentication required.", ok: false, status: 401 };
-  }
-
-  const session = sessionData.session as { activeOrganizationId?: string | null; userId: string };
-  const organizationId =
-    session.activeOrganizationId ?? findSingleOrganizationForUser(options.db, session.userId);
-
-  if (!organizationId) {
-    return { message: "No active organization found for this session.", ok: false, status: 403 };
-  }
-
-  const member = findOrganizationMember(options.db, organizationId, session.userId);
-
-  if (!member) {
-    return {
-      message: "Session is not a member of the active organization.",
-      ok: false,
-      status: 403,
     };
-  }
-
-  if (!hasPermissions(permissionsForRole(member.role), options.permissions)) {
-    return { message: "Session does not have the required permissions.", ok: false, status: 403 };
-  }
-
-  return {
-    ok: true,
-    principal: {
-      kind: "session",
-      organizationId,
-      role: member.role,
-      userId: session.userId,
-    },
-  };
+  });
 }
 
-function findOrganizationMember(
-  db: Database,
-  organizationId: string,
-  userId: string,
-): { role: string } | null {
-  const row = db
-    .query(
+function resolveSessionPrincipal(
+  headers: Headers,
+  required: PermissionSet | undefined,
+): Effect.Effect<
+  Principal,
+  AuthError | DatabaseError | ForbiddenError | UnauthenticatedError,
+  AuthService | DatabaseService
+> {
+  return Effect.gen(function* () {
+    const auth = yield* Auth;
+    const db = yield* Database;
+
+    const sessionData = yield* auth.getSession(headers);
+
+    if (!sessionData) {
+      return yield* Effect.fail(new UnauthenticatedError({ message: "Authentication required." }));
+    }
+
+    const session = sessionData.session;
+    const organizationId =
+      session.activeOrganizationId ?? (yield* findSingleOrganization(db, session.userId));
+
+    if (!organizationId) {
+      return yield* Effect.fail(
+        new ForbiddenError({ message: "No active organization found for this session." }),
+      );
+    }
+
+    const member = yield* db.get<{ role: string }>(
+      "auth:find-member",
       `SELECT role
        FROM organization_members
        WHERE organization_id = $organizationId AND user_id = $userId
        LIMIT 1;`,
-    )
-    .get({ organizationId, userId }) as { role: string } | null;
+      { organizationId, userId: session.userId },
+    );
 
-  return row;
+    if (!member) {
+      return yield* Effect.fail(
+        new ForbiddenError({ message: "Session is not a member of the active organization." }),
+      );
+    }
+
+    if (!hasPermissions(permissionsForRole(member.role), required)) {
+      return yield* Effect.fail(
+        new ForbiddenError({ message: "Session does not have the required permissions." }),
+      );
+    }
+
+    return {
+      kind: "session" as const,
+      organizationId,
+      role: member.role,
+      userId: session.userId,
+    };
+  });
+}
+
+function findSingleOrganization(
+  db: DatabaseService,
+  userId: string,
+): Effect.Effect<string | null, DatabaseError> {
+  return Effect.map(
+    db.all<{ organizationId: string }>("auth:single-organization", singleOrganizationForUserSql, {
+      userId,
+    }),
+    (rows) => (rows.length === 1 ? rows[0].organizationId : null),
+  );
 }

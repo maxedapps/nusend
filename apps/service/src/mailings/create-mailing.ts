@@ -1,11 +1,13 @@
-import type { Database } from "bun:sqlite";
+// Create a mailing: resolve recipients, apply suppression rules, and insert the
+// mailing + delivery + job rows — reads and writes inside ONE interactive
+// transaction (DB-only work, per the Database.transaction policy).
+import { Effect } from "effect";
 
-import type { CreateMailingInput, MailingPurpose } from "./validation.ts";
-
-type CreateMailingOptions = {
-  createId?: () => string;
-  now?: () => string;
-};
+import { EmptyRecipientSetError, ListNotFoundError, type DatabaseError } from "../errors.ts";
+import { currentIso } from "../lib/iso-time.ts";
+import { Database, type DatabaseService } from "../services/database.ts";
+import { IdGenerator, type IdGeneratorService } from "../services/ids.ts";
+import type { CreateMailingInput, MailingPurpose } from "./schema.ts";
 
 type RecipientCandidate = {
   contactId: string | null;
@@ -27,232 +29,241 @@ export type CreateMailingResult = {
   };
 };
 
-export type CreateMailingErrorCode = "empty_recipient_set" | "list_not_found";
+const insertMailingSql = `INSERT INTO mailings (
+  id,
+  purpose,
+  state,
+  name,
+  subject,
+  html,
+  text,
+  list_id,
+  scheduled_at,
+  created_at,
+  updated_at
+) VALUES (
+  $id,
+  $purpose,
+  'scheduled',
+  $name,
+  $subject,
+  $html,
+  $text,
+  $listId,
+  $scheduledAt,
+  $now,
+  $now
+);`;
 
-export class CreateMailingError extends Error {
-  readonly code: CreateMailingErrorCode;
+const insertDeliverySql = `INSERT INTO deliveries (
+  id,
+  mailing_id,
+  email,
+  contact_id,
+  vars_json,
+  status,
+  created_at,
+  updated_at
+) VALUES (
+  $id,
+  $mailingId,
+  $email,
+  $contactId,
+  $varsJson,
+  $status,
+  $now,
+  $now
+);`;
 
-  constructor(code: CreateMailingErrorCode, message: string) {
-    super(message);
-    this.code = code;
-    this.name = "CreateMailingError";
-  }
-}
+const insertJobSql = `INSERT INTO jobs (
+  id,
+  kind,
+  state,
+  run_at,
+  ref_id,
+  created_at,
+  updated_at
+) VALUES (
+  $id,
+  'send_delivery',
+  'queued',
+  $runAt,
+  $refId,
+  $now,
+  $now
+);`;
 
 export function createMailing(
-  db: Database,
   input: CreateMailingInput,
-  options: CreateMailingOptions = {},
-): CreateMailingResult {
-  const createId = options.createId ?? (() => crypto.randomUUID());
-  const now = options.now?.() ?? new Date().toISOString();
-  const effectiveScheduledAt = input.scheduledAt ?? now;
+): Effect.Effect<
+  CreateMailingResult,
+  DatabaseError | EmptyRecipientSetError | ListNotFoundError,
+  DatabaseService | IdGeneratorService
+> {
+  return Effect.gen(function* () {
+    const db = yield* Database;
+    const ids = yield* IdGenerator;
+    const now = yield* currentIso;
+    const effectiveScheduledAt = input.scheduledAt ?? now;
 
-  const insertMailing = db.query(`INSERT INTO mailings (
-    id,
-    purpose,
-    state,
-    name,
-    subject,
-    html,
-    text,
-    list_id,
-    scheduled_at,
-    created_at,
-    updated_at
-  ) VALUES (
-    $id,
-    $purpose,
-    'scheduled',
-    $name,
-    $subject,
-    $html,
-    $text,
-    $listId,
-    $scheduledAt,
-    $now,
-    $now
-  );`);
-  const insertDelivery = db.query(`INSERT INTO deliveries (
-    id,
-    mailing_id,
-    email,
-    contact_id,
-    vars_json,
-    status,
-    created_at,
-    updated_at
-  ) VALUES (
-    $id,
-    $mailingId,
-    $email,
-    $contactId,
-    $varsJson,
-    $status,
-    $now,
-    $now
-  );`);
-  const insertJob = db.query(`INSERT INTO jobs (
-    id,
-    kind,
-    state,
-    run_at,
-    ref_id,
-    created_at,
-    updated_at
-  ) VALUES (
-    $id,
-    'send_delivery',
-    'queued',
-    $runAt,
-    $refId,
-    $now,
-    $now
-  );`);
+    return yield* db.transaction(
+      Effect.gen(function* () {
+        const recipients = yield* resolveRecipients(db, input);
 
-  const create = db.transaction(() => {
-    const recipients = resolveRecipients(db, input);
+        if (recipients.length === 0) {
+          return yield* Effect.fail(
+            new EmptyRecipientSetError({
+              reason: "Mailing has no subscribed recipient candidates.",
+            }),
+          );
+        }
 
-    if (recipients.length === 0) {
-      throw new CreateMailingError(
-        "empty_recipient_set",
-        "Mailing has no subscribed recipient candidates.",
-      );
-    }
+        const suppressedEmails = yield* findSuppressedEmails(db, {
+          emails: recipients.map((recipient) => recipient.email),
+          listId: input.listId,
+          purpose: input.purpose,
+        });
 
-    const suppressedEmails = findSuppressedEmails(db, {
-      emails: recipients.map((recipient) => recipient.email),
-      listId: input.listId,
-      purpose: input.purpose,
-    });
-    if (suppressedEmails.size >= recipients.length) {
-      throw new CreateMailingError(
-        "empty_recipient_set",
-        "Mailing has no sendable recipients after suppression checks.",
-      );
-    }
+        if (suppressedEmails.size >= recipients.length) {
+          return yield* Effect.fail(
+            new EmptyRecipientSetError({
+              reason: "Mailing has no sendable recipients after suppression checks.",
+            }),
+          );
+        }
 
-    const mailingId = createId();
+        const mailingId = yield* ids.next;
 
-    insertMailing.run({
-      html: input.html,
-      id: mailingId,
-      listId: input.listId,
-      name: input.name,
-      now,
-      purpose: input.purpose,
-      scheduledAt: effectiveScheduledAt,
-      subject: input.subject,
-      text: input.text,
-    });
+        yield* db.run("mailings:insert", insertMailingSql, {
+          html: input.html,
+          id: mailingId,
+          listId: input.listId,
+          name: input.name,
+          now,
+          purpose: input.purpose,
+          scheduledAt: effectiveScheduledAt,
+          subject: input.subject,
+          text: input.text,
+        });
 
-    let queued = 0;
-    let suppressed = 0;
+        let queued = 0;
+        let suppressed = 0;
 
-    for (const recipient of recipients) {
-      const deliveryId = createId();
-      const isSuppressed = suppressedEmails.has(recipient.email);
-      const status = isSuppressed ? "suppressed" : "queued";
+        for (const recipient of recipients) {
+          const deliveryId = yield* ids.next;
+          const isSuppressed = suppressedEmails.has(recipient.email);
+          const status = isSuppressed ? "suppressed" : "queued";
 
-      insertDelivery.run({
-        contactId: recipient.contactId,
-        email: recipient.email,
-        id: deliveryId,
-        mailingId,
-        now,
-        status,
-        varsJson: recipient.varsJson,
-      });
+          yield* db.run("deliveries:insert", insertDeliverySql, {
+            contactId: recipient.contactId,
+            email: recipient.email,
+            id: deliveryId,
+            mailingId,
+            now,
+            status,
+            varsJson: recipient.varsJson,
+          });
 
-      if (isSuppressed) {
-        suppressed += 1;
-        continue;
-      }
+          if (isSuppressed) {
+            suppressed += 1;
+            continue;
+          }
 
-      queued += 1;
-      insertJob.run({
-        id: createId(),
-        now,
-        refId: deliveryId,
-        runAt: effectiveScheduledAt,
-      });
-    }
+          queued += 1;
+          yield* db.run("jobs:insert", insertJobSql, {
+            id: yield* ids.next,
+            now,
+            refId: deliveryId,
+            runAt: effectiveScheduledAt,
+          });
+        }
 
-    return {
-      counts: {
-        deliveries: recipients.length,
-        queued,
-        suppressed,
-      },
-      mailing: {
-        id: mailingId,
-        purpose: input.purpose,
-        scheduledAt: effectiveScheduledAt,
-        state: "scheduled" as const,
-      },
-    };
+        return {
+          counts: {
+            deliveries: recipients.length,
+            queued,
+            suppressed,
+          },
+          mailing: {
+            id: mailingId,
+            purpose: input.purpose,
+            scheduledAt: effectiveScheduledAt,
+            state: "scheduled" as const,
+          },
+        };
+      }),
+    );
   });
-
-  return create();
 }
 
-function resolveRecipients(db: Database, input: CreateMailingInput): RecipientCandidate[] {
-  if (input.recipients) {
-    const contactIds = findContactIdsByEmail(
-      db,
-      input.recipients.map((recipient) => recipient.email),
+function resolveRecipients(
+  db: DatabaseService,
+  input: CreateMailingInput,
+): Effect.Effect<RecipientCandidate[], DatabaseError | ListNotFoundError> {
+  return Effect.gen(function* () {
+    if (input.recipients) {
+      const contactIds = yield* findContactIdsByEmail(
+        db,
+        input.recipients.map((recipient) => recipient.email),
+      );
+
+      return input.recipients.map((recipient) => ({
+        contactId: contactIds.get(recipient.email) ?? null,
+        email: recipient.email,
+        varsJson: recipient.varsJson,
+      }));
+    }
+
+    if (!input.listId) return [];
+
+    const list = yield* db.get(
+      "lists:find",
+      "SELECT 1 AS ok FROM lists WHERE id = $listId LIMIT 1;",
+      { listId: input.listId },
     );
 
-    return input.recipients.map((recipient) => ({
-      contactId: contactIds.get(recipient.email) ?? null,
-      email: recipient.email,
-      varsJson: recipient.varsJson,
-    }));
-  }
+    if (!list) {
+      return yield* Effect.fail(new ListNotFoundError({ listId: input.listId }));
+    }
 
-  if (!input.listId) return [];
-
-  const list = db.query("SELECT 1 FROM lists WHERE id = $listId LIMIT 1;").get({
-    listId: input.listId,
-  });
-
-  if (!list) {
-    throw new CreateMailingError("list_not_found", "List not found.");
-  }
-
-  const rows = db
-    .query(
+    const rows = yield* db.all<{ contactId: string; email: string }>(
+      "lists:recipients",
       `SELECT contacts.id AS contactId, lower(contacts.email) AS email
        FROM contacts
        INNER JOIN list_memberships ON list_memberships.contact_id = contacts.id
        WHERE list_memberships.list_id = $listId
          AND list_memberships.unsubscribed_at IS NULL
        ORDER BY contacts.email ASC;`,
-    )
-    .all({ listId: input.listId }) as { contactId: string; email: string }[];
+      { listId: input.listId },
+    );
 
-  return rows.map((row) => ({ contactId: row.contactId, email: row.email, varsJson: null }));
+    return rows.map((row) => ({ contactId: row.contactId, email: row.email, varsJson: null }));
+  });
 }
 
-function findContactIdsByEmail(db: Database, emails: string[]): Map<string, string> {
-  if (emails.length === 0) return new Map();
+function findContactIdsByEmail(
+  db: DatabaseService,
+  emails: string[],
+): Effect.Effect<Map<string, string>, DatabaseError> {
+  if (emails.length === 0) return Effect.succeed(new Map());
 
-  const rows = db
-    .query(
+  return Effect.map(
+    db.all<{ email: string; id: string }>(
+      "contacts:find-by-email",
       `SELECT lower(email) AS email, id
        FROM contacts
        WHERE email IN (${createPlaceholders(emails, "email")});`,
-    )
-    .all(createParams(emails, "email")) as { email: string; id: string }[];
-
-  return new Map(rows.map((row) => [row.email, row.id]));
+      createParams(emails, "email"),
+    ),
+    (rows) => new Map(rows.map((row) => [row.email, row.id])),
+  );
 }
 
 function findSuppressedEmails(
-  db: Database,
+  db: DatabaseService,
   input: { emails: string[]; listId: null | string; purpose: MailingPurpose },
-): Set<string> {
-  if (input.emails.length === 0) return new Set();
+): Effect.Effect<Set<string>, DatabaseError> {
+  if (input.emails.length === 0) return Effect.succeed(new Set());
 
   const params = createParams(input.emails, "email");
   const isMarketing = input.purpose === "marketing";
@@ -260,16 +271,18 @@ function findSuppressedEmails(
     ? "(scope IN ('all', 'marketing') OR (scope = 'list' AND list_id = $listId))"
     : "scope = 'all'";
   const queryParams = isMarketing ? { ...params, listId: input.listId } : params;
-  const rows = db
-    .query(
+
+  return Effect.map(
+    db.all<{ email: string }>(
+      "suppressions:find",
       `SELECT lower(email) AS email
        FROM suppressions
        WHERE email IN (${createPlaceholders(input.emails, "email")})
          AND ${scopePredicate};`,
-    )
-    .all(queryParams) as { email: string }[];
-
-  return new Set(rows.map((row) => row.email));
+      queryParams,
+    ),
+    (rows) => new Set(rows.map((row) => row.email)),
+  );
 }
 
 function createPlaceholders(values: string[], prefix: string): string {

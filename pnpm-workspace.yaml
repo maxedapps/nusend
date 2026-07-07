@@ -1,2 +1,4 @@
 packages:
   - "apps/*"
+allowBuilds:
+  msgpackr-extract: false

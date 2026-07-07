@@ -47,6 +47,10 @@ GOOGLE_CLIENT_SECRET=replace-with-google-client-secret
 NUSEND_AUTH_TRUSTED_ORIGINS=http://localhost:3000
 ```
 
+Configuration is validated at startup (via Effect `Config`); invalid or partially
+configured auth environments fail fast with a message that may name several
+variables at once. Empty or whitespace-only values are treated as unset.
+
 Google OAuth callback URL:
 
 ```txt
@@ -88,7 +92,7 @@ Request body:
 }
 ```
 
-Use exactly one recipient source: `recipients` or `listId`. Transactional mailings must use `recipients`; marketing mailings may use either.
+Use exactly one recipient source: `recipients` or `listId`. Transactional mailings must use `recipients`; marketing mailings may use either. Validation errors return `400 invalid_request` with all field issues aggregated into one message.
 
 Success response:
 

@@ -36,3 +36,6 @@ bun.lockb
 
 # Misc
 .cache/
+
+# Agent session workspaces
+.pi-subagents/

@@ -90,6 +90,27 @@ describe("migration runner", () => {
     expect(runMigrationCommand("up", databasePath).stdout).toContain(
       "Applied migration 0002_auth.",
     );
+
+    const synthetic = runBun(
+      [
+        "-e",
+        "import { Database } from 'bun:sqlite'; const db = new Database(process.env.NUSEND_DB_PATH); db.run(\"INSERT INTO schema_migrations (version, checksum) VALUES ('9999_missing', 'no-such-file');\"); db.close();",
+      ],
+      databasePath,
+    );
+    expect(synthetic.status).toBe(0);
+
+    expect(runMigrationCommand("status", databasePath).stdout).toContain("missing  9999_missing");
+
+    const upWithMissingFile = runMigrationCommand("up", databasePath);
+    expect(upWithMissingFile.status).not.toBe(0);
+    expect(upWithMissingFile.stderr).toContain("Applied migration 9999_missing is missing from");
+
+    const downWithMissingFile = runMigrationCommand("down", databasePath);
+    expect(downWithMissingFile.status).not.toBe(0);
+    expect(downWithMissingFile.stderr).toContain(
+      "Cannot roll back 9999_missing: migration file is missing.",
+    );
   });
 });
 

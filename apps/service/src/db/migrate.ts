@@ -1,11 +1,11 @@
-import type { Database } from "bun:sqlite";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { basename, join } from "node:path";
-import { fileURLToPath } from "node:url";
+// Migration CLI: bun src/db/migrate.ts <up|down|status>
+import { ConfigProvider, Effect, Exit, ManagedRuntime, Result } from "effect";
 
-import { loadConfig } from "../config.ts";
-import { closeDatabase, openDatabase } from "./index.ts";
-import { parseMigrationFile, type MigrationFile } from "./migration-files.ts";
+import { serviceConfig } from "../config.ts";
+import { MigrationError, type DatabaseError } from "../errors.ts";
+import { Database, type DatabaseService } from "../services/database.ts";
+import { DatabaseBunLive } from "../services/database-bun.ts";
+import { migrationsDirectory, readMigrationFiles, type MigrationFile } from "./migration-files.ts";
 
 type Command = "down" | "status" | "up";
 
@@ -14,143 +14,135 @@ type AppliedMigration = {
   version: string;
 };
 
-const migrationsDirectory = fileURLToPath(new URL("./migrations/sql/", import.meta.url));
-
-const command = parseCommand(process.argv[2]);
-const config = loadConfig();
-const database = openDatabase(config.databasePath);
-
-try {
-  runCommand(database, command);
-} finally {
-  closeDatabase(database);
-}
-
 function parseCommand(value: string | undefined): Command {
   if (value === "up" || value === "down" || value === "status") return value;
 
   throw new Error("Usage: bun src/db/migrate.ts <up|down|status>");
 }
 
-function runCommand(db: Database, selectedCommand: Command): void {
-  ensureSchemaMigrationsTable(db);
-
-  const migrations = readMigrationFiles();
-  const appliedMigrations = readAppliedMigrations(db);
-
-  if (selectedCommand === "up") {
-    migrateUp(db, migrations, appliedMigrations);
-    return;
+const migrationFiles: Effect.Effect<MigrationFile[], MigrationError> = Effect.suspend(() => {
+  const migrations: MigrationFile[] = [];
+  for (const parsed of readMigrationFiles()) {
+    if (Result.isFailure(parsed)) return Effect.fail(parsed.failure);
+    migrations.push(parsed.success);
   }
 
-  if (selectedCommand === "down") {
-    migrateDown(db, migrations, appliedMigrations);
-    return;
-  }
+  return Effect.succeed(migrations);
+});
 
-  printStatus(migrations, appliedMigrations);
-}
+function migrationProgram(
+  command: Command,
+): Effect.Effect<void, DatabaseError | MigrationError, DatabaseService> {
+  return Effect.gen(function* () {
+    const db = yield* Database;
 
-function ensureSchemaMigrationsTable(db: Database): void {
-  db.run(`
-    CREATE TABLE IF NOT EXISTS schema_migrations (
-      version TEXT PRIMARY KEY,
-      checksum TEXT NOT NULL,
-      applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    yield* db.exec(
+      "migrate:ensure-table",
+      `CREATE TABLE IF NOT EXISTS schema_migrations (
+        version TEXT PRIMARY KEY,
+        checksum TEXT NOT NULL,
+        applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      );`,
     );
-  `);
-}
 
-function readMigrationFiles(): MigrationFile[] {
-  if (!existsSync(migrationsDirectory)) return [];
+    const migrations = yield* migrationFiles;
+    const appliedMigrations = yield* db.all<AppliedMigration>(
+      "migrate:read-applied",
+      "SELECT version, checksum FROM schema_migrations ORDER BY version ASC;",
+    );
 
-  return readdirSync(migrationsDirectory)
-    .filter((fileName) => fileName.endsWith(".sql"))
-    .sort((left, right) => left.localeCompare(right))
-    .map((fileName) => {
-      const path = join(migrationsDirectory, fileName);
-      const content = readFileSync(path, "utf8");
-
-      return parseMigrationFile(basename(fileName, ".sql"), content);
-    });
-}
-
-function readAppliedMigrations(db: Database): AppliedMigration[] {
-  return db
-    .query("SELECT version, checksum FROM schema_migrations ORDER BY version ASC;")
-    .all() as AppliedMigration[];
+    if (command === "up") return yield* migrateUp(db, migrations, appliedMigrations);
+    if (command === "down") return yield* migrateDown(db, migrations, appliedMigrations);
+    printStatus(migrations, appliedMigrations);
+  });
 }
 
 function migrateUp(
-  db: Database,
+  db: DatabaseService,
   migrations: MigrationFile[],
-  appliedMigrations: AppliedMigration[],
-): void {
-  const appliedByVersion = mapAppliedMigrations(appliedMigrations);
-  validateAppliedMigrationFiles(migrations, appliedByVersion);
+  appliedMigrations: readonly AppliedMigration[],
+): Effect.Effect<void, DatabaseError | MigrationError> {
+  return Effect.gen(function* () {
+    const appliedByVersion = mapAppliedMigrations(appliedMigrations);
+    yield* validateAppliedMigrationFiles(migrations, appliedByVersion);
 
-  const pendingMigrations = migrations.filter(
-    (migration) => !appliedByVersion.has(migration.version),
-  );
+    const pendingMigrations = migrations.filter(
+      (migration) => !appliedByVersion.has(migration.version),
+    );
 
-  if (pendingMigrations.length === 0) {
-    console.log("No pending migrations.");
-    return;
-  }
+    if (pendingMigrations.length === 0) {
+      console.log("No pending migrations.");
+      return;
+    }
 
-  for (const migration of pendingMigrations) {
-    const applyMigration = db.transaction(() => {
-      db.run(migration.upSql);
-      db.query(
-        "INSERT INTO schema_migrations (version, checksum) VALUES ($version, $checksum);",
-      ).run({
-        checksum: migration.checksum,
-        version: migration.version,
-      });
-    });
-
-    applyMigration.immediate();
-    console.log(`Applied migration ${migration.version}.`);
-  }
+    for (const migration of pendingMigrations) {
+      yield* db.transaction(
+        Effect.gen(function* () {
+          yield* db.exec(`migrate:apply:${migration.version}`, migration.upSql);
+          yield* db.run(
+            "migrate:record",
+            "INSERT INTO schema_migrations (version, checksum) VALUES ($version, $checksum);",
+            { checksum: migration.checksum, version: migration.version },
+          );
+        }),
+      );
+      console.log(`Applied migration ${migration.version}.`);
+    }
+  });
 }
 
 function migrateDown(
-  db: Database,
+  db: DatabaseService,
   migrations: MigrationFile[],
-  appliedMigrations: AppliedMigration[],
-): void {
-  if (appliedMigrations.length === 0) {
-    console.log("No applied migrations to roll back.");
-    return;
-  }
+  appliedMigrations: readonly AppliedMigration[],
+): Effect.Effect<void, DatabaseError | MigrationError> {
+  return Effect.gen(function* () {
+    if (appliedMigrations.length === 0) {
+      console.log("No applied migrations to roll back.");
+      return;
+    }
 
-  const latestApplied = [...appliedMigrations].sort((left, right) =>
-    right.version.localeCompare(left.version),
-  )[0];
-  const migration = migrations.find((candidate) => candidate.version === latestApplied.version);
+    const latestApplied = [...appliedMigrations].sort((left, right) =>
+      right.version.localeCompare(left.version),
+    )[0];
+    const migration = migrations.find((candidate) => candidate.version === latestApplied.version);
 
-  if (!migration) {
-    throw new Error(`Cannot roll back ${latestApplied.version}: migration file is missing.`);
-  }
+    if (!migration) {
+      return yield* Effect.fail(
+        new MigrationError({
+          reason: `Cannot roll back ${latestApplied.version}: migration file is missing.`,
+          version: latestApplied.version,
+        }),
+      );
+    }
 
-  if (migration.checksum !== latestApplied.checksum) {
-    throw new Error(
-      `Cannot roll back ${migration.version}: migration checksum changed after it was applied.`,
+    if (migration.checksum !== latestApplied.checksum) {
+      return yield* Effect.fail(
+        new MigrationError({
+          reason: `Cannot roll back ${migration.version}: migration checksum changed after it was applied.`,
+          version: migration.version,
+        }),
+      );
+    }
+
+    yield* db.transaction(
+      Effect.gen(function* () {
+        yield* db.exec(`migrate:rollback:${migration.version}`, migration.downSql);
+        yield* db.run(
+          "migrate:unrecord",
+          "DELETE FROM schema_migrations WHERE version = $version;",
+          { version: migration.version },
+        );
+      }),
     );
-  }
-
-  const rollBackMigration = db.transaction(() => {
-    db.run(migration.downSql);
-    db.query("DELETE FROM schema_migrations WHERE version = $version;").run({
-      version: migration.version,
-    });
+    console.log(`Rolled back migration ${migration.version}.`);
   });
-
-  rollBackMigration.immediate();
-  console.log(`Rolled back migration ${migration.version}.`);
 }
 
-function printStatus(migrations: MigrationFile[], appliedMigrations: AppliedMigration[]): void {
+function printStatus(
+  migrations: MigrationFile[],
+  appliedMigrations: readonly AppliedMigration[],
+): void {
   const appliedByVersion = mapAppliedMigrations(appliedMigrations);
   const migrationVersions = new Set(migrations.map((migration) => migration.version));
 
@@ -175,30 +167,75 @@ function printStatus(migrations: MigrationFile[], appliedMigrations: AppliedMigr
 function validateAppliedMigrationFiles(
   migrations: MigrationFile[],
   appliedByVersion: Map<string, AppliedMigration>,
-): void {
-  const migrationsByVersion = new Map(
-    migrations.map((migration) => [migration.version, migration]),
-  );
+): Effect.Effect<void, MigrationError> {
+  return Effect.gen(function* () {
+    const migrationsByVersion = new Map(
+      migrations.map((migration) => [migration.version, migration]),
+    );
 
-  for (const applied of appliedByVersion.values()) {
-    const migration = migrationsByVersion.get(applied.version);
+    for (const applied of appliedByVersion.values()) {
+      const migration = migrationsByVersion.get(applied.version);
 
-    if (!migration) {
-      throw new Error(
-        `Applied migration ${applied.version} is missing from ${migrationsDirectory}.`,
-      );
+      if (!migration) {
+        return yield* Effect.fail(
+          new MigrationError({
+            reason: `Applied migration ${applied.version} is missing from ${migrationsDirectory}.`,
+            version: applied.version,
+          }),
+        );
+      }
+
+      if (migration.checksum !== applied.checksum) {
+        return yield* Effect.fail(
+          new MigrationError({
+            reason: `Applied migration ${applied.version} checksum changed. Roll it back before editing it.`,
+            version: applied.version,
+          }),
+        );
+      }
     }
-
-    if (migration.checksum !== applied.checksum) {
-      throw new Error(
-        `Applied migration ${applied.version} checksum changed. Roll it back before editing it.`,
-      );
-    }
-  }
+  });
 }
 
 function mapAppliedMigrations(
-  appliedMigrations: AppliedMigration[],
+  appliedMigrations: readonly AppliedMigration[],
 ): Map<string, AppliedMigration> {
   return new Map(appliedMigrations.map((migration) => [migration.version, migration]));
+}
+
+const command = parseCommand(process.argv[2]);
+const config = await Effect.runPromise(
+  serviceConfig.pipe(
+    Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromEnv()),
+  ),
+);
+const runtime = ManagedRuntime.make(DatabaseBunLive(config.databasePath));
+
+try {
+  const exit = await runtime.runPromiseExit(
+    migrationProgram(command).pipe(
+      Effect.map(() => 0),
+      Effect.catchTags({
+        DatabaseError: (error) =>
+          Effect.sync(() => {
+            console.error(`Database error during ${error.operation}: ${String(error.cause)}`);
+            return 1;
+          }),
+        MigrationError: (error) =>
+          Effect.sync(() => {
+            console.error(error.reason);
+            return 1;
+          }),
+      }),
+    ),
+  );
+
+  if (Exit.isSuccess(exit)) {
+    if (exit.value !== 0) process.exitCode = exit.value;
+  } else {
+    console.error(String(exit.cause));
+    process.exitCode = 1;
+  }
+} finally {
+  await runtime.dispose();
 }

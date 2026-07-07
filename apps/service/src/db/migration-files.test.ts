@@ -1,16 +1,24 @@
+import { Result } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { parseMigrationFile } from "./migration-files.ts";
+import type { MigrationError } from "../errors.ts";
+import { parseMigrationFile, type MigrationFile } from "./migration-files.ts";
+
+function failureReason(result: Result.Result<MigrationFile, MigrationError>): string {
+  return Result.isFailure(result) ? result.failure.reason : "unexpected success";
+}
 
 describe("parseMigrationFile", () => {
   it("parses up and down sections", () => {
-    const migration = parseMigrationFile(
-      "0001_test",
-      `-- migrate:up
+    const migration = Result.getOrThrow(
+      parseMigrationFile(
+        "0001_test",
+        `-- migrate:up
 CREATE TABLE test (id TEXT PRIMARY KEY);
 
 -- migrate:down
 DROP TABLE test;`,
+      ),
     );
 
     expect(migration.version).toBe("0001_test");
@@ -20,22 +28,21 @@ DROP TABLE test;`,
   });
 
   it("rejects missing up marker", () => {
-    expect(() =>
-      parseMigrationFile(
-        "0001_test",
-        `CREATE TABLE test (id TEXT PRIMARY KEY);
+    const result = parseMigrationFile(
+      "0001_test",
+      `CREATE TABLE test (id TEXT PRIMARY KEY);
 
 -- migrate:down
 DROP TABLE test;`,
-      ),
-    ).toThrow(/exactly one -- migrate:up/);
+    );
+
+    expect(failureReason(result)).toMatch(/exactly one -- migrate:up/);
   });
 
   it("rejects duplicate down markers", () => {
-    expect(() =>
-      parseMigrationFile(
-        "0001_test",
-        `-- migrate:up
+    const result = parseMigrationFile(
+      "0001_test",
+      `-- migrate:up
 CREATE TABLE test (id TEXT PRIMARY KEY);
 
 -- migrate:down
@@ -43,32 +50,42 @@ DROP TABLE test;
 
 -- migrate:down
 DROP TABLE other_test;`,
-      ),
-    ).toThrow(/exactly one -- migrate:down/);
+    );
+
+    expect(failureReason(result)).toMatch(/exactly one -- migrate:down/);
   });
 
   it("rejects empty sections", () => {
-    expect(() =>
-      parseMigrationFile(
-        "0001_test",
-        `-- migrate:up
+    const result = parseMigrationFile(
+      "0001_test",
+      `-- migrate:up
 
 -- migrate:down
 DROP TABLE test;`,
-      ),
-    ).toThrow(/empty up section/);
+    );
+
+    expect(failureReason(result)).toMatch(/empty up section/);
   });
 
   it("rejects down before up", () => {
-    expect(() =>
-      parseMigrationFile(
-        "0001_test",
-        `-- migrate:down
+    const result = parseMigrationFile(
+      "0001_test",
+      `-- migrate:down
 DROP TABLE test;
 
 -- migrate:up
 CREATE TABLE test (id TEXT PRIMARY KEY);`,
-      ),
-    ).toThrow(/up before -- migrate:down/);
+    );
+
+    expect(failureReason(result)).toMatch(/up before -- migrate:down/);
+  });
+
+  it("carries the version on failures", () => {
+    const result = parseMigrationFile("0042_broken", "no markers at all");
+
+    expect(Result.isFailure(result)).toBe(true);
+    if (Result.isFailure(result)) {
+      expect(result.failure.version).toBe("0042_broken");
+    }
   });
 });

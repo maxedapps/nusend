@@ -34,8 +34,9 @@ Initial deployment target:
 ## Core Stack
 
 - TypeScript
+- Effect (v4) for services/layers, config, schema validation, and typed errors
 - Bun
-- Hono
+- Hono (thin HTTP shell over Effect programs)
 - SQLite via Bun's SQLite client
 - AWS SES v2
 - AWS SNS HTTPS webhook for SES events

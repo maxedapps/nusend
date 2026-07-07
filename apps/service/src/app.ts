@@ -1,16 +1,16 @@
-import type { Database } from "bun:sqlite";
+import { Effect } from "effect";
 import { Hono } from "hono";
 
-import type { AuthInstance } from "./auth/auth.ts";
+import { errorEnvelope, runRoute, type AppRuntime } from "./http/respond.ts";
 import { createMailingsRoutes } from "./mailings/routes.ts";
+import { Auth } from "./services/auth.ts";
+import { Database } from "./services/database.ts";
 
 type AppOptions = {
-  auth?: AuthInstance;
-  db?: Database;
-  pingDatabase?: () => boolean;
+  runtime: AppRuntime;
 };
 
-export function createApp(options: AppOptions = {}): Hono {
+export function createApp(options: AppOptions): Hono {
   const app = new Hono();
 
   app.get("/health", (context) =>
@@ -20,34 +20,28 @@ export function createApp(options: AppOptions = {}): Hono {
     }),
   );
 
-  app.get("/health/db", (context) => {
-    if (!options.pingDatabase?.()) {
-      return context.json({ ok: false }, 503);
-    }
-
-    return context.json({ ok: true });
-  });
-
-  if (options.auth) {
-    const auth = options.auth;
-    app.on(["GET", "POST"], ["/api/auth/*"], (context) => auth.handler(context.req.raw));
-  }
-
-  if (options.auth && options.db) {
-    app.route("/api/mailings", createMailingsRoutes({ auth: options.auth, db: options.db }));
-  }
-
-  app.notFound((context) =>
-    context.json(
-      {
-        error: {
-          code: "not_found",
-          message: "Not found.",
-        },
-      },
-      404,
+  app.get("/health/db", (context) =>
+    runRoute(
+      context,
+      options.runtime,
+      Effect.flatMap(Database, (db) => db.ping),
+      (alive) => (alive ? context.json({ ok: true }) : context.json({ ok: false }, 503)),
     ),
   );
+
+  // Raw passthrough — Better Auth owns these routes entirely.
+  app.on(["GET", "POST"], ["/api/auth/*"], (context) =>
+    runRoute(
+      context,
+      options.runtime,
+      Effect.flatMap(Auth, (auth) => Effect.promise(() => auth.handler(context.req.raw))),
+      (response) => response,
+    ),
+  );
+
+  app.route("/api/mailings", createMailingsRoutes({ runtime: options.runtime }));
+
+  app.notFound((context) => context.json(errorEnvelope("not_found", "Not found."), 404));
 
   return app;
 }

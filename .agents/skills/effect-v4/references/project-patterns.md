@@ -3,86 +3,91 @@
 ## Table of contents
 - [Where to start](#where-to-start)
 - [Current code shape](#current-code-shape)
-- [Best Effect targets](#best-effect-targets)
-- [Boundary conventions](#boundary-conventions)
-- [Services to introduce](#services-to-introduce)
+- [Services and layers](#services-and-layers)
+- [Runtime boundaries](#runtime-boundaries)
+- [Transactions and time](#transactions-and-time)
 - [Schema and errors](#schema-and-errors)
-- [Queue, retries, and time](#queue-retries-and-time)
+- [Queue and retries](#queue-and-retries)
+- [Testing](#testing)
+- [Conformance rules](#conformance-rules)
 - [Commands](#commands)
 
 ## Where to start
 
-Nusend is a single Cloudflare Worker + Durable Object service. Start with:
+Nusend is a Bun + Hono service (`apps/service`) targeting a self-hosted VPS,
+built on Effect v4 (exact-pinned beta). Start with:
 
-- `src/index.ts` for Worker `fetch` and `scheduled` boundaries.
-- `src/app.ts` for Hono route registration and top-level error mapping.
-- `src/dispatch/dispatcher.ts` and `src/dispatch/processors.ts` for Durable Object alarm processing.
-- `src/queue/jobs.ts` and `src/queue/runner.ts` for D1 queue transitions.
-- `src/mailings/routes.ts`, `src/mailings/create-mailing.ts`, and `src/mailings/expand-mailing.ts` for current business workflows.
-- `src/mailings/validation.ts` for current manual request validation that should become Effect Schema when migrating.
-- `src/auth/api-keys.ts` and `scripts/create-api-key.ts` for crypto/API-key boundaries.
+- `src/main.ts` — the composition boundary: config read, layer stack, `ManagedRuntime.make`, `Bun.serve`, signal-driven `dispose()`.
+- `src/services/database.ts` — the driver-agnostic `Database` service (interface + key + shared `makeTransaction`); `src/services/database-bun.ts` is the production layer (bun:sqlite, also provides the raw `SqliteHandle` for Better Auth).
+- `src/services/auth.ts` (key/types) + `src/services/auth-live.ts` (Better Auth layer — the only `Redacted.value` site).
+- `src/http/respond.ts` — the error envelope, the one exhaustive `catchTags` → status/code table, and `runRoute`.
+- `src/config.ts` — Effect `Config` definitions (empty-as-missing semantics, all-or-nothing auth group, `Redacted` secrets).
+- `src/queue/jobs.ts` + `src/queue/runner.ts` — durable queue transitions and the poll-cycle runner.
+- `src/testing/layers.ts` — in-process test layers (`DatabaseNodeLive` over node:sqlite, `TestClock`, fake auth, test runtimes).
 
 ## Current code shape
 
-- The repo currently has no `effect` dependency. Check `package.json` before using examples and install an explicit v4 beta when implementation starts.
-- Current implementation is promise-first with explicit `db: D1Database`, `now?: () => string`, and `createId?: () => string` parameters.
-- Tests run in the Cloudflare Worker runtime through `@cloudflare/vitest-pool-workers`; preserve Worker-runtime tests for D1, Durable Objects, Web Crypto, alarms, and `waitUntil` behavior.
-- D1 statements and `env.DB.batch()` semantics are central to correctness. Keep transaction boundaries and idempotent `INSERT OR IGNORE` patterns intact.
+- Effect v4 beta is a runtime dependency of `@nusend/service`, pinned exactly. Re-run API probes before bumping the pin (beta churn).
+- Services use `Context.Service<Shape>("nusend/Name")`; layers via curried `Layer.succeed(Key)(impl)`, `Layer.effect`, and `Layer.effectContext` (multi-key: `Database` + `SqliteHandle` from one acquisition).
+- Business logic is Effect programs; Hono and Better Auth are boundary libraries (thin shells around programs). `src/auth/permissions.ts` and `src/queue/backoff.ts` stay pure TypeScript on purpose.
+- SQLite access is synchronous on both drivers; DB calls are wrapped in `Effect.try` with tagged `DatabaseError { operation, cause }` (operation labels only — never SQL params).
 
-## Best Effect targets
+## Services and layers
 
-Use Effect where it materially improves typed dependencies, typed failures, validation, retries, or runtime boundaries:
+- `Database` (`nusend/Database`): `run/get/all/exec/ping/transaction`. `exec` is for multi-statement SQL (migration files) only; everything else stays single-statement prepared. Drivers: `DatabaseBunLive(path)` (production, WAL + pragmas, acquireRelease close-on-dispose) and `DatabaseNodeLive(path)` (tests, node:sqlite, applies real migration files).
+- `SqliteHandle` (`nusend/SqliteHandle`): the raw bun:sqlite handle, provided by `DatabaseBunLive`, consumed only by `AuthLive`.
+- `Auth` (`nusend/Auth`): `handler` (raw `/api/auth/*` passthrough), `getSession`, `verifyApiKey`. Live layer builds `betterAuth()`; tests use `FakeAuthLive`.
+- `IdGenerator` (`nusend/IdGenerator`): must stay synchronous/non-suspending — ids are generated inside write transactions.
+- `main.ts` wiring: reuse the same `dbLayer` reference in `Layer.mergeAll(dbLayer, IdGeneratorLive, AuthLive(cfg).pipe(Layer.provide(dbLayer)))` — memoization guarantees one connection.
 
-1. HTTP/public boundaries: JSON parsing, request schemas, response error mapping in `src/mailings/routes.ts`, future unsubscribe, and SES webhook routes.
-2. Queue/dispatcher workflows: `src/queue/runner.ts`, `src/dispatch/dispatcher.ts`, and job processors such as `src/mailings/expand-mailing.ts`.
-3. Future SES sender: AWS signing/fetch, timeouts, retry policy, rate-limit interactions, send-attempt audit writes, and typed transient vs permanent errors.
-4. Future SNS webhook processing: signature/cert verification, raw-event persistence, schema validation, idempotent processing, and suppression updates.
-5. Config/secrets: SES credentials, region, SNS topic ARN, unsubscribe signing secret, and any future endpoint secrets should use lazy config and `Redacted`.
+## Runtime boundaries
 
-Keep tiny pure helpers as plain TypeScript unless converting their callers already makes Effect usage natural; examples include SQL placeholder builders and simple count aggregation.
+`Effect.run*` is allowed only at: `main.ts`, `http/respond.ts` (`runRoute`), `auth/middleware.ts` (`requirePrincipal`), `db/migrate.ts`, `auth/bootstrap.ts`, `src/testing/`, and test files. Everything else composes Effects.
 
-## Boundary conventions
+- CLIs (`db/migrate.ts`, `auth/bootstrap.ts`) build a `ManagedRuntime`, run with `runPromiseExit`, map tagged failures to `console.error` + exit code, pretty-print defects, and dispose in `finally`.
+- Route handlers build a program and hand it to `runRoute(context, runtime, program, onSuccess)`; the compiler proves the program's error union is a subset of the handled `RouteError` union.
+- `requirePrincipal` maps auth failures (401/403 with frozen messages) itself; infra errors and defects → sanitized 500.
 
-- Run Effects only at framework/platform edges: Hono handlers, Worker `scheduled`, Durable Object `poke`/`alarm`, scripts, and tests.
-- Prefer a small runtime helper, e.g. `src/effect/runtime.ts`, that builds a `ManagedRuntime` from Worker bindings and exposes route/scheduled runners.
-- Cache Worker runtimes by Cloudflare `env` object (`WeakMap<AppBindings, ManagedRuntime>`) so tests and different env objects do not share stale bindings.
-- Durable Objects receive their own `this.env`; build/provide layers from that boundary rather than importing `env` globally.
-- `waitUntil` work must catch/log sanitized causes; a failed dispatcher poke should not fail an already committed request.
+## Transactions and time
 
-## Services to introduce
-
-Good first service boundaries:
-
-- `Database`: wraps D1 `prepare`, `first`, `all`, `run`, and `batch` with typed `DatabaseError` failures.
-- `Clock`/time: prefer Effect clock for workflows that calculate leases, alarms, schedules, and retry times; keep deterministic tests.
-- `IdGenerator`: wraps `crypto.randomUUID()` and API-key random bytes for deterministic tests.
-- `DispatcherClient`: wraps Durable Object lookup/poke so routes do not manually build stubs.
-- `Logger`: structured, redacted logging for route/queue/DO failures.
-- Future `SesClient`, `SnsVerifier`, `UnsubscribeTokenSigner`, and config services.
-
-Keep service interfaces capability-focused. Do not expose broad Worker `env` to domain code.
+- `Database.transaction(work)` = `BEGIN IMMEDIATE` → work → `COMMIT`, rollback on every non-success exit (typed failure, defect, interruption), armed only after BEGIN succeeds. Work inside a transaction must be DB-only (plus sync Clock/IdGenerator reads) — a suspended fiber would hold SQLite's write lock.
+- Never construct `Date`s outside `src/lib/iso-time.ts`. "Now" comes from `Clock` (`currentIso`); ISO math via `addSecondsIso`; lenient user-supplied dates via `parseLenientDateToIso`.
+- The queue runner takes ONE clock snapshot for release + claim (`claimJobsAt`/`releaseExpiredLeasesAt`), then reads fresh time per complete/fail — pinned by a stepping-clock test.
 
 ## Schema and errors
 
-- Replace manual unknown parsing in `src/mailings/validation.ts` with `Schema` once Effect is installed. Preserve existing normalization behavior and tests.
-- Validate serialized job payloads, especially `expand_mailing` payload JSON in `src/mailings/expand-mailing.ts`, with Schema instead of casts.
-- Validate third-party data: SES API responses, SNS messages, SNS cert documents, and webhook bodies.
-- Model expected failures as tagged typed errors: invalid request, unauthorized, not found, empty recipient set, stale lease, database failure, invalid job payload, signature verification failure, token invalid/expired, SES transient/permanent failures.
-- HTTP mapping should live near route boundaries; do not leak D1 internals, secrets, bearer tokens, raw webhook payloads, or recipient PII in logs/responses.
+- Trust boundaries decode with Schema: `src/mailings/schema.ts` (HTTP request; raw-input presence checks BEFORE decode — `Object.hasOwn` semantics), `src/queue/schema.ts` (row shapes; decode failure = defect because SQLite CHECK-constrains the columns).
+- Transforms: `Schema.decodeTo` + `SchemaGetter.transform` (trim, lowercase, vars→JSON string); custom checks via `Schema.makeFilter` (custom messages); aggregate field issues with `{ errors: "all" }`; asymmetric transforms use `SchemaGetter.forbidden` for encode.
+- Tagged errors live in `src/errors.ts` (`Data.TaggedError`). HTTP mapping is centralized in `http/respond.ts`; `EmptyRecipientSetError.reason` and auth middleware messages are frozen API contract — do not reword.
+- Config failures use `Config.fail(new ConfigProvider.SourceError({ message }))` (plain strings do not typecheck in the beta).
 
-## Queue, retries, and time
+## Queue and retries
 
-- The durable D1 queue already implements persistent retry/backoff through `jobs.run_at`; do not replace durable queue retries with in-memory Effect retries.
-- Use `Effect.retry`/`Schedule` inside a single job only for bounded transient external calls, especially SES HTTPS sends and SNS certificate fetches.
-- Preserve at-least-once/idempotency invariants: deterministic job ids, `INSERT OR IGNORE`, unique indexes, leases, and registered-kind filtering.
-- Use Effect time/TestClock where tests would otherwise need real sleeps or manual `now` plumbing.
+- Durable per-job retry/backoff lives in SQL (`run_at` CASE ladder in `jobs.ts`) — never convert it to `Effect.retry`/`Schedule`. `Schedule` is reserved for the future in-process worker poll loop and SES calls.
+- The runner's stale-lease handling is nested on purpose: `completeJob`/`failJob`'s own `JobNotLeasedError` is caught inside its branch and counted `skippedStale` — a flat catch chain mis-routes it.
+- Processor failures (typed or defect, via `Cause.squash`) route to `failJob`; infrastructure `DatabaseError` propagates out of `runOnce`.
+
+## Testing
+
+- Default: in-process vitest on `runTest`/`testLayer` (node:sqlite `:memory:`, migrations applied, FK on; `TestClock.layer()`; sequential ids). Multi-instant scenarios are ONE program with `TestClock.setTime` between steps — each `runTest` builds a fresh database.
+- `withTestApp`/`makeTestRuntime` wire the real Hono app to an in-process runtime with `FakeAuthLive` for route/middleware tests.
+- Options: `{ migrate: false }` (unmigrated DB), `{ ids: [...] }` (fixed id list, e.g. forced collisions), `{ clock: steppingClockLayer([...]) }` (pin clock-read cadence).
+- Bun subprocess scenarios (`testing/bun-scenario.ts`) are retained ONLY for: the Better Auth integration test, the migrate CLI integration test, the driver-parity smoke (`db/driver-parity.test.ts` — identical snapshots on both drivers), the `main.ts` boot smoke, and the bun side of the database contract. Bun-side fixtures live in `testing/bun-fixtures.ts`.
+
+## Conformance rules
+
+Grep-enforced (allow-lists live in the migration plan's gate table, `.plans/migrate-to-effect-v4-bun.md`):
+
+- `bun:sqlite` imports: `services/database-bun.ts`, `services/auth-live.ts`, `auth/auth.ts`, `testing/bun-fixtures.ts` only. `node:sqlite`: `testing/layers.ts` only.
+- No `new Date(`/`Date.now(` outside `lib/iso-time.ts`; no `JSON.parse` in non-test code (use `Schema.fromJsonString` for future payload decoding); no `as any`/ts-suppressions; `Redacted.value` only in `services/auth-live.ts`.
+- `throw new` only for invariant defects and CLI usage errors (see gate table) — expected failures are tagged errors.
+- No `Logger` service yet: default logging + the sanitized `logCause` helper in `http/respond.ts` cover current needs; do not reintroduce one speculatively.
 
 ## Commands
 
-From repo root:
-
-- Install latest v4 beta intentionally, e.g. `pnpm add effect@4.0.0-beta.<latest>` after checking `pnpm view effect versions --json`.
-- Typecheck: `pnpm typecheck` (runs `wrangler types` first).
-- Tests: `pnpm test`.
-- Full validation: `pnpm check`.
-- Cloudflare type generation only: `pnpm cf-typegen`.
+```sh
+pnpm check                                   # format:check + lint + typecheck + vitest
+pnpm --filter @nusend/service db:migrate     # bun src/db/migrate.ts up
+pnpm --filter @nusend/service auth:bootstrap # owner bootstrap CLI
+pnpm --filter @nusend/service dev            # bun --hot src/main.ts
+```

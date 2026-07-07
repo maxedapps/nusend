@@ -1,14 +1,14 @@
-import type { Database } from "bun:sqlite";
+import { Effect, Result } from "effect";
 import { Hono } from "hono";
 
-import type { AuthInstance } from "../auth/auth.ts";
 import { requirePrincipal } from "../auth/middleware.ts";
-import { createMailing, CreateMailingError } from "./create-mailing.ts";
-import { validateCreateMailingRequest } from "./validation.ts";
+import { RequestValidationError } from "../errors.ts";
+import { runRoute, type AppRuntime } from "../http/respond.ts";
+import { createMailing } from "./create-mailing.ts";
+import { decodeCreateMailingRequest, type CreateMailingInput } from "./schema.ts";
 
 type MailingsRoutesOptions = {
-  auth: AuthInstance;
-  db: Database;
+  runtime: AppRuntime;
 };
 
 export function createMailingsRoutes(options: MailingsRoutesOptions): Hono {
@@ -16,54 +16,28 @@ export function createMailingsRoutes(options: MailingsRoutesOptions): Hono {
 
   routes.post(
     "/",
-    requirePrincipal({ auth: options.auth, db: options.db, permissions: { mailings: ["create"] } }),
-    async (context) => {
-      const body = await readJsonBody(context.req.raw);
+    requirePrincipal({ permissions: { mailings: ["create"] }, runtime: options.runtime }),
+    (context) => {
+      const program = Effect.gen(function* () {
+        const body = yield* Effect.tryPromise({
+          try: () => context.req.raw.json() as Promise<unknown>,
+          catch: () => new RequestValidationError({ message: "Request body must be valid JSON." }),
+        });
 
-      if (!body.ok) {
-        return context.json(errorResponse("invalid_request", body.message), 400);
-      }
+        const input: CreateMailingInput = yield* decodeToEffect(decodeCreateMailingRequest(body));
 
-      const input = validateCreateMailingRequest(body.value);
+        return yield* createMailing(input);
+      });
 
-      if (!input.ok) {
-        return context.json(errorResponse(input.code, input.message), 400);
-      }
-
-      try {
-        const result = createMailing(options.db, input.value);
-
-        return context.json(result, 201);
-      } catch (error) {
-        if (error instanceof CreateMailingError) {
-          if (error.code === "list_not_found") {
-            return context.json(errorResponse("not_found", error.message), 404);
-          }
-
-          return context.json(errorResponse(error.code, error.message), 422);
-        }
-
-        throw error;
-      }
+      return runRoute(context, options.runtime, program, (result) => context.json(result, 201));
     },
   );
 
   return routes;
 }
 
-function errorResponse(
-  code: string,
-  message: string,
-): { error: { code: string; message: string } } {
-  return { error: { code, message } };
-}
-
-async function readJsonBody(
-  request: Request,
-): Promise<{ ok: true; value: unknown } | { message: string; ok: false }> {
-  try {
-    return { ok: true, value: await request.json() };
-  } catch {
-    return { message: "Request body must be valid JSON.", ok: false };
-  }
+function decodeToEffect(
+  decoded: Result.Result<CreateMailingInput, RequestValidationError>,
+): Effect.Effect<CreateMailingInput, RequestValidationError> {
+  return Result.isFailure(decoded) ? Effect.fail(decoded.failure) : Effect.succeed(decoded.success);
 }

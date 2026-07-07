@@ -1,33 +1,21 @@
-import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
-const serviceRoot = fileURLToPath(new URL("../../", import.meta.url));
-const temporaryDirectories: string[] = [];
+import { cleanupBunScenarios, runBunScenario } from "../testing/bun-scenario.ts";
 
-afterEach(() => {
-  for (const directory of temporaryDirectories.splice(0)) {
-    rmSync(directory, { force: true, recursive: true });
-  }
-});
+const serviceRoot = fileURLToPath(new URL("../../", import.meta.url));
+
+afterEach(() => cleanupBunScenarios());
 
 describe("createAuth", () => {
   it("creates and verifies an organization-owned API key with the mapped schema", () => {
-    const result = runBunScript(`
-      import { Database } from "bun:sqlite";
-      import { readFileSync } from "node:fs";
-      import { parseMigrationFile } from ${JSON.stringify(`${serviceRoot}src/db/migration-files.ts`)};
+    const result = runBunScenario(
+      `
       import { createAuth, organizationApiKeyConfigId } from ${JSON.stringify(`${serviceRoot}src/auth/auth.ts`)};
-      import { bootstrapOwner } from ${JSON.stringify(`${serviceRoot}src/auth/bootstrap.ts`)};
+      import { createMigratedBunDatabase, seedOwner } from ${JSON.stringify(`${serviceRoot}src/testing/bun-fixtures.ts`)};
 
-      const db = new Database(":memory:", { strict: true });
-      db.run("PRAGMA foreign_keys = ON;");
-      const migration = parseMigrationFile("0002_auth", readFileSync(${JSON.stringify(`${serviceRoot}src/db/migrations/sql/0002_auth.sql`)}, "utf8"));
-      db.run(migration.upSql);
-      const bootstrap = bootstrapOwner(db, {
+      const db = createMigratedBunDatabase();
+      const bootstrap = seedOwner(db, {
         email: "max@example.com",
         name: "Max",
         slug: "nusend",
@@ -67,7 +55,9 @@ describe("createAuth", () => {
         },
       }));
       db.close();
-    `);
+    `,
+      serviceRoot,
+    );
 
     expect(result.status, result.stderr).toBe(0);
     const output = JSON.parse(result.stdout.trim().split("\n").at(-1) ?? "") as {
@@ -82,15 +72,3 @@ describe("createAuth", () => {
     expect(output.verified.permissions).toEqual({ mailings: ["send"] });
   });
 });
-
-function runBunScript(script: string) {
-  const directory = mkdtempSync(join(tmpdir(), "nusend-auth-integration-test-"));
-  temporaryDirectories.push(directory);
-  const scriptPath = join(directory, "scenario.ts");
-  writeFileSync(scriptPath, script);
-
-  return spawnSync("bun", [scriptPath], {
-    cwd: serviceRoot,
-    encoding: "utf8",
-  });
-}
