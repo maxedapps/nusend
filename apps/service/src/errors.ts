@@ -34,6 +34,10 @@ export class RecipientLimitExceededError extends Data.TaggedError("RecipientLimi
   readonly limit: number;
 }> {}
 
+export class IdempotencyConflictError extends Data.TaggedError("IdempotencyConflictError")<{
+  readonly key: string;
+}> {}
+
 export class JobNotLeasedError extends Data.TaggedError("JobNotLeasedError")<{
   readonly jobId: string;
 }> {}

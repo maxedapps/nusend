@@ -1,383 +1,168 @@
 # Nusend Project Summary
 
-## What We Are Building
+## Purpose
 
-Nusend is a self-hostable, open-source MIT email sending service built on top of AWS SES.
+Nusend is a single-user, self-hostable, API-first email orchestration service for AWS SES.
 
-It is not a Mailchimp clone. It is a lean, API-first SES orchestration layer for developers and agents.
+It is not a Mailchimp clone and not a hosted multi-tenant SaaS. The goal is a lean service that developers and agents can run on their own VPS to create, queue, send, and track transactional and marketing email through SES.
 
-Current implemented scope is intentionally smaller than the roadmap:
+## Current Status
 
-- single-user, self-hosted instance auth
-- Google-only Better Auth login with signup disabled
-- user-owned API keys for the implemented API
+Nusend currently supports creating protected mailings, queueing per-recipient delivery jobs, idempotent mailing creation, and a send worker foundation that can send transactional deliveries through AWS SES v2.
+
+Implemented today:
+
+- Bun + Hono HTTP service
+- Effect v4 service/layer architecture
+- SQLite migrations and local database tooling
+- Google-only Better Auth setup with signup disabled
+- single-user/self-hosted auth model
+- owner bootstrap CLI
+- user-owned Better Auth API keys
 - protected `POST /api/mailings`
-- transactional and marketing mailing records
-- explicit-recipient and list-recipient snapshots into `deliveries`
-- suppressions during mailing creation
-- durable `send_delivery` queue primitives with retries and dead-letter states
+- transactional mailing creation with explicit recipients
+- marketing mailing creation from existing list data
+- recipient snapshotting into `deliveries`
+- suppression checks during mailing creation
+- durable `send_delivery` queue primitives
+- mailing creation idempotency via `Idempotency-Key`
+- send attempts / SES message IDs / delivery error persistence
+- purpose-agnostic SES v2 email transport
+- send worker scripts for once/loop processing
+- transactional send pipeline with placeholder rendering
+- terminal marketing send policy block until unsubscribe support exists
+- request/body/content limits
+- sanitized internal error logging
+- production HTTPS validation for auth URLs/trusted origins
 
-Roadmap capabilities include:
+Not implemented yet:
 
-- reusable templates
-- real AWS SES sending
-- send attempts and SES event ingestion
-- unsubscribe routes/pages for marketing recipients
-- public email assets hosted on Cloudflare R2
-- contacts/list management APIs
-- optional CLI/client tooling
+- marketing SES sending
+- unsubscribe routes/pages
+- SES event ingestion
+- contact/list management APIs
+- templates
+- Cloudflare R2 assets
+- CLI/client tooling
 
-Current interface:
+## Current Interface
 
-- HTTP API
+The current interface is the HTTP API in `apps/service`.
 
-Initial deployment target:
+Available routes:
 
-- self-hosted VPS
-- Bun runtime
-- SQLite database
-- AWS SES for delivery
-- Cloudflare R2 for public email assets
+- `GET /health`
+- `GET /health/db`
+- `/api/auth/*` Better Auth passthrough for standard auth methods
+- `POST /api/mailings`
 
-## Core Stack
+Current service scripts:
+
+```sh
+pnpm --filter @nusend/service db:migrate
+pnpm --filter @nusend/service db:status
+pnpm --filter @nusend/service db:rollback
+pnpm --filter @nusend/service auth:bootstrap --email max@example.com --name "Max"
+pnpm --filter @nusend/service dev
+pnpm --filter @nusend/service start
+pnpm --filter @nusend/service worker:send:once
+pnpm --filter @nusend/service worker:send
+```
+
+## Current Stack
 
 - TypeScript
-- Effect (v4) for services/layers, config, schema validation, and typed errors
-- Bun
-- Hono (thin HTTP shell over Effect programs)
-- SQLite via Bun's SQLite client
-- AWS SES v2 (roadmap delivery integration)
-- AWS SNS HTTPS webhook for SES events (roadmap)
-- Cloudflare R2 / S3-compatible API for assets (roadmap)
-- pnpm-managed monorepo
+- Effect `4.0.0-beta.93`
+- Bun runtime
+- Hono `4.12.x`
+- SQLite via Bun's SQLite client in production and Node SQLite in tests
+- Better Auth `1.6.23`
+- Better Auth API Key plugin `1.6.23`
+- pnpm monorepo
 - MIT license
 
-## Product Positioning
+Roadmap integrations:
 
-Recommended positioning:
+- AWS SNS HTTPS webhook for SES events
+- Cloudflare R2 / S3-compatible API for public email assets
 
-> A self-hosted, API-first email service for AWS SES with transactional and marketing sends, scheduling, durable delivery state, and a roadmap for SES feedback handling, contacts, campaigns, unsubscribe management, reusable templates, and ad-hoc messages.
+## Product Boundaries
 
-Keep the product focused on infrastructure and automation. Avoid early scope such as:
+Nusend should focus on infrastructure and automation:
+
+- API-first sending orchestration
+- delivery state tracking
+- durable queueing
+- suppression/unsubscribe handling
+- SES integration and feedback processing
+- predictable machine-readable errors
+
+Avoid early scope:
 
 - visual email editor
-- complex automation journeys
+- complex journey/automation builder
 - A/B testing
 - advanced segmentation
-- large analytics dashboard
+- analytics dashboard
 - hosted SaaS multi-tenancy
+- premature CLI/SDK packages
 
-## Core Data Model: Mailings and Deliveries
+## Auth Model
+
+Nusend is currently single-user and self-hosted per instance.
+
+Principals:
+
+```ts
+type SessionPrincipal = {
+  kind: "session";
+  userId: string;
+};
+
+type ApiKeyPrincipal = {
+  kind: "api_key";
+  apiKeyId: string;
+  userId: string;
+  permissions: Record<string, string[]>;
+};
+```
+
+Rules:
+
+- a valid session is the instance owner
+- session principals bypass per-route permissions intentionally
+- API keys are user-owned and permission-scoped
+- current API-key permission surface is `mailings:create`
+- Better Auth organizations/workspaces are intentionally not used
+- no organization tables or active-organization fields exist in the live schema
+
+Bootstrap creates or updates owner users only; it does not create workspaces.
+
+## Current Data Model
 
 The central model is:
 
 ```txt
 mailings   = content + sending context
-deliveries = one recipient's delivery state
+deliveries = one recipient snapshot + delivery state
+jobs       = durable queue records pointing at domain rows
 ```
 
-This replaces an earlier generic content/message split.
+### Auth Tables
 
-Why:
+Current Better Auth tables:
 
-- a one-off transactional email is one `mailing` with one `delivery`
-- a marketing campaign is one `mailing` with many `deliveries`
-- campaign recipient snapshots are simply delivery rows
-- content is stored once per mailing, not once per recipient
-- transactional vs marketing can be inferred from the parent mailing
-- no generic shared content type is needed
-- no Markdown source is stored in this service
+- `users`
+- `sessions`
+- `accounts`
+- `verifications`
+- `api_keys`
 
-## Transactional vs Marketing Email
+API keys use `reference_id = userId`.
 
-Transactional and marketing emails share the same infrastructure but follow different policies.
+### Lists and Contacts
 
-### Transactional Email
-
-Transactional emails:
-
-- may be sent to arbitrary recipients
-- do not require a contact, list, or campaign
-- do not require unsubscribe links
-- may use reusable templates or ad-hoc content
-- should not be blocked merely because the recipient unsubscribed from or complained about marketing
-- should usually respect hard-bounce suppression, because the address is likely undeliverable
-
-Examples:
-
-- password reset
-- login code
-- purchase receipt
-- account notification
-
-### Marketing Email
-
-Marketing emails:
-
-- are tied to marketing intent
-- often use contacts and lists
-- require unsubscribe support
-- check list/marketing/global suppressions before sending
-- may use reusable templates or ad-hoc newsletter/campaign content
-- snapshot recipients into `deliveries` when scheduled
-
-Examples:
-
-- newsletter
-- product update
-- promotional email
-- announcement campaign
-
-### Policy Difference
-
-The split is enforced by policy, not by separate sending infrastructure.
-
-Relevant context lives on `mailings` and `deliveries`:
-
-- `mailings.purpose`: `transactional` or `marketing`
-- `mailings.list_id`: nullable, mostly marketing
-- `deliveries.contact_id`: nullable
-- `deliveries.email`: actual recipient snapshot
-
-Marketing sends must enforce unsubscribe and suppression rules. Transactional sends must remain possible for sensible account-critical messages unless the address is truly undeliverable or manually blocked at an all-mail scope.
-
-## HTML Rendering and mdtoemail
-
-Markdown-to-email-HTML rendering is integral to the product, but it is handled by the separate `mdtoemail` package.
-
-Nusend should receive/store final HTML and optional text content. Nusend should not store raw Markdown input.
-
-`mdtoemail` remains responsible for:
-
-- Markdown to conservative email-friendly HTML
-- table-based email layout
-- inline styles
-- safe theme tokens
-- diagnostics and strict mode
-- HTTPS-only image validation
-- raw HTML escaping/removal
-- email-client compatibility decisions
-
-Nusend is responsible for:
-
-- accepting final `subject`, `html`, and optional `text`
-- storing those values on `mailings`
-- safe variable rendering if template variables are supported
-- enforcing marketing unsubscribe policy
-- sending via SES
-- tracking delivery state
-
-### mdtoemail Integration Boundary
-
-Recommended boundary:
-
-```txt
-author/compiler side:
-  Markdown -> mdtoemail -> final HTML/text
-
-Nusend side:
-  final subject/html/text -> mailing -> deliveries -> SES
-```
-
-Nusend may call `mdtoemail` through an API/library for convenience, but the database should not depend on or preserve Markdown source.
-
-### Template Variables
-
-Avoid naive string replacement in final HTML.
-
-If Nusend supports variables, rendering must be context-aware:
-
-- subject/text values need text normalization
-- HTML text nodes need HTML escaping
-- URL attributes need URL validation
-- image URLs should be absolute HTTPS URLs
-- unsubscribe URLs should be generated server-side and signed
-
-Keep the variable system intentionally small.
-
-## Templates
-
-Templates are reusable content definitions, not delivery history.
-
-Conceptual schema:
-
-```sql
-templates(
-  id,
-  name,
-  purpose, -- transactional | marketing
-  subject,
-  html,
-  text,
-  created_at,
-  updated_at
-)
-```
-
-When sending from a template, copy the template's current `subject`, `html`, and `text` into a `mailing`. This makes the send immutable without requiring template-version tables in the MVP.
-
-Template versions can be added later only if there is a concrete need for historical editing/audit workflows.
-
-## Mailings
-
-A `mailing` represents a send batch. It can target one recipient or many recipients.
-
-Conceptual schema:
-
-```sql
-mailings(
-  id,
-  purpose, -- transactional | marketing
-  state,   -- draft | scheduled | sending | paused | cancelled | completed
-
-  name,    -- nullable; useful for marketing campaigns/newsletters
-  subject,
-  html,
-  text,    -- nullable but recommended
-
-  list_id, -- nullable; marketing context
-  scheduled_at,
-
-  created_at,
-  updated_at
-)
-```
-
-Notes:
-
-- `html` is final email HTML or an HTML template with supported placeholders.
-- `text` is optional but recommended for deliverability and accessibility.
-- No Markdown source column.
-- No `source = template | ad_hoc` column; infer from how the row was created if needed.
-- No `template_id` initially; if a template is used, copy its content into the mailing.
-- A marketing “campaign” is simply a marketing mailing.
-
-### Mailing States
-
-```txt
-draft
-scheduled
-sending
-paused
-cancelled
-completed
-```
-
-`completed` can be derived from deliveries, but storing it is useful for workflow and quick listing. It must be updated consistently by the worker/service.
-
-## Deliveries
-
-A `delivery` represents one recipient's delivery state for a mailing.
-
-Conceptual schema:
-
-```sql
-deliveries(
-  id,
-  mailing_id,
-  email,
-  contact_id, -- nullable
-  vars_json,  -- nullable personalization data
-
-  status, -- scheduled | queued | sending | sent | delivered | bounced | complained | failed | suppressed | cancelled
-
-  ses_message_id,
-  last_error,
-
-  created_at,
-  updated_at
-)
-```
-
-Notes:
-
-- No `purpose` column; infer from `mailings.purpose`.
-- No subject/body columns; infer from `mailings`.
-- `email` is snapshotted so delivery history remains stable even if a contact changes later.
-- `vars_json` stores per-recipient personalization data when needed.
-- Campaign recipient snapshots are represented by many delivery rows for one marketing mailing.
-
-### Delivery Statuses
-
-```txt
-scheduled
-queued
-sending
-sent
-delivered
-bounced
-complained
-failed
-suppressed
-cancelled
-```
-
-A later implementation may add an explicit `unknown` / `possibly_sent` status for ambiguous failures after calling SES.
-
-## Sending Flows
-
-### One-Off Transactional Send
-
-```txt
-POST /send
-  -> create mailing(purpose=transactional, subject/html/text)
-  -> create one delivery(email, vars_json?)
-  -> enqueue send_delivery job
-```
-
-### Transactional Send From Template
-
-```txt
-load template
-  -> copy subject/html/text into mailing(purpose=transactional)
-  -> create one delivery(email, vars_json?)
-  -> enqueue send_delivery job
-```
-
-### Marketing Campaign / Newsletter
-
-```txt
-create mailing(purpose=marketing, list_id, subject/html/text)
-  -> snapshot subscribed contacts into deliveries
-  -> enqueue one send_delivery job per delivery
-```
-
-Campaign progress is derived from deliveries:
-
-```sql
-select count(*) from deliveries where mailing_id = ?;
-select count(*) from deliveries where mailing_id = ? and status = 'delivered';
-select count(*) from deliveries where mailing_id = ? and status = 'bounced';
-select count(*) from deliveries where mailing_id = ? and status = 'complained';
-```
-
-## Contacts and Lists
-
-Keep contact/list models simple.
-
-### Contacts
-
-```sql
-contacts(
-  id,
-  email,
-  created_at,
-  updated_at
-)
-```
-
-Roadmap: add contact-level personalization only when list personalization is implemented. A future column such as `attrs_json` could store optional data:
-
-```json
-{
-  "firstName": "Max",
-  "plan": "Pro"
-}
-```
-
-Avoid a contact `status` column initially unless it is clearly needed. Subscription and suppression state live in dedicated tables.
-
-### Lists
+Current schema supports list-based recipient resolution:
 
 ```sql
 lists(
@@ -385,11 +170,14 @@ lists(
   name,
   created_at
 )
-```
 
-### List Memberships
+contacts(
+  id,
+  email,
+  created_at,
+  updated_at
+)
 
-```sql
 list_memberships(
   list_id,
   contact_id,
@@ -398,150 +186,140 @@ list_memberships(
 )
 ```
 
-No separate membership `status` column is needed.
+Important limitation: list/contact management APIs do not exist yet. Lists and contacts can currently only be managed directly in the database or tests.
 
-A membership is subscribed if:
+A membership is subscribed when:
 
 ```sql
-unsubscribed_at is null
+unsubscribed_at IS NULL
 ```
 
-## Suppressions and Unsubscribe Handling
+Contact-level personalization is not implemented. A future migration may add contact attributes when list personalization APIs exist.
 
-Suppressions are first-class and separate from list membership state.
+### Suppressions
 
-Conceptual schema:
+Current schema:
 
 ```sql
 suppressions(
   id,
   email,
-  scope,  -- all | marketing | list
+  scope,     -- all | marketing | list
   list_id,
-  reason, -- bounce | complaint | unsubscribe | manual
+  reason,    -- bounce | complaint | unsubscribe | manual
   created_at
 )
 ```
 
-### Suppression Scopes
+Suppression scopes:
 
 ```txt
-all       -> blocks transactional and marketing
-marketing -> blocks marketing only
-list      -> blocks a specific list only
+all        blocks transactional and marketing
+marketing  blocks marketing only
+list       blocks one list only
 ```
 
-### Recommended Policy
+Current create-mailing behavior:
 
-Hard permanent bounce:
+- transactional mailings check only `scope = all`
+- marketing mailings check `all`, `marketing`, and matching `list`
+- all-suppressed or empty recipient sets return `422 empty_recipient_set`
+- partially suppressed mailings still persist suppressed `deliveries` rows, but only unsuppressed deliveries get jobs
 
-```txt
-create suppression(scope=all, reason=bounce)
-```
+### Mailings
 
-Marketing unsubscribe:
-
-```txt
-create suppression(scope=list or marketing, reason=unsubscribe)
-set list_memberships.unsubscribed_at if list-specific
-```
-
-Complaint from marketing email:
-
-```txt
-delivery.status = complained
-create suppression(scope=marketing or list, reason=complaint)
-```
-
-Complaint from transactional email:
-
-```txt
-delivery.status = complained
-record SES event
-create suppression(scope=marketing, reason=complaint) if appropriate
-do not automatically create scope=all
-```
-
-Rationale: a complaint should stop unwanted marketing, but should not automatically make important transactional email impossible. Password resets, login codes, receipts, and account-critical notifications may still be necessary.
-
-Manual suppression:
-
-```txt
-scope chosen by user/admin/API caller
-```
-
-### Unsubscribe Page
-
-The only initial public UI is an unsubscribe page.
-
-Unsubscribe links should:
-
-- use signed tokens
-- avoid exposing raw internal IDs unnecessarily
-- encode mailing/list/recipient context
-- work reliably without authentication
-- update list membership and/or suppressions
-- be required for marketing mailings
-
-Marketing sends must not proceed without unsubscribe support.
-
-## Queue Design
-
-SQLite is acceptable for the initial self-hosted queue if implemented carefully.
-
-Jobs should be small and reference domain rows instead of storing full payloads.
-
-Conceptual schema:
+Current schema:
 
 ```sql
-jobs(
+mailings(
   id,
-  kind, -- send_delivery
-  state, -- queued | leased | succeeded | failed | dead | cancelled
-
-  run_at,
-  attempts,
-  max_attempts,
-  locked_by,
-  locked_until,
-
-  ref_id,
-  last_error,
-
+  purpose,      -- transactional | marketing
+  state,        -- draft | scheduled | sending | paused | cancelled | completed
+  name,
+  subject,
+  html,
+  text,
+  list_id,
+  scheduled_at,
   created_at,
   updated_at
 )
 ```
 
-`kind + ref_id` determines what table to load. No generic `ref_type` is needed initially.
+Notes:
 
-`state = dead` is the dead-letter queue. No separate DLQ table is needed initially.
+- `subject`, `html`, and optional `text` are stored on the mailing.
+- `html` is final HTML or a placeholder-bearing template string rendered by the send worker.
+- current placeholders are limited to `{{ user.email }}` and `{{ vars.<key> }}`; HTML placeholder values are escaped.
+- raw Markdown is not stored in Nusend.
+- a marketing campaign is represented as a marketing mailing.
+- currently all created mailings use `state = scheduled`.
 
-Recommended queue behavior:
+### Deliveries
 
-- enable SQLite WAL mode
-- set `busy_timeout`
-- use short transactions
-- atomically claim jobs
-- use leases with expiration
-- retry with backoff
-- mark as `dead` after max attempts
-- keep job payloads tiny
-- roadmap: store detailed send history in `send_attempts` once real SES sending exists
+Current schema:
 
-Possible state transitions:
-
-```txt
-queued -> leased -> succeeded
-queued -> leased -> failed -> queued
-queued -> leased -> dead
-queued -> cancelled
-leased -> queued       -- lease expired / worker crashed
+```sql
+deliveries(
+  id,
+  mailing_id,
+  email,
+  contact_id,
+  vars_json,
+  status,       -- scheduled | queued | sending | sent | delivered | bounced | complained | failed | suppressed | cancelled
+  ses_message_id,
+  last_error,
+  created_at,
+  updated_at
+)
 ```
 
-## Send Attempts
+Notes:
 
-Keep send attempts separate because they are operationally useful and safety-relevant.
+- `email` is snapshotted.
+- `contact_id` is nullable.
+- `vars_json` is per-recipient personalization data supplied by explicit-recipient requests.
+- list recipient personalization is not implemented yet because contacts have no attrs column.
+- `ses_message_id` stores the provider message ID after SES accepts a send.
+- `last_error` stores a safe, bounded delivery-level failure reason.
+
+### Jobs
+
+Current schema:
+
+```sql
+jobs(
+  id,
+  kind,          -- send_delivery
+  state,         -- queued | leased | succeeded | failed | dead | cancelled
+  run_at,
+  attempts,
+  max_attempts,
+  locked_by,
+  locked_until,
+  ref_id,
+  last_error,
+  created_at,
+  updated_at
+)
+```
+
+`jobs.ref_id` points to `deliveries.id` for `send_delivery` jobs.
+
+Current queue primitives support:
+
+- claim due jobs atomically
+- lease metadata
+- retry with SQL-backed backoff
+- release expired leases
+- complete jobs
+- fail jobs into retry or dead state
+
+`worker:send:once` and `worker:send` consume due `send_delivery` jobs. The queue runner owns complete/fail transitions; the send processor records delivery/attempt state and returns success/failure.
+
+### Send Attempts
+
+Current schema:
 
 ```sql
 send_attempts(
@@ -549,7 +327,7 @@ send_attempts(
   delivery_id,
   job_id,
   attempt_no,
-  status,
+  status,          -- started | succeeded | failed | ambiguous
   ses_message_id,
   error_message,
   started_at,
@@ -557,158 +335,328 @@ send_attempts(
 )
 ```
 
-SES does not appear to expose an application-level idempotency token for normal sending. Nusend should assume at-least-once processing and handle ambiguous failures carefully.
+Attempts are created before the external SES call, then updated after success/failure. DB transactions stay short and never wrap the SES request.
 
-## SES Sending
+## Current Mailings API
 
-Use AWS SES v2 `SendEmail`.
+`POST /api/mailings` creates a mailing, snapshots recipients into deliveries, and queues one `send_delivery` job per unsuppressed delivery.
 
-Worker flow:
+Auth:
+
+- Better Auth session, or
+- user-owned API key with `mailings:create`
+
+Request must provide exactly one recipient source:
+
+- `recipients` for explicit recipients
+- `listId` for list recipients
+
+Transactional requests must use explicit `recipients`. Marketing requests may use `recipients` or `listId`.
+
+Current limits:
+
+- request body: 1 MB
+- explicit recipients: 1,000
+- list recipients: 5,000
+- suppression/contact lookup batch size: 500
+- subject: 200 chars
+- name: 120 chars
+- html/text: 200,000 chars each
+- email: 320 chars
+- list ID: 200 chars
+- serialized recipient `vars`: 10,000 bytes
+- `Idempotency-Key`: 255 characters after trimming
+
+Successful creation returns the mailing ID, purpose, scheduled time, state, and delivery/queued/suppressed counts.
+
+Optional `Idempotency-Key` behavior:
+
+- same key + same normalized request returns the original creation response
+- same key + different normalized request returns `409 idempotency_conflict`
+- response snapshots are stored so later delivery status changes do not alter replay responses
+
+## Sending Architecture
+
+Email sending should be a pipeline. The raw sender should remain purpose-agnostic.
+
+Final worker flow:
 
 ```txt
 claim send_delivery job
-  -> load delivery
-  -> load mailing
-  -> check suppression/list policy
-  -> render variables if needed
-  -> choose SES configuration set from mailing purpose
-  -> send via SES
-  -> write send_attempt
-  -> store ses_message_id on delivery
-  -> update delivery status
-  -> complete job
+  -> load delivery + mailing
+  -> start send attempt
+  -> run policy gates
+  -> render placeholders
+  -> prepare transport email
+  -> call raw transport sender
+  -> record outcome
+  -> complete/fail job
 ```
 
-Important SES constraints:
+The raw transport sender should only know how to send a prepared email:
 
-- sending quotas are per AWS region
-- quotas are based on recipients
-- SES has max send rate and 24-hour send quota
-- sandbox accounts are heavily limited
-- `SendEmail` supports Simple, Raw, and Templated content
-- Simple messages can include HTML, text, or both
-- `SendEmail` accepts `ConfigurationSetName`
-- `SendEmail` accepts `EmailTags`
-- SES can accept a message without ultimately sending it in some cases
+```ts
+type PreparedEmail = {
+  from: string;
+  to: string;
+  subject: string;
+  html: string;
+  text: string | null;
+  headers: Record<string, string>;
+  tags: Record<string, string>;
+  configurationSetName: string | null;
+};
+```
 
-Nusend should eventually include quota/rate awareness to avoid exceeding SES limits.
+It should not know about:
 
-## SES Configuration Sets
+- marketing vs transactional policy
+- unsubscribe rules
+- suppression policy
+- mailing creation idempotency
+- queue retry policy
 
-Use SES configuration sets.
+Those belong in earlier pipeline stages.
 
-AWS SES event publishing to SNS is configured through configuration sets. `SendEmail` accepts a `ConfigurationSetName`, and SES publishes configured events for messages sent with that configuration set.
+### Pipeline Stages
 
-Recommended configuration sets:
+1. **Claim job**
+   - use existing queue claim logic
+   - job remains leased while processing
+
+2. **Load context**
+   - load delivery by `job.ref_id`
+   - load mailing by `delivery.mailing_id`
+
+3. **Start attempt**
+   - insert `send_attempts` row
+   - mark delivery `sending`
+   - do this in a short DB transaction
+
+4. **Policy gates**
+   - skip/complete already terminal deliveries
+   - re-check suppressions immediately before sending
+   - enforce marketing unsubscribe/compliance requirements before marketing sends
+   - future: quota/rate checks
+
+5. **Render placeholders**
+   - render subject/html/text for this delivery
+   - current context supports:
+     - `user.email`
+     - `vars.*` from `deliveries.vars_json`
+   - HTML placeholder values are escaped; subject/text substitutions stay plain text
+   - future richer rendering work includes context-aware URL handling and `unsubscribe.url`
+
+6. **Prepare transport email**
+   - set `from`, `to`, subject/html/text
+   - set SES tags such as `mailing_id`, `delivery_id`, `purpose`
+   - choose configuration set if configured
+   - include headers produced by policy/preparation stages
+
+7. **Raw send**
+   - call SES v2 `SendEmail`
+   - return provider message ID
+
+8. **Record success**
+   - mark attempt succeeded
+   - store SES message ID
+   - mark delivery `sent`
+   - complete job
+
+9. **Record failure**
+   - mark attempt failed
+   - store safe error message
+   - for retryable failures, `failJob` so queue backoff handles retry/dead state
+   - for permanent policy failures, mark delivery failed/suppressed and complete or intentionally dead-letter according to the policy
+
+Never hold a DB transaction open while calling SES.
+
+### Transactional Sending Flow
+
+Transactional sending uses the same pipeline and raw sender.
+
+Policy expectations:
+
+- explicit recipients only at creation time
+- no unsubscribe requirement
+- `scope=all` suppressions block sending
+- marketing/list suppressions do not block transactional sending
+
+Current milestone recommendation:
+
+- enable transactional sending first
+- keep marketing sending blocked by policy until unsubscribe support exists
+
+### Marketing Sending Flow
+
+Marketing sending uses the same raw sender, with additional policy/preparation before the raw send step.
+
+Creation flow:
 
 ```txt
-nusend-transactional
-nusend-marketing
+POST /api/mailings purpose=marketing listId=...
+  -> validate/auth/idempotency
+  -> load subscribed list contacts
+  -> apply create-time suppressions
+  -> create mailing
+  -> snapshot deliveries
+  -> create send_delivery jobs
 ```
 
-Use the appropriate configuration set on every send:
+Worker policy/preparation flow:
 
 ```txt
-mailings.purpose = transactional -> nusend-transactional
-mailings.purpose = marketing      -> nusend-marketing
+load delivery + mailing
+  -> re-check all/marketing/list suppressions
+  -> require unsubscribe feature/config
+  -> generate signed unsubscribe URL
+  -> expose unsubscribe.url to rendering
+  -> add List-Unsubscribe headers
+  -> prepare generic transport email
+  -> raw sender sends prepared email
 ```
 
-Send SES email tags for easier event correlation and debugging:
+Marketing-specific requirements:
+
+- public unsubscribe route/page
+- signed unsubscribe token
+- list or marketing suppression on unsubscribe
+- `List-Unsubscribe` header
+- `List-Unsubscribe-Post: List-Unsubscribe=One-Click` where supported
+
+Key boundary: marketing compliance is a policy/preparation concern, not raw sender logic.
+
+## Pre-Send Safety Requirements
+
+Nusend now has the two safety foundations required before real SES sending: mailing creation idempotency and send attempts.
+
+### Mailing Creation Idempotency
+
+`POST /api/mailings` supports an optional `Idempotency-Key` header.
+
+Behavior:
+
+- same key + same normalized request returns the original creation response
+- same key + different normalized request returns `409 idempotency_conflict`
+- idempotency records store `response_json` so retries do not recompute mutable delivery counts after sending
+- DB uniqueness conflicts are re-read instead of leaking raw constraint errors
+
+Current table:
+
+```sql
+mailing_idempotency_keys(
+  key TEXT PRIMARY KEY,
+  request_hash TEXT NOT NULL,
+  mailing_id TEXT NOT NULL REFERENCES mailings(id) ON DELETE CASCADE,
+  response_json TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (...)
+)
+```
+
+### Send Attempts and Ambiguous Sends
+
+SES normal `SendEmail` does not provide a true application-level idempotency token. Nusend must assume at-least-once processing around crashes/timeouts.
+
+Current send-attempt model:
+
+```sql
+send_attempts(
+  id,
+  delivery_id,
+  job_id,
+  attempt_no,
+  status,          -- started | succeeded | failed | ambiguous
+  ses_message_id,
+  error_message,
+  started_at,
+  finished_at
+)
+```
+
+Current delivery outcome fields:
+
+```sql
+deliveries.ses_message_id
+deliveries.last_error
+```
+
+Important ambiguity:
+
+```txt
+SES accepts message -> process crashes before DB success write -> lease expires -> retry can duplicate send
+```
+
+This cannot be eliminated completely without provider idempotency. Mitigate by recording attempts before sending, keeping sends one-recipient-per-delivery, using clear statuses, and surfacing ambiguous states if needed.
+
+### Marketing Compliance Gate
+
+Marketing sends are currently blocked by worker policy until unsubscribe support exists. Marketing jobs become terminal delivery failures with a clear policy error and do not call the raw transport.
+
+Create-time validation is not enough. The worker pipeline must enforce marketing compliance immediately before raw sending.
+
+Required before unblocking marketing:
+
+- public unsubscribe URL config
+- signed unsubscribe token generation
+- unsubscribe endpoint/page
+- suppression write on unsubscribe
+- `List-Unsubscribe` headers
+- policy tests proving marketing cannot send without this support
+
+## SES Integration Vision
+
+Use AWS SES v2 `SendEmail` through an `EmailTransport` service.
+
+Recommended service boundary:
+
+```ts
+interface EmailTransport {
+  send(email: PreparedEmail): Effect.Effect<SendResult, EmailTransportError>;
+}
+```
+
+Live implementation:
+
+- wraps `@aws-sdk/client-sesv2`
+- maps AWS errors into typed errors
+- never logs secrets or full payloads
+- returns SES message ID on success
+
+Test implementation:
+
+- fake transport service
+- can simulate success, retryable failure, permanent failure, and ambiguous failure
+
+Current SES / send-worker config:
+
+```txt
+AWS_REGION
+NUSEND_SES_FROM_EMAIL
+NUSEND_SES_TRANSACTIONAL_CONFIGURATION_SET optional
+NUSEND_SES_MARKETING_CONFIGURATION_SET optional, future
+NUSEND_SES_REQUEST_TIMEOUT_MS default 30000
+NUSEND_SEND_WORKER_LEASE_SECONDS default 300
+NUSEND_SEND_WORKER_BATCH_SIZE default 1
+NUSEND_SEND_WORKER_POLL_MS default 5000
+```
+
+`NUSEND_SEND_WORKER_BATCH_SIZE * NUSEND_SES_REQUEST_TIMEOUT_MS + 10000` must stay below `NUSEND_SEND_WORKER_LEASE_SECONDS * 1000`.
+
+SES tags should include:
 
 ```txt
 mailing_id
- delivery_id
+delivery_id
 purpose
 ```
 
-Primary event mapping should still use:
+Configuration sets should be selected in the prepare stage and passed to the raw transport as already-computed data.
 
-```txt
-SES mail.messageId -> deliveries.ses_message_id
-```
-
-### Configuration Set Event Destinations
-
-Configure SNS event destinations for the configuration sets.
-
-Events to support early:
-
-- Bounce
-- Complaint
-- Delivery
-- Send
-- Reject
-- Rendering Failure
-- DeliveryDelay
-- Subscription if SES list management is ever used
-
-Open/click tracking can be added later only if explicitly desired.
-
-## SES Suppression Settings
-
-SES has its own account-level suppression list and configuration set-level suppression overrides.
-
-Important researched behavior:
-
-- SES account-level suppression can apply to bounces and complaints.
-- Newer SES accounts may use account-level suppression by default for both bounces and complaints.
-- SES accepts messages to account-suppressed addresses but does not send them when suppression reasons match.
-- Messages to account-suppressed addresses still count toward daily sending quota.
-- Only hard bounces are added to the account-level suppression list for bounce suppression.
-- Configuration sets can override account-level suppression behavior.
-- Config-set suppression is not a separate list; it changes which reasons apply when using that config set.
-
-### Recommended Nusend Position
-
-Nusend's own database suppressions should be the application source of truth.
-
-Use SES configuration sets primarily for event publishing.
-
-Be cautious with SES-managed suppression because account-level complaint suppression can interfere with transactional email if not configured carefully.
-
-Possible SES setup:
-
-```txt
-marketing config set:
-  suppression: bounce + complaint is acceptable
-
-transactional config set:
-  suppression: bounce only, or carefully override complaint-based suppression
-```
-
-Rationale:
-
-- A hard bounce means the address is probably undeliverable.
-- A complaint should stop marketing.
-- A complaint should not automatically block password resets, login codes, receipts, or other account-critical transactional email.
-
-Exact SES suppression setup should be documented clearly for operators because SES account defaults may differ by account age/configuration.
-
-## SES ListManagementOptions
-
-Do not use SES-managed ListManagementOptions initially.
-
-Reasons:
-
-- Nusend has its own contacts/lists/unsubscribe model.
-- SES ListManagementOptions makes SES manage unsubscribe preferences.
-- It requires the `{{amazonSESUnsubscribeUrl}}` placeholder.
-- SES overrides existing `List-Unsubscribe` headers when used.
-- SES only adds list-unsubscribe/footer behavior for single-recipient sends.
-
-Instead:
-
-- implement Nusend's own unsubscribe page
-- generate Nusend unsubscribe URLs
-- add appropriate `List-Unsubscribe` / `List-Unsubscribe-Post` headers for marketing mail
-- process unsubscribe actions into Nusend suppressions/list memberships
-- use SES configuration sets for feedback events
-
-## SES Event Handling
+## SES Events Roadmap
 
 Use SES configuration sets and SNS HTTPS webhook delivery.
 
-Conceptual schema:
+Future event table:
 
 ```sql
 ses_events(
@@ -723,8 +671,6 @@ ses_events(
 )
 ```
 
-No `recipient_email` column is needed if `delivery_id` maps successfully. Raw JSON preserves event details.
-
 Webhook flow:
 
 ```txt
@@ -732,91 +678,120 @@ receive SNS request
   -> verify SNS signature
   -> validate expected TopicArn
   -> handle SubscriptionConfirmation
-  -> store raw ses_event
+  -> store raw event
   -> idempotently process event
-  -> map ses_message_id to delivery
+  -> map SES message ID to delivery
   -> update delivery status
   -> update suppressions for bounces/complaints/unsubscribes
 ```
 
 SNS signature verification is required.
 
-Event processing must be idempotent because SNS may retry deliveries.
+Events to support early:
 
-### SES Event Details to Consider
+- Bounce
+- Complaint
+- Delivery
+- Send
+- Reject
+- Rendering Failure
+- DeliveryDelay
 
-SES event payloads include:
+Open/click tracking should be optional and only added if explicitly desired.
 
-- `eventType`
-- `mail.messageId`
-- `mail.tags`
-- `bounce.bounceType`
-- `bounce.bounceSubType`
-- `bounce.bouncedRecipients`
-- `complaint.complainedRecipients`
-- `delivery.recipients`
+## Suppression and Unsubscribe Policy
 
-Complaint caveat: many ISPs redact the actual complainant. SES may include all same-domain recipients for the complained message. Since Nusend sends one delivery per recipient, mapping by SES message ID should remain precise.
+Nusend's database suppressions are the application source of truth.
 
-## Cloudflare R2 Assets
+Recommended policy:
 
-Cloudflare R2 will store public email assets such as images.
+- hard permanent bounce -> `scope=all`, `reason=bounce`
+- marketing unsubscribe -> `scope=list` or `scope=marketing`, `reason=unsubscribe`
+- marketing complaint -> `scope=marketing` or `scope=list`, `reason=complaint`
+- transactional complaint -> record event; do not automatically block all transactional email
+- manual suppression -> caller chooses scope deliberately
+
+Rationale: a complaint should stop unwanted marketing, but should not automatically make password resets, login codes, receipts, or account-critical transactional email impossible.
+
+Do not use SES-managed `ListManagementOptions` initially because Nusend owns contacts, lists, unsubscribe links, and suppression behavior.
+
+SES configuration sets should be used primarily for event publishing and optional suppression behavior. Operators must configure SES suppression carefully because account-level complaint suppression can interfere with transactional mail.
+
+## Templates and Rendering Roadmap
+
+Templates are not implemented today.
+
+Future template model:
+
+```sql
+templates(
+  id,
+  name,
+  purpose,
+  subject,
+  html,
+  text,
+  created_at,
+  updated_at
+)
+```
+
+When sending from a template, copy the current subject/html/text into `mailings`. This makes each send immutable without template-version tables.
+
+Markdown-to-email HTML rendering should remain outside Nusend, ideally in the separate `mdtoemail` package. Nusend should store final HTML/text, not raw Markdown.
+
+If placeholders are supported, rendering must be safe by context:
+
+- text contexts escape/normalize text
+- HTML text nodes escape HTML
+- URL attributes validate URLs
+- generated unsubscribe URLs are signed server-side
+- missing variables fail predictably
+
+Keep the placeholder system small. Initial useful variables:
+
+```txt
+{{ user.email }}
+{{ vars.firstName }}
+{{ unsubscribe.url }}  -- marketing only, after unsubscribe support exists
+```
+
+## Cloudflare R2 Assets Roadmap
+
+Cloudflare R2 can later store public email assets such as images.
 
 Recommendations:
 
 - use a custom domain for production assets
 - avoid relying on `r2.dev` for production
-- final email image URLs should be absolute HTTPS URLs
-- no local or relative image URLs should remain in final email HTML
-- asset upload/management can be exposed via API/CLI
+- require final email image URLs to be absolute HTTPS URLs
+- resolve/upload assets before final HTML is stored on a mailing
+- expose asset management only after core sending is stable
 
-R2 asset URLs should be resolved before the final HTML is stored on a mailing.
+## Future Client Tooling
 
-## API and Future Clients
+No CLI exists today.
 
-Current interface:
+A CLI or typed SDK can be added later when there is a concrete need. Any future CLI should:
 
-- Hono HTTP API
+- call the public HTTP API
+- avoid importing service internals
+- support JSON output
+- be installable independently if it becomes a real distributable
 
-Future client tooling can include a Bun-powered CLI or typed SDK after the HTTP API is stable. Any future CLI should call the public HTTP API and must not import service internals such as DB, queue, or SES modules.
+Do not add shared packages until there are at least two real consumers.
 
-Agent-friendly API traits:
+## Repository Shape
 
-- predictable REST resources
-- JSON request/response bodies
-- machine-readable errors
-- idempotency keys for create/send operations before real delivery
-- dry-run/preview endpoints later
-- health endpoint
-- OpenAPI later
-
-Current API area:
-
-- protected mailing creation
-
-Potential future API areas:
-
-- deliveries
-- templates
-- contacts
-- lists
-- suppressions
-- assets
-- queue inspection/admin
-- SES webhooks
-- unsubscribe
-
-## pnpm Monorepo Structure
-
-Keep the monorepo lean. Current structure:
+Current structure:
 
 ```txt
 nusend/
   package.json
   pnpm-workspace.yaml
   tsconfig.base.json
+  vitest.config.ts
   README.md
-  LICENSE
   PROJECT.md
 
   apps/
@@ -824,8 +799,8 @@ nusend/
       package.json
       tsconfig.json
       src/
-        main.ts
         app.ts
+        main.ts
         config.ts
         auth/
         db/
@@ -836,172 +811,102 @@ nusend/
         testing/
 ```
 
-No `packages/` folder initially. Add packages only when code is truly shared between real apps/consumers.
+No `apps/cli` and no `packages/*` exist today.
 
-### API and Worker in One App
+Keep API and future worker entrypoints inside `apps/service` initially. They share DB access, queue logic, delivery state transitions, suppression logic, SES config, and rendering/preparation code.
 
-Do not split API and worker into separate workspace apps initially. They share too much: DB access, queue logic, delivery state transitions, suppression logic, SES integration, rendering logic, and config/env loading.
+## Roadmap Order
 
-When the send worker is implemented, keep it in `apps/service` as another entrypoint rather than a separate app.
+Recommended next phases:
 
-### Future CLI
+### 1. Sending foundation
 
-A CLI is deferred. Add it only when there is a concrete distributable/client need. It should be a separate app then because it would have a `bin`, talk to the service over HTTP, and be installable independently.
+- add idempotency for `POST /api/mailings`
+- add `send_attempts`
+- add `deliveries.ses_message_id` and `deliveries.last_error`
+- add send pipeline modules
+- add purpose-agnostic `EmailTransport`
+- add transactional SES sending first
+- add worker `run once` and loop entrypoints
+- keep marketing sends blocked by policy until unsubscribe support exists
 
-### No Premature Shared Packages
+### 2. Marketing compliance
 
-Do not create these initially:
+- public unsubscribe URL config
+- signed unsubscribe tokens
+- unsubscribe endpoint/page
+- suppression/list-membership update on unsubscribe
+- `List-Unsubscribe` headers
+- unblock marketing sending only after policy tests pass
 
-- `packages/core`
-- `packages/db`
-- `packages/queue`
-- `packages/email`
-- `packages/types`
-- `packages/client`
+### 3. SES feedback events
 
-Create `packages/client` only after there are at least two real consumers of shared client code, for example a future CLI plus SDK users or integration tests.
-
-### Workspace Config
-
-Minimal `pnpm-workspace.yaml`:
-
-```yaml
-packages:
-  - "apps/*"
-```
-
-### TypeScript Notes
-
-Use strict TypeScript. Prefer stable HTTP/OpenAPI behavior first. Add a typed SDK/client package later only if needed.
-
-## Initial Build Phases
-
-### Phase 1: Repository and Service Foundation
-
-Implemented/current:
-
-- pnpm workspace
-- `apps/service`
-- Hono server
-- config/env loading
-- SQLite connection
-- migrations
-- health endpoint
-
-Deferred:
-
-- CLI, if/when a concrete client need exists
-
-### Phase 2: Durable Queue
-
-- jobs table
-- queue claim/release/complete/fail/dead logic
-- retries/backoff
-- lease expiration
-
-Deferred:
-
-- worker process
-- queue admin API/CLI
-
-### Phase 3: Mailings and Transactional Sending
-
-- `mailings`
-- `deliveries`
-- ad-hoc transactional mailing creation
-
-Deferred before real sending:
-
-- SES send integration
-- send attempts
-- delivery status updates
-- idempotency keys
-
-### Phase 4: Templates and Variable Rendering
-
-- reusable templates
-- copy template content into mailings
-- safe variable rendering
-- preview/dry-run endpoint
-- optional mdtoemail API integration for convenience, without storing Markdown source
-
-### Phase 5: Contacts, Lists, and Marketing Mailings
-
-- contacts
-- lists
-- list memberships
-- marketing mailing creation/scheduling
-- snapshot list contacts into deliveries
-
-### Phase 6: Suppression and Unsubscribe
-
-- suppression table
-- marketing suppression checks
-- signed unsubscribe links
-- public unsubscribe page
-- list/marketing unsubscribe behavior
-
-### Phase 7: SES Configuration Sets and Events
-
-- SES configuration set docs/setup
+- configuration-set docs/setup
 - SNS webhook
-- signature verification
-- subscription confirmation
-- event storage
-- bounce/complaint/delivery/reject/delay processing
-- automatic suppression updates
+- SNS signature verification
+- raw event storage
+- idempotent event processing
+- delivery status updates
+- bounce/complaint suppressions
 
-### Phase 8: R2 Assets
+### 4. Contact/list management APIs
 
-- asset upload API/CLI (future)
-- R2 storage
-- public custom-domain URLs
-- final HTML asset URL validation/integration
+- create/update/delete lists
+- add/import contacts
+- subscribe/unsubscribe memberships
+- manage suppressions manually
 
-### Phase 9: Agent-Friendly Polish
+### 5. Templates and placeholder rendering
 
-- structured errors
-- idempotency keys
-- dry-run endpoints
-- JSON CLI output (future, if CLI is added)
-- OpenAPI generation
+- template CRUD if needed
+- safe placeholder renderer
+- preview/dry-run endpoint
+- optional mdtoemail integration boundary
+
+### 6. Assets and polish
+
+- R2 asset upload/management
+- OpenAPI docs
 - deployment docs
-- systemd/Docker guidance
+- Docker/systemd guidance
+- future CLI/SDK only if needed
 
 ## Key Safety Principles
 
-- Do not send marketing emails without unsubscribe support.
-- Do not make transactional email impossible because of a marketing unsubscribe or complaint.
-- Treat permanent hard bounces as likely all-mail undeliverability.
-- Do not blindly retry ambiguous SES failures without considering duplicate-send risk.
-- Store SES events raw before processing.
-- Verify SNS signatures.
-- Use SES configuration sets for event publishing.
-- Be cautious with SES account/config-set suppression settings, especially for complaints.
+- Raw sending must be purpose-agnostic.
+- Policy gates run before raw sending.
+- Do not send marketing email without unsubscribe support.
+- Do not make transactional email impossible because of marketing unsubscribe/complaint state.
+- Treat hard permanent bounces as likely all-mail undeliverability.
+- Assume SES sending can be ambiguous after process crashes/timeouts.
+- Record send attempts before external send calls.
+- Never hold DB transactions open while calling SES.
 - Keep queue jobs small and referential.
-- Use context-aware escaping for all rendered variables.
-- Require HTTPS URLs for final email images.
-- Treat complaint and bounce handling as core deliverability functionality, not optional analytics.
+- Store raw SES events before processing.
+- Verify SNS signatures.
+- Use context-aware escaping for rendered variables.
+- Require HTTPS for auth production origins and final email assets.
+- Avoid logging secrets, API keys, raw auth causes, or sensitive email payloads.
 
-## Current Open Technical Questions
+## Open Questions
 
-These should be resolved during implementation:
+Questions to resolve after the initial sending foundation:
 
-- exact template variable syntax and renderer
-- whether text body is required or optional for MVP
-- exact SES configuration set setup automation/docs
-- exact SES suppression configuration recommendation for transactional vs marketing
-- exact R2 public URL/custom-domain strategy
-- whether to add a CLI and, if so, whether to use Hono RPC, generated OpenAPI client, or a hand-written HTTP client
+- whether `text` should become required before real sending
+- how to surface ambiguous send attempts in API/admin views
+- exact SES configuration-set names and operator setup docs
+- exact SES account/config-set suppression recommendation for transactional vs marketing
+- public unsubscribe URL configuration format
+- whether to add a minimal admin/API surface for queue and delivery inspection before SES events
 
 Default lean choices:
 
-- no CLI until there is a concrete need; use a hand-written HTTP client if added
-- no shared workspace packages initially
+- single-user/self-hosted only
+- no org/workspace support
+- no CLI until a concrete need exists
+- no shared packages initially
 - `mailings` + `deliveries` as the core model
-- no stored Markdown source
-- jobs table state as DLQ
-- marketing campaigns represented as marketing mailings
-- deliveries as campaign recipient snapshots
-- Nusend-owned unsubscribe/suppression model
-- SES configuration sets for event publishing
+- one `send_delivery` job per unsuppressed delivery
+- Nusend-owned suppression/unsubscribe model
+- SES configuration sets for feedback events
+- transactional sending before marketing sending

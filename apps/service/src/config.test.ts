@@ -2,11 +2,19 @@ import { isAbsolute } from "node:path";
 import { ConfigProvider, Effect, Option, Redacted } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { serviceConfig, type ServiceConfig } from "./config.ts";
+import { sendingConfig, serviceConfig, type SendingConfig, type ServiceConfig } from "./config.ts";
 
 function load(fixture: Record<string, string>): Promise<ServiceConfig> {
   return Effect.runPromise(
     serviceConfig.pipe(
+      Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(fixture)),
+    ),
+  );
+}
+
+function loadSending(fixture: Record<string, string>): Promise<SendingConfig> {
+  return Effect.runPromise(
+    sendingConfig.pipe(
       Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(fixture)),
     ),
   );
@@ -163,5 +171,123 @@ describe("serviceConfig", () => {
         NODE_ENV: "production",
       }),
     ).rejects.toThrow(/HTTPS/);
+  });
+});
+
+describe("sendingConfig", () => {
+  it("loads required sender settings and optional configuration sets", async () => {
+    await expect(
+      loadSending({
+        AWS_REGION: "us-east-1",
+        NUSEND_SES_FROM_EMAIL: " sender@example.com ",
+        NUSEND_SES_MARKETING_CONFIGURATION_SET: "marketing-set",
+        NUSEND_SES_REQUEST_TIMEOUT_MS: "12000",
+        NUSEND_SES_TRANSACTIONAL_CONFIGURATION_SET: "transactional-set",
+      }),
+    ).resolves.toEqual({
+      fromEmail: "sender@example.com",
+      marketingConfigurationSet: "marketing-set",
+      region: "us-east-1",
+      requestTimeoutMs: 12000,
+      transactionalConfigurationSet: "transactional-set",
+      workerBatchSize: 1,
+      workerLeaseSeconds: 300,
+    });
+  });
+
+  it("defaults optional sending settings", async () => {
+    await expect(
+      loadSending({ AWS_REGION: "us-east-1", NUSEND_SES_FROM_EMAIL: "sender@example.com" }),
+    ).resolves.toEqual({
+      fromEmail: "sender@example.com",
+      marketingConfigurationSet: null,
+      region: "us-east-1",
+      requestTimeoutMs: 30000,
+      transactionalConfigurationSet: null,
+      workerBatchSize: 1,
+      workerLeaseSeconds: 300,
+    });
+  });
+
+  it("loads custom valid worker lease and batch size", async () => {
+    await expect(
+      loadSending({
+        AWS_REGION: "us-east-1",
+        NUSEND_SEND_WORKER_BATCH_SIZE: "5",
+        NUSEND_SEND_WORKER_LEASE_SECONDS: "200",
+        NUSEND_SES_FROM_EMAIL: "sender@example.com",
+        NUSEND_SES_REQUEST_TIMEOUT_MS: "30000",
+      }),
+    ).resolves.toMatchObject({
+      requestTimeoutMs: 30000,
+      workerBatchSize: 5,
+      workerLeaseSeconds: 200,
+    });
+  });
+
+  it("requires sender email and AWS region", async () => {
+    await expect(loadSending({ AWS_REGION: "us-east-1" })).rejects.toThrow(/NUSEND_SES_FROM_EMAIL/);
+    await expect(loadSending({ NUSEND_SES_FROM_EMAIL: "sender@example.com" })).rejects.toThrow(
+      /AWS_REGION/,
+    );
+  });
+
+  it("rejects invalid request timeouts", async () => {
+    await expect(
+      loadSending({
+        AWS_REGION: "us-east-1",
+        NUSEND_SES_FROM_EMAIL: "sender@example.com",
+        NUSEND_SES_REQUEST_TIMEOUT_MS: "0",
+      }),
+    ).rejects.toThrow(/NUSEND_SES_REQUEST_TIMEOUT_MS/);
+  });
+
+  it("rejects invalid worker lease and batch size", async () => {
+    await expect(
+      loadSending({
+        AWS_REGION: "us-east-1",
+        NUSEND_SEND_WORKER_LEASE_SECONDS: "0",
+        NUSEND_SES_FROM_EMAIL: "sender@example.com",
+      }),
+    ).rejects.toThrow(/NUSEND_SEND_WORKER_LEASE_SECONDS/);
+
+    await expect(
+      loadSending({
+        AWS_REGION: "us-east-1",
+        NUSEND_SEND_WORKER_BATCH_SIZE: "0",
+        NUSEND_SES_FROM_EMAIL: "sender@example.com",
+      }),
+    ).rejects.toThrow(/NUSEND_SEND_WORKER_BATCH_SIZE/);
+
+    await expect(
+      loadSending({
+        AWS_REGION: "us-east-1",
+        NUSEND_SEND_WORKER_BATCH_SIZE: "51",
+        NUSEND_SES_FROM_EMAIL: "sender@example.com",
+      }),
+    ).rejects.toThrow(/NUSEND_SEND_WORKER_BATCH_SIZE/);
+  });
+
+  it("rejects timeout settings that are too close to the worker lease", async () => {
+    await expect(
+      loadSending({
+        AWS_REGION: "us-east-1",
+        NUSEND_SEND_WORKER_LEASE_SECONDS: "40",
+        NUSEND_SES_FROM_EMAIL: "sender@example.com",
+        NUSEND_SES_REQUEST_TIMEOUT_MS: "30000",
+      }),
+    ).rejects.toThrow(/NUSEND_SEND_WORKER_LEASE_SECONDS/);
+  });
+
+  it("rejects batch-adjusted timeout settings that are too close to the worker lease", async () => {
+    await expect(
+      loadSending({
+        AWS_REGION: "us-east-1",
+        NUSEND_SEND_WORKER_BATCH_SIZE: "10",
+        NUSEND_SEND_WORKER_LEASE_SECONDS: "300",
+        NUSEND_SES_FROM_EMAIL: "sender@example.com",
+        NUSEND_SES_REQUEST_TIMEOUT_MS: "30000",
+      }),
+    ).rejects.toThrow(/NUSEND_SEND_WORKER_LEASE_SECONDS/);
   });
 });

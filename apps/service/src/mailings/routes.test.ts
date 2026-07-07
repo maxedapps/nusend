@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import { Database } from "../services/database.ts";
 import { withTestApp, type FakeAuthBehavior, type TestRuntime } from "../testing/layers.ts";
+import { maxIdempotencyKeyLength } from "./idempotency.ts";
 import { maxMailingHtmlLength, maxMailingRequestBodyBytes } from "./schema.ts";
 
 const validBody = {
@@ -42,6 +43,7 @@ function countRows(runtime: TestRuntime) {
 
       return {
         deliveries: yield* count("deliveries"),
+        idempotencyKeys: yield* count("mailing_idempotency_keys"),
         jobs: yield* count("jobs"),
         mailings: yield* count("mailings"),
       };
@@ -100,6 +102,7 @@ describe("mailings routes", () => {
         expect(typeof json.mailing.scheduledAt).toBe("string");
         await expect(countRows(runtime)).resolves.toEqual({
           deliveries: 1,
+          idempotencyKeys: 0,
           jobs: 1,
           mailings: 1,
         });
@@ -122,9 +125,108 @@ describe("mailings routes", () => {
       expect(json.counts).toEqual({ deliveries: 1, queued: 1, suppressed: 0 });
       await expect(countRows(runtime)).resolves.toEqual({
         deliveries: 1,
+        idempotencyKeys: 0,
         jobs: 1,
         mailings: 1,
       });
+    });
+  });
+
+  it("replays same-key idempotent creates without duplicate rows", async () => {
+    await withTestApp(
+      { auth: { apiKeyPermissions: { mailings: ["create"] } } },
+      async (app, runtime) => {
+        const request = () =>
+          new Request("http://localhost/api/mailings", {
+            body: JSON.stringify(validBody),
+            headers: {
+              "content-type": "application/json",
+              "idempotency-key": "create-1",
+              "x-api-key": "valid",
+            },
+            method: "POST",
+          });
+
+        const first = await app.fetch(request());
+        const firstJson = await first.json();
+        expect(first.status).toBe(201);
+
+        await runtime.runPromise(
+          Effect.flatMap(Database, (db) =>
+            db.run(
+              "test:mutate-delivery-status",
+              "UPDATE deliveries SET status = 'sent', ses_message_id = 'ses_1';",
+            ),
+          ),
+        );
+
+        const second = await app.fetch(request());
+        expect(second.status).toBe(201);
+        await expect(second.json()).resolves.toEqual(firstJson);
+        await expect(countRows(runtime)).resolves.toEqual({
+          deliveries: 1,
+          idempotencyKeys: 1,
+          jobs: 1,
+          mailings: 1,
+        });
+      },
+    );
+  });
+
+  it("rejects same-key creates with a different normalized request", async () => {
+    await withTestApp(
+      { auth: { apiKeyPermissions: { mailings: ["create"] } } },
+      async (app, runtime) => {
+        const create = (body: unknown) =>
+          app.fetch(
+            new Request("http://localhost/api/mailings", {
+              body: JSON.stringify(body),
+              headers: {
+                "content-type": "application/json",
+                "idempotency-key": "create-conflict",
+                "x-api-key": "valid",
+              },
+              method: "POST",
+            }),
+          );
+
+        expect((await create(validBody)).status).toBe(201);
+        const conflict = await create({ ...validBody, subject: "Different" });
+
+        expect(conflict.status).toBe(409);
+        await expect(conflict.json()).resolves.toEqual({
+          error: {
+            code: "idempotency_conflict",
+            message: "Idempotency key was already used for a different request.",
+          },
+        });
+        await expect(countRows(runtime)).resolves.toEqual({
+          deliveries: 1,
+          idempotencyKeys: 1,
+          jobs: 1,
+          mailings: 1,
+        });
+      },
+    );
+  });
+
+  it("rejects oversized idempotency keys", async () => {
+    const response = await postMailing(
+      { apiKeyPermissions: { mailings: ["create"] } },
+      {
+        headers: {
+          "idempotency-key": "x".repeat(maxIdempotencyKeyLength + 1),
+          "x-api-key": "valid",
+        },
+      },
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: {
+        code: "invalid_request",
+        message: `Idempotency-Key must be at most ${maxIdempotencyKeyLength} characters.`,
+      },
     });
   });
 

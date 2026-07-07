@@ -133,6 +133,8 @@ CREATE TABLE deliveries (
   contact_id TEXT REFERENCES contacts(id) ON DELETE SET NULL,
   vars_json TEXT,
   status TEXT NOT NULL CHECK (status IN ('scheduled', 'queued', 'sending', 'sent', 'delivered', 'bounced', 'complained', 'failed', 'suppressed', 'cancelled')),
+  ses_message_id TEXT,
+  last_error TEXT,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
@@ -141,6 +143,8 @@ CREATE INDEX deliveries_mailing_id_idx ON deliveries (mailing_id);
 CREATE INDEX deliveries_mailing_status_idx ON deliveries (mailing_id, status);
 CREATE INDEX deliveries_email_idx ON deliveries (email);
 CREATE INDEX deliveries_contact_id_idx ON deliveries (contact_id);
+CREATE UNIQUE INDEX deliveries_ses_message_id_idx ON deliveries (ses_message_id)
+  WHERE ses_message_id IS NOT NULL;
 
 CREATE TABLE suppressions (
   id TEXT PRIMARY KEY,
@@ -175,7 +179,39 @@ CREATE INDEX jobs_state_run_at_idx ON jobs (state, run_at);
 CREATE INDEX jobs_locked_until_idx ON jobs (locked_until);
 CREATE INDEX jobs_kind_ref_id_idx ON jobs (kind, ref_id);
 
+CREATE TABLE send_attempts (
+  id TEXT PRIMARY KEY,
+  delivery_id TEXT NOT NULL REFERENCES deliveries(id) ON DELETE CASCADE,
+  job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  attempt_no INTEGER NOT NULL CHECK (attempt_no > 0),
+  status TEXT NOT NULL CHECK (status IN ('started', 'succeeded', 'failed', 'ambiguous')),
+  ses_message_id TEXT,
+  error_message TEXT,
+  started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  finished_at TEXT,
+  UNIQUE (delivery_id, attempt_no)
+);
+
+CREATE INDEX send_attempts_delivery_id_idx ON send_attempts (delivery_id);
+CREATE INDEX send_attempts_job_id_idx ON send_attempts (job_id);
+CREATE INDEX send_attempts_status_idx ON send_attempts (status);
+CREATE INDEX send_attempts_ses_message_id_idx ON send_attempts (ses_message_id)
+  WHERE ses_message_id IS NOT NULL;
+
+CREATE TABLE mailing_idempotency_keys (
+  key TEXT PRIMARY KEY,
+  request_hash TEXT NOT NULL,
+  mailing_id TEXT NOT NULL REFERENCES mailings(id) ON DELETE CASCADE,
+  response_json TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX mailing_idempotency_keys_mailing_id_idx
+  ON mailing_idempotency_keys (mailing_id);
+
 -- migrate:down
+DROP TABLE IF EXISTS mailing_idempotency_keys;
+DROP TABLE IF EXISTS send_attempts;
 DROP TABLE IF EXISTS jobs;
 DROP TABLE IF EXISTS suppressions;
 DROP TABLE IF EXISTS deliveries;

@@ -38,8 +38,10 @@ describe("migration runner", () => {
       "jobs",
       "list_memberships",
       "lists",
+      "mailing_idempotency_keys",
       "mailings",
       "schema_migrations",
+      "send_attempts",
       "sessions",
       "suppressions",
       "users",
@@ -49,6 +51,15 @@ describe("migration runner", () => {
     expect(readColumnNames(databasePath, "sessions")).not.toContain("active_organization_id");
     expect(readColumnNames(databasePath, "contacts")).not.toContain("attrs_json");
     expect(readColumnNames(databasePath, "api_keys")).toContain("reference_id");
+    expect(readColumnNames(databasePath, "deliveries")).toEqual(
+      expect.arrayContaining(["ses_message_id", "last_error"]),
+    );
+    expect(readColumnNames(databasePath, "send_attempts")).toEqual(
+      expect.arrayContaining(["delivery_id", "job_id", "attempt_no", "status"]),
+    );
+    expect(readColumnNames(databasePath, "mailing_idempotency_keys")).toEqual(
+      expect.arrayContaining(["key", "request_hash", "mailing_id", "response_json"]),
+    );
 
     const drift = runBun(
       [

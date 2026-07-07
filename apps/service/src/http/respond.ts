@@ -8,6 +8,7 @@ import type {
   DatabaseError,
   EmptyRecipientSetError,
   ForbiddenError,
+  IdempotencyConflictError,
   RecipientLimitExceededError,
   ListNotFoundError,
   RequestValidationError,
@@ -28,6 +29,7 @@ export type RouteError =
   | DatabaseError
   | EmptyRecipientSetError
   | ForbiddenError
+  | IdempotencyConflictError
   | RecipientLimitExceededError
   | ListNotFoundError
   | RequestValidationError
@@ -104,6 +106,16 @@ export async function runRoute<A>(
         ),
       ForbiddenError: (error) =>
         Effect.succeed(context.json(errorEnvelope("forbidden", error.message), 403)),
+      IdempotencyConflictError: () =>
+        Effect.succeed(
+          context.json(
+            errorEnvelope(
+              "idempotency_conflict",
+              "Idempotency key was already used for a different request.",
+            ),
+            409,
+          ),
+        ),
       ListNotFoundError: () =>
         Effect.succeed(context.json(errorEnvelope("not_found", "List not found."), 404)),
       RequestValidationError: (error) =>

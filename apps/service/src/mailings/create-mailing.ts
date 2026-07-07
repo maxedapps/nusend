@@ -111,97 +111,105 @@ export function createMailing(
 > {
   return Effect.gen(function* () {
     const db = yield* Database;
+    return yield* db.transaction(createMailingRows(input));
+  });
+}
+
+export function createMailingRows(
+  input: CreateMailingInput,
+): Effect.Effect<
+  CreateMailingResult,
+  DatabaseError | EmptyRecipientSetError | ListNotFoundError | RecipientLimitExceededError,
+  DatabaseService | IdGeneratorService
+> {
+  return Effect.gen(function* () {
+    const db = yield* Database;
     const ids = yield* IdGenerator;
     const now = yield* currentIso;
     const effectiveScheduledAt = input.scheduledAt ?? now;
+    const recipients = yield* resolveRecipients(db, input);
 
-    return yield* db.transaction(
-      Effect.gen(function* () {
-        const recipients = yield* resolveRecipients(db, input);
+    if (recipients.length === 0) {
+      return yield* Effect.fail(
+        new EmptyRecipientSetError({
+          reason: "Mailing has no subscribed recipient candidates.",
+        }),
+      );
+    }
 
-        if (recipients.length === 0) {
-          return yield* Effect.fail(
-            new EmptyRecipientSetError({
-              reason: "Mailing has no subscribed recipient candidates.",
-            }),
-          );
-        }
+    const suppressedEmails = yield* findSuppressedEmails(db, {
+      emails: recipients.map((recipient) => recipient.email),
+      listId: input.listId,
+      purpose: input.purpose,
+    });
 
-        const suppressedEmails = yield* findSuppressedEmails(db, {
-          emails: recipients.map((recipient) => recipient.email),
-          listId: input.listId,
-          purpose: input.purpose,
-        });
+    if (suppressedEmails.size >= recipients.length) {
+      return yield* Effect.fail(
+        new EmptyRecipientSetError({
+          reason: "Mailing has no sendable recipients after suppression checks.",
+        }),
+      );
+    }
 
-        if (suppressedEmails.size >= recipients.length) {
-          return yield* Effect.fail(
-            new EmptyRecipientSetError({
-              reason: "Mailing has no sendable recipients after suppression checks.",
-            }),
-          );
-        }
+    const mailingId = yield* ids.next;
 
-        const mailingId = yield* ids.next;
+    yield* db.run("mailings:insert", insertMailingSql, {
+      html: input.html,
+      id: mailingId,
+      listId: input.listId,
+      name: input.name,
+      now,
+      purpose: input.purpose,
+      scheduledAt: effectiveScheduledAt,
+      subject: input.subject,
+      text: input.text,
+    });
 
-        yield* db.run("mailings:insert", insertMailingSql, {
-          html: input.html,
-          id: mailingId,
-          listId: input.listId,
-          name: input.name,
-          now,
-          purpose: input.purpose,
-          scheduledAt: effectiveScheduledAt,
-          subject: input.subject,
-          text: input.text,
-        });
+    let queued = 0;
+    let suppressed = 0;
 
-        let queued = 0;
-        let suppressed = 0;
+    for (const recipient of recipients) {
+      const deliveryId = yield* ids.next;
+      const isSuppressed = suppressedEmails.has(recipient.email);
+      const status = isSuppressed ? "suppressed" : "queued";
 
-        for (const recipient of recipients) {
-          const deliveryId = yield* ids.next;
-          const isSuppressed = suppressedEmails.has(recipient.email);
-          const status = isSuppressed ? "suppressed" : "queued";
+      yield* db.run("deliveries:insert", insertDeliverySql, {
+        contactId: recipient.contactId,
+        email: recipient.email,
+        id: deliveryId,
+        mailingId,
+        now,
+        status,
+        varsJson: recipient.varsJson,
+      });
 
-          yield* db.run("deliveries:insert", insertDeliverySql, {
-            contactId: recipient.contactId,
-            email: recipient.email,
-            id: deliveryId,
-            mailingId,
-            now,
-            status,
-            varsJson: recipient.varsJson,
-          });
+      if (isSuppressed) {
+        suppressed += 1;
+        continue;
+      }
 
-          if (isSuppressed) {
-            suppressed += 1;
-            continue;
-          }
+      queued += 1;
+      yield* db.run("jobs:insert", insertJobSql, {
+        id: yield* ids.next,
+        now,
+        refId: deliveryId,
+        runAt: effectiveScheduledAt,
+      });
+    }
 
-          queued += 1;
-          yield* db.run("jobs:insert", insertJobSql, {
-            id: yield* ids.next,
-            now,
-            refId: deliveryId,
-            runAt: effectiveScheduledAt,
-          });
-        }
-
-        return {
-          counts: {
-            deliveries: recipients.length,
-            queued,
-            suppressed,
-          },
-          mailing: {
-            id: mailingId,
-            purpose: input.purpose,
-            scheduledAt: effectiveScheduledAt,
-            state: "scheduled" as const,
-          },
-        };
-      }),
-    );
+    return {
+      counts: {
+        deliveries: recipients.length,
+        queued,
+        suppressed,
+      },
+      mailing: {
+        id: mailingId,
+        purpose: input.purpose,
+        scheduledAt: effectiveScheduledAt,
+        state: "scheduled" as const,
+      },
+    };
   });
 }
 

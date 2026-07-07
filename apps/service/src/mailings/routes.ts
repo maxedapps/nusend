@@ -5,7 +5,11 @@ import { bodyLimit } from "hono/body-limit";
 import { requirePrincipal } from "../auth/middleware.ts";
 import { RequestValidationError } from "../errors.ts";
 import { errorEnvelope, runRoute, type AppRuntime } from "../http/respond.ts";
-import { createMailing } from "./create-mailing.ts";
+import {
+  createMailingIdempotent,
+  maxIdempotencyKeyLength,
+  normalizeIdempotencyKey,
+} from "./idempotency.ts";
 import {
   decodeCreateMailingRequest,
   maxMailingRequestBodyBytes,
@@ -35,8 +39,11 @@ export function createMailingsRoutes(options: MailingsRoutesOptions): Hono {
         });
 
         const input: CreateMailingInput = yield* decodeToEffect(decodeCreateMailingRequest(body));
+        const idempotencyKey = yield* normalizeRouteIdempotencyKey(
+          context.req.header("Idempotency-Key"),
+        );
 
-        return yield* createMailing(input);
+        return yield* createMailingIdempotent({ idempotencyKey, input });
       });
 
       return runRoute(context, options.runtime, program, (result) => context.json(result, 201));
@@ -44,6 +51,21 @@ export function createMailingsRoutes(options: MailingsRoutesOptions): Hono {
   );
 
   return routes;
+}
+
+function normalizeRouteIdempotencyKey(
+  value: string | null | undefined,
+): Effect.Effect<string | null, RequestValidationError> {
+  const key = normalizeIdempotencyKey(value);
+  if (key !== null && key.length > maxIdempotencyKeyLength) {
+    return Effect.fail(
+      new RequestValidationError({
+        message: `Idempotency-Key must be at most ${maxIdempotencyKeyLength} characters.`,
+      }),
+    );
+  }
+
+  return Effect.succeed(key);
 }
 
 function decodeToEffect(

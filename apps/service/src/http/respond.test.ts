@@ -10,6 +10,7 @@ import {
   DatabaseError,
   EmptyRecipientSetError,
   ForbiddenError,
+  IdempotencyConflictError,
   RecipientLimitExceededError,
   ListNotFoundError,
   RequestValidationError,
@@ -43,6 +44,12 @@ describe("runRoute error mapping", () => {
     ],
     [new ForbiddenError({ message: "Forbidden thing." }), 403, "forbidden", "Forbidden thing."],
     [new RequestValidationError({ message: "Bad field." }), 400, "invalid_request", "Bad field."],
+    [
+      new IdempotencyConflictError({ key: "same-key" }),
+      409,
+      "idempotency_conflict",
+      "Idempotency key was already used for a different request.",
+    ],
     [new ListNotFoundError({ listId: "missing" }), 404, "not_found", "List not found."],
     [
       new EmptyRecipientSetError({ reason: "No recipients." }),

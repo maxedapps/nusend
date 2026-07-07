@@ -25,8 +25,19 @@ export type ServiceConfig = {
   port: number;
 };
 
+export type SendingConfig = {
+  fromEmail: string;
+  marketingConfigurationSet: string | null;
+  region: string;
+  requestTimeoutMs: number;
+  transactionalConfigurationSet: string | null;
+  workerBatchSize: number;
+  workerLeaseSeconds: number;
+};
+
 const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
 const defaultDatabasePath = ".data/nusend.sqlite";
+const sendWorkerLeaseMarginMs = 10_000;
 
 const requiredAuthVariables = [
   "BETTER_AUTH_SECRET",
@@ -165,6 +176,71 @@ export const serviceConfig: Effect.Effect<ServiceConfig, Config.ConfigError> = E
       databasePath,
       host,
       port,
+    };
+  },
+);
+
+export const sendingConfig: Effect.Effect<SendingConfig, Config.ConfigError> = Effect.gen(
+  function* () {
+    const fromEmailOption = yield* trimmedOption("NUSEND_SES_FROM_EMAIL");
+    if (Option.isNone(fromEmailOption)) {
+      return yield* configFailure("NUSEND_SES_FROM_EMAIL is required.");
+    }
+    const regionOption = yield* trimmedOption("AWS_REGION");
+    if (Option.isNone(regionOption)) {
+      return yield* configFailure("AWS_REGION is required.");
+    }
+    const fromEmail = fromEmailOption.value;
+    const region = regionOption.value;
+    const transactionalConfigurationSet = Option.getOrNull(
+      yield* trimmedOption("NUSEND_SES_TRANSACTIONAL_CONFIGURATION_SET"),
+    );
+    const marketingConfigurationSet = Option.getOrNull(
+      yield* trimmedOption("NUSEND_SES_MARKETING_CONFIGURATION_SET"),
+    );
+    const requestTimeoutMsValue = Option.getOrElse(
+      yield* trimmedOption("NUSEND_SES_REQUEST_TIMEOUT_MS"),
+      () => "30000",
+    );
+    const requestTimeoutMs = Number(requestTimeoutMsValue);
+    if (!Number.isInteger(requestTimeoutMs) || requestTimeoutMs < 1) {
+      return yield* configFailure("NUSEND_SES_REQUEST_TIMEOUT_MS must be a positive integer.");
+    }
+
+    const workerLeaseSecondsValue = Option.getOrElse(
+      yield* trimmedOption("NUSEND_SEND_WORKER_LEASE_SECONDS"),
+      () => "300",
+    );
+    const workerLeaseSeconds = Number(workerLeaseSecondsValue);
+    if (!Number.isInteger(workerLeaseSeconds) || workerLeaseSeconds < 1) {
+      return yield* configFailure("NUSEND_SEND_WORKER_LEASE_SECONDS must be a positive integer.");
+    }
+
+    const workerBatchSizeValue = Option.getOrElse(
+      yield* trimmedOption("NUSEND_SEND_WORKER_BATCH_SIZE"),
+      () => "1",
+    );
+    const workerBatchSize = Number(workerBatchSizeValue);
+    if (!Number.isInteger(workerBatchSize) || workerBatchSize < 1 || workerBatchSize > 50) {
+      return yield* configFailure(
+        "NUSEND_SEND_WORKER_BATCH_SIZE must be an integer between 1 and 50.",
+      );
+    }
+
+    if (workerBatchSize * requestTimeoutMs + sendWorkerLeaseMarginMs >= workerLeaseSeconds * 1000) {
+      return yield* configFailure(
+        "NUSEND_SEND_WORKER_LEASE_SECONDS must exceed NUSEND_SEND_WORKER_BATCH_SIZE * NUSEND_SES_REQUEST_TIMEOUT_MS by at least 10 seconds.",
+      );
+    }
+
+    return {
+      fromEmail,
+      marketingConfigurationSet,
+      region,
+      requestTimeoutMs,
+      transactionalConfigurationSet,
+      workerBatchSize,
+      workerLeaseSeconds,
     };
   },
 );
