@@ -1,6 +1,7 @@
 # Nusend Effect Patterns
 
 ## Table of contents
+
 - [Where to start](#where-to-start)
 - [Current code shape](#current-code-shape)
 - [Services and layers](#services-and-layers)
@@ -19,7 +20,8 @@ built on Effect v4 (exact-pinned beta). Start with:
 
 - `src/main.ts` — the composition boundary: config read, layer stack, `ManagedRuntime.make`, `Bun.serve`, signal-driven `dispose()`.
 - `src/services/database.ts` — the driver-agnostic `Database` service (interface + key + shared `makeTransaction`); `src/services/database-bun.ts` is the production layer (bun:sqlite, also provides the raw `SqliteHandle` for Better Auth).
-- `src/services/auth.ts` (key/types) + `src/services/auth-live.ts` (Better Auth layer — the only `Redacted.value` site).
+- `src/services/auth.ts` (key/types) + `src/services/auth-live.ts` (Better Auth layer — an approved `Redacted.value` site).
+- `src/unsubscribe/token.ts` is also an approved `Redacted.value` boundary: it unwraps unsubscribe HMAC secrets only at the Node `crypto.createHmac` call site.
 - `src/http/respond.ts` — the error envelope, the one exhaustive `catchTags` → status/code table, and `runRoute`.
 - `src/config.ts` — Effect `Config` definitions (empty-as-missing semantics, all-or-nothing auth group, `Redacted` secrets).
 - `src/queue/jobs.ts` + `src/queue/runner.ts` — durable queue transitions and the poll-cycle runner.
@@ -79,7 +81,7 @@ built on Effect v4 (exact-pinned beta). Start with:
 Grep-enforced (allow-lists live in the migration plan's gate table, `.plans/migrate-to-effect-v4-bun.md`):
 
 - `bun:sqlite` imports: `services/database-bun.ts`, `services/auth-live.ts`, `auth/auth.ts`, `testing/bun-fixtures.ts` only. `node:sqlite`: `testing/layers.ts` only.
-- No `new Date(`/`Date.now(` outside `lib/iso-time.ts`; no `JSON.parse` in non-test code (use `Schema.fromJsonString` for future payload decoding); no `as any`/ts-suppressions; `Redacted.value` only in `services/auth-live.ts`.
+- No `new Date(`/`Date.now(` outside `lib/iso-time.ts`; `JSON.parse` only in the approved non-test sites listed in `.plans/migrate-to-effect-v4-bun.md` (use `Schema.fromJsonString` for future trust-boundary payload decoding); no `as any`/ts-suppressions; `Redacted.value` only in approved external-boundary sites (`services/auth-live.ts`, `unsubscribe/token.ts`) and tests.
 - `throw new` only for invariant defects and CLI usage errors (see gate table) — expected failures are tagged errors.
 - No `Logger` service yet: default logging + the sanitized `logCause` helper in `http/respond.ts` cover current needs; do not reintroduce one speculatively.
 

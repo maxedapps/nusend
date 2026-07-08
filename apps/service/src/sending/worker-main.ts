@@ -1,12 +1,13 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { ConfigProvider, Effect, Layer, ManagedRuntime } from "effect";
 
-import { sendingConfig, serviceConfig } from "../config.ts";
+import { sendingConfig, serviceConfig, unsubscribeConfig } from "../config.ts";
 import { Database } from "../services/database.ts";
 import { DatabaseBunLive } from "../services/database-bun.ts";
 import { EmailSendingConfigLive } from "../services/email-transport.ts";
 import { EmailTransportSesLive } from "../services/email-transport-ses.ts";
 import { IdGeneratorLive } from "../services/ids.ts";
+import { UnsubscribeConfigLive } from "../unsubscribe/config.ts";
 import { runSendWorkerOnce } from "./worker.ts";
 
 const mode = process.argv[2];
@@ -18,6 +19,7 @@ if (mode !== "once" && mode !== "loop") {
 const configProvider = ConfigProvider.fromEnv();
 const service = await loadConfig("service", serviceConfig);
 const sending = await loadConfig("sending", sendingConfig);
+const unsubscribe = await loadConfig("unsubscribe", unsubscribeConfig);
 const workerId = process.env.NUSEND_WORKER_ID?.trim() || `send-worker-${crypto.randomUUID()}`;
 const pollIntervalMs = Number(process.env.NUSEND_SEND_WORKER_POLL_MS?.trim() || "5000");
 
@@ -32,6 +34,7 @@ const runtime = ManagedRuntime.make(
     DatabaseBunLive(service.databasePath),
     IdGeneratorLive,
     sendingConfigLayer,
+    UnsubscribeConfigLive(unsubscribe),
     EmailTransportSesLive.pipe(Layer.provide(sendingConfigLayer)),
   ),
 );

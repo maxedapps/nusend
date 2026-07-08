@@ -11,6 +11,7 @@ import type {
   EmailTransportService,
 } from "../services/email-transport.ts";
 import type { IdGeneratorService } from "../services/ids.ts";
+import type { UnsubscribeConfigService } from "../unsubscribe/config.ts";
 import {
   markDeliveryFailedForDeadJob,
   markReleasedDeadJobDeliveryAmbiguous,
@@ -44,7 +45,11 @@ export function runSendWorkerOnce(
 ): Effect.Effect<
   SendWorkerOnceResult,
   DatabaseError,
-  DatabaseService | EmailSendingConfigService | EmailTransportService | IdGeneratorService
+  | DatabaseService
+  | EmailSendingConfigService
+  | EmailTransportService
+  | IdGeneratorService
+  | UnsubscribeConfigService
 > {
   return Effect.gen(function* () {
     // One time snapshot for release + claim; complete/fail read fresh time after

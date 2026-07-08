@@ -28,6 +28,19 @@ export function runDriverParityCycle(
       yield* db.exec(`parity:migrate:${migration.version}`, migration.upSql);
     }
 
+    yield* db.run(
+      "parity:suppression:insert",
+      `INSERT INTO suppressions (id, email, scope, list_id, reason, created_at)
+       VALUES ('sup_1', 'User@Example.com', 'marketing', NULL, 'unsubscribe', '2026-07-03T12:00:00.000Z')
+       ON CONFLICT(email, scope) WHERE list_id IS NULL DO NOTHING;`,
+    );
+    yield* db.run(
+      "parity:suppression:insert-conflict",
+      `INSERT INTO suppressions (id, email, scope, list_id, reason, created_at)
+       VALUES ('sup_2', 'user@example.com', 'marketing', NULL, 'unsubscribe', '2026-07-03T12:00:00.000Z')
+       ON CONFLICT(email, scope) WHERE list_id IS NULL DO NOTHING;`,
+    );
+
     yield* TestClock.setTime(Date.parse("2026-07-03T12:00:00.000Z"));
     yield* seedJob({ id: "complete_me" });
     yield* seedJob({ id: "dead_me", maxAttempts: 1 });
@@ -73,8 +86,12 @@ export function runDriverParityCycle(
        FROM jobs ORDER BY id;`,
     );
     const missing = yield* db.get("parity:missing", "SELECT id FROM jobs WHERE id = 'nope';");
+    const suppressions = yield* db.all(
+      "parity:suppressions",
+      "SELECT lower(email) AS email, scope FROM suppressions ORDER BY id;",
+    );
 
-    return { claimed, completed, dead, failed, missing, released, rows, stale };
+    return { claimed, completed, dead, failed, missing, released, rows, stale, suppressions };
   });
 
   return Effect.runPromise(program.pipe(Effect.provide(Layer.mergeAll(layer, TestClock.layer()))));

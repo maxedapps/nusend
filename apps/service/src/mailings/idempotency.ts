@@ -4,12 +4,14 @@ import { Effect, Result } from "effect";
 import {
   DatabaseError,
   IdempotencyConflictError,
+  RequestValidationError,
   type EmptyRecipientSetError,
   type ListNotFoundError,
   type RecipientLimitExceededError,
 } from "../errors.ts";
 import { Database, type DatabaseService } from "../services/database.ts";
 import type { IdGeneratorService } from "../services/ids.ts";
+import type { UnsubscribeConfigService } from "../unsubscribe/config.ts";
 import { createMailingRows, type CreateMailingResult } from "./create-mailing.ts";
 import { decodeCreateMailingResultJson } from "./result-schema.ts";
 import type { CreateMailingInput } from "./schema.ts";
@@ -29,21 +31,24 @@ export function normalizeIdempotencyKey(value: string | null | undefined): strin
 export function createMailingIdempotent(options: {
   input: CreateMailingInput;
   idempotencyKey: string | null;
+  beforeCreate?: Effect.Effect<void, RequestValidationError, UnsubscribeConfigService>;
 }): Effect.Effect<
   CreateMailingResult,
   | DatabaseError
   | EmptyRecipientSetError
   | IdempotencyConflictError
   | ListNotFoundError
-  | RecipientLimitExceededError,
-  DatabaseService | IdGeneratorService
+  | RecipientLimitExceededError
+  | RequestValidationError,
+  DatabaseService | IdGeneratorService | UnsubscribeConfigService
 > {
-  if (!options.idempotencyKey) return createMailingWithoutIdempotency(options.input);
+  const beforeCreate = options.beforeCreate ?? Effect.void;
+  if (!options.idempotencyKey) return createMailingWithoutIdempotency(options.input, beforeCreate);
 
   const key = options.idempotencyKey;
   const requestHash = hashCreateMailingInput(options.input);
 
-  return createWithKey({ input: options.input, key, requestHash }).pipe(
+  return createWithKey({ beforeCreate, input: options.input, key, requestHash }).pipe(
     Effect.catchTag("DatabaseError", (error) => {
       if (error.operation !== "mailing-idempotency:insert" || !isUniqueConstraintError(error)) {
         return Effect.fail(error);
@@ -54,14 +59,19 @@ export function createMailingIdempotent(options: {
   );
 }
 
-function createMailingWithoutIdempotency(input: CreateMailingInput) {
+function createMailingWithoutIdempotency(
+  input: CreateMailingInput,
+  beforeCreate: Effect.Effect<void, RequestValidationError, UnsubscribeConfigService>,
+) {
   return Effect.gen(function* () {
     const db = yield* Database;
+    yield* beforeCreate;
     return yield* db.transaction(createMailingRows(input));
   });
 }
 
 function createWithKey(options: {
+  beforeCreate: Effect.Effect<void, RequestValidationError, UnsubscribeConfigService>;
   input: CreateMailingInput;
   key: string;
   requestHash: string;
@@ -71,8 +81,9 @@ function createWithKey(options: {
   | EmptyRecipientSetError
   | IdempotencyConflictError
   | ListNotFoundError
-  | RecipientLimitExceededError,
-  DatabaseService | IdGeneratorService
+  | RecipientLimitExceededError
+  | RequestValidationError,
+  DatabaseService | IdGeneratorService | UnsubscribeConfigService
 > {
   return Effect.gen(function* () {
     const db = yield* Database;
@@ -82,6 +93,7 @@ function createWithKey(options: {
         const existing = yield* getRow(options.key);
         if (existing) return yield* decodeExisting(options.key, existing, options.requestHash);
 
+        yield* options.beforeCreate;
         const result = yield* createMailingRows(options.input);
         yield* db.run(
           "mailing-idempotency:insert",

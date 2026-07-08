@@ -6,6 +6,7 @@ import { createMailingsRoutes } from "./mailings/routes.ts";
 import { createOperationsRoutes } from "./operations/routes.ts";
 import { Auth } from "./services/auth.ts";
 import { Database } from "./services/database.ts";
+import { createUnsubscribeRoutes } from "./unsubscribe/routes.ts";
 
 type AppOptions = {
   runtime: AppRuntime;
@@ -39,6 +40,8 @@ export function createApp(options: AppOptions): Hono {
       (response) => response,
     ),
   );
+
+  app.route("/unsubscribe", createUnsubscribeRoutes({ runtime: options.runtime }));
 
   app.route("/api/mailings", createMailingsRoutes({ runtime: options.runtime }));
   app.route("/api/operations", createOperationsRoutes({ runtime: options.runtime }));

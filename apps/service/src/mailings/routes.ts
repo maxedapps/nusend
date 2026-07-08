@@ -1,10 +1,12 @@
-import { Effect, Result } from "effect";
+import { Effect, Option, Result } from "effect";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 
 import { requirePrincipal } from "../auth/middleware.ts";
 import { RequestValidationError } from "../errors.ts";
 import { errorEnvelope, runRoute, type AppRuntime } from "../http/respond.ts";
+import { containsUnsubscribeUrlPlaceholder } from "../sending/render.ts";
+import { UnsubscribeConfig, type UnsubscribeConfigService } from "../unsubscribe/config.ts";
 import {
   createMailingIdempotent,
   maxIdempotencyKeyLength,
@@ -43,7 +45,11 @@ export function createMailingsRoutes(options: MailingsRoutesOptions): Hono {
           context.req.header("Idempotency-Key"),
         );
 
-        return yield* createMailingIdempotent({ idempotencyKey, input });
+        return yield* createMailingIdempotent({
+          beforeCreate: validateMarketingCompliance(input),
+          idempotencyKey,
+          input,
+        });
       });
 
       return runRoute(context, options.runtime, program, (result) => context.json(result, 201));
@@ -51,6 +57,31 @@ export function createMailingsRoutes(options: MailingsRoutesOptions): Hono {
   );
 
   return routes;
+}
+
+function validateMarketingCompliance(
+  input: CreateMailingInput,
+): Effect.Effect<void, RequestValidationError, UnsubscribeConfigService> {
+  if (input.purpose !== "marketing") return Effect.void;
+
+  return Effect.gen(function* () {
+    const unsubscribe = yield* UnsubscribeConfig;
+    if (Option.isNone(unsubscribe.config)) {
+      return yield* Effect.fail(
+        new RequestValidationError({
+          message: "Marketing mailings require unsubscribe configuration.",
+        }),
+      );
+    }
+
+    if (!containsUnsubscribeUrlPlaceholder(input.html)) {
+      return yield* Effect.fail(
+        new RequestValidationError({
+          message: "Marketing mailings must include {{ unsubscribe.url }} in the HTML template.",
+        }),
+      );
+    }
+  });
 }
 
 function normalizeRouteIdempotencyKey(

@@ -1,16 +1,27 @@
 import { Effect } from "effect";
 
+import { escapeHtml } from "../lib/html.ts";
 import type { DeliveryContext, RenderedEmail } from "./schema.ts";
 import { SendPreparationError } from "./schema.ts";
 
 const placeholderPattern = /{{\s*([^{}]+?)\s*}}/g;
 
+export type RenderDeliveryEmailOptions = {
+  readonly unsubscribeUrl?: string;
+};
+
 export function renderDeliveryEmail(
   context: DeliveryContext,
+  options: RenderDeliveryEmailOptions = {},
 ): Effect.Effect<RenderedEmail, SendPreparationError> {
   return Effect.gen(function* () {
     const vars = yield* parseVars(context.delivery.varsJson);
-    const model = { user: { email: context.delivery.email }, vars };
+    const unsubscribeUrl = options.unsubscribeUrl ?? null;
+    const model = {
+      unsubscribe: { url: unsubscribeUrl },
+      user: { email: context.delivery.email },
+      vars,
+    };
 
     return {
       html: yield* renderTemplate(context.mailing.html, model, "html"),
@@ -18,8 +29,13 @@ export function renderDeliveryEmail(
       text: context.mailing.text
         ? yield* renderTemplate(context.mailing.text, model, "text")
         : null,
+      unsubscribeUrl,
     };
   });
+}
+
+export function containsUnsubscribeUrlPlaceholder(template: string): boolean {
+  return /{{\s*unsubscribe\.url\s*}}/.test(template);
 }
 
 function parseVars(
@@ -39,9 +55,15 @@ function parseVars(
   });
 }
 
+type RenderModel = {
+  readonly unsubscribe: { readonly url: string | null };
+  readonly user: { readonly email: string };
+  readonly vars: Record<string, unknown>;
+};
+
 function renderTemplate(
   template: string,
-  model: { user: { email: string }; vars: Record<string, unknown> },
+  model: RenderModel,
   mode: "html" | "text",
 ): Effect.Effect<string, SendPreparationError> {
   return Effect.gen(function* () {
@@ -62,9 +84,17 @@ function renderTemplate(
 
 function resolvePlaceholder(
   path: string,
-  model: { user: { email: string }; vars: Record<string, unknown> },
+  model: RenderModel,
 ): Effect.Effect<string, SendPreparationError> {
   if (path === "user.email") return Effect.succeed(model.user.email);
+  if (path === "unsubscribe.url") {
+    if (model.unsubscribe.url === null) {
+      return Effect.fail(
+        new SendPreparationError({ message: "Unsupported placeholder: unsubscribe.url." }),
+      );
+    }
+    return Effect.succeed(model.unsubscribe.url);
+  }
 
   if (!path.startsWith("vars.")) {
     return Effect.fail(new SendPreparationError({ message: `Unsupported placeholder: ${path}.` }));
@@ -82,13 +112,4 @@ function resolvePlaceholder(
   if (typeof value === "number" || typeof value === "boolean") return Effect.succeed(String(value));
 
   return Effect.fail(new SendPreparationError({ message: `Placeholder is not scalar: ${path}.` }));
-}
-
-function escapeHtml(value: string): string {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
 }

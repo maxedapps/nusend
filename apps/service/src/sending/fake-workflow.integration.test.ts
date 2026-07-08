@@ -1,11 +1,11 @@
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Option } from "effect";
 import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
 
 import { runSendWorkerOnce } from "../queue/runner.ts";
 import { Database } from "../services/database.ts";
 import { fakeEmailTransportLayer, fakeSendingConfigLayer } from "../testing/email-transport.ts";
-import { withTestApp } from "../testing/layers.ts";
+import { fakeUnsubscribeConfig, withTestApp } from "../testing/layers.ts";
 
 const fixedTime = Date.parse("2026-07-03T12:00:00.000Z");
 
@@ -79,6 +79,7 @@ describe("fake email workflow", () => {
         expect.objectContaining({
           configurationSetName: "txn-config",
           from: "sender@example.com",
+          headers: {},
           html: "<p>Hello Max</p>",
           subject: "Hello user@example.com",
           tags: {
@@ -117,5 +118,88 @@ describe("fake email workflow", () => {
         mailing: { id: createBody.mailing.id, state: "completed" },
       });
     });
+  });
+
+  it("creates a marketing mailing, renders unsubscribe headers, and exposes sent operations state", async () => {
+    const fake = fakeEmailTransportLayer();
+
+    await withTestApp(
+      { auth, unsubscribe: Option.some(fakeUnsubscribeConfig()) },
+      async (app, runtime) => {
+        await runtime.runPromise(TestClock.setTime(fixedTime));
+
+        const createResponse = await app.fetch(
+          new Request("http://localhost/api/mailings", {
+            body: JSON.stringify({
+              html: '<a href="{{ unsubscribe.url }}">Unsubscribe</a>',
+              purpose: "marketing",
+              recipients: [{ email: "user@example.com" }],
+              subject: "Marketing",
+            }),
+            headers: jsonHeaders,
+            method: "POST",
+          }),
+        );
+
+        expect(createResponse.status).toBe(201);
+        const createBody = (await createResponse.json()) as {
+          mailing: { id: string; purpose: string; state: string };
+        };
+        expect(createBody.mailing).toMatchObject({ purpose: "marketing", state: "scheduled" });
+
+        const delivery = await runtime.runPromise(
+          Effect.flatMap(Database, (db) =>
+            db.get<{ id: string }>(
+              "test:delivery-id",
+              "SELECT id FROM deliveries WHERE mailing_id = $mailingId;",
+              { mailingId: createBody.mailing.id },
+            ),
+          ),
+        );
+        expect(delivery).not.toBeNull();
+        const deliveryId = delivery?.id ?? "missing-delivery";
+
+        const workerResult = await runtime.runPromise(
+          runSendWorkerOnce({ workerId: "worker_1" }).pipe(
+            Effect.provide(
+              Layer.mergeAll(
+                fake.layer,
+                fakeSendingConfigLayer({ marketingConfigurationSet: "marketing-set" }),
+              ),
+            ),
+          ),
+        );
+
+        expect(workerResult).toMatchObject({ claimed: 1, succeeded: 1 });
+        expect(fake.state.sent).toHaveLength(1);
+        const sent = fake.state.sent[0];
+        expect(sent).toMatchObject({
+          configurationSetName: "marketing-set",
+          tags: {
+            delivery_id: deliveryId,
+            mailing_id: createBody.mailing.id,
+            purpose: "marketing",
+          },
+          to: "user@example.com",
+        });
+        expect(sent.headers["List-Unsubscribe"]).toMatch(
+          /^<https:\/\/unsubscribe\.example\.com\/unsubscribe\//,
+        );
+        expect(sent.headers["List-Unsubscribe-Post"]).toBe("List-Unsubscribe=One-Click");
+        expect(sent.html).toContain("https://unsubscribe.example.com/unsubscribe/");
+
+        const detailResponse = await app.fetch(
+          new Request(`http://localhost/api/operations/deliveries/${deliveryId}`, {
+            headers: { "x-api-key": "valid" },
+          }),
+        );
+        expect(detailResponse.status).toBe(200);
+        await expect(detailResponse.json()).resolves.toMatchObject({
+          delivery: { id: deliveryId, status: "sent" },
+          job: { state: "succeeded" },
+          mailing: { id: createBody.mailing.id, state: "completed" },
+        });
+      },
+    );
   });
 });

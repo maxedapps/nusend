@@ -18,8 +18,13 @@ import type {
 import type { AuthService } from "../services/auth.ts";
 import type { DatabaseService } from "../services/database.ts";
 import type { IdGeneratorService } from "../services/ids.ts";
+import type { UnsubscribeConfigService } from "../unsubscribe/config.ts";
 
-export type AppServices = AuthService | DatabaseService | IdGeneratorService;
+export type AppServices =
+  | AuthService
+  | DatabaseService
+  | IdGeneratorService
+  | UnsubscribeConfigService;
 
 export type AppRuntime = ManagedRuntime.ManagedRuntime<AppServices, unknown>;
 
@@ -83,6 +88,25 @@ function getTag(value: Record<string, unknown>): unknown {
   return Reflect.get(value, "_tag");
 }
 
+export async function runHtmlRoute<A>(
+  context: Context,
+  runtime: AppRuntime,
+  program: Effect.Effect<A, DatabaseError, AppServices>,
+  onSuccess: (value: A) => Response,
+): Promise<Response> {
+  const responded = program.pipe(
+    Effect.map(onSuccess),
+    Effect.catchTag("DatabaseError", (error) => internalHtmlError(context, error)),
+  );
+
+  const exit = await runtime.runPromiseExit(responded);
+
+  if (Exit.isSuccess(exit)) return exit.value;
+
+  logCause(exit.cause);
+  return context.html("Internal error.", 500);
+}
+
 export async function runRoute<A>(
   context: Context,
   runtime: AppRuntime,
@@ -135,6 +159,13 @@ export async function runRoute<A>(
 
   logCause(exit.cause);
   return context.json(errorEnvelope("internal_error", "Internal error."), 500);
+}
+
+function internalHtmlError(context: Context, error: DatabaseError) {
+  return Effect.sync(() => {
+    logCause(Cause.fail(error));
+    return context.html("Internal error.", 500);
+  });
 }
 
 function internalError(context: Context, error: AuthError | DatabaseError) {

@@ -57,14 +57,19 @@ Send worker / SES environment:
 AWS_REGION=us-east-1
 NUSEND_SES_FROM_EMAIL=sender@example.com
 NUSEND_SES_TRANSACTIONAL_CONFIGURATION_SET=optional-ses-config-set
-NUSEND_SES_MARKETING_CONFIGURATION_SET=optional-future-config-set
+NUSEND_SES_MARKETING_CONFIGURATION_SET=required-for-marketing-sends
 NUSEND_SES_REQUEST_TIMEOUT_MS=30000
 NUSEND_SEND_WORKER_LEASE_SECONDS=300
 NUSEND_SEND_WORKER_BATCH_SIZE=1
 NUSEND_SEND_WORKER_POLL_MS=5000
+NUSEND_PUBLIC_BASE_URL=https://mail.example.com
+NUSEND_UNSUBSCRIBE_SECRET=at-least-32-characters
+NUSEND_UNSUBSCRIBE_PREVIOUS_SECRET=optional-previous-secret-for-rotation
 ```
 
-AWS credentials use the standard AWS SDK provider chain. The API service can queue mailings without SES config; the send worker requires SES config. Worker config must satisfy `batchSize * requestTimeoutMs + 10000 < leaseSeconds * 1000`; the default batch size is `1` for conservative live SES sending.
+AWS credentials use the standard AWS SDK provider chain. The API service can queue transactional mailings without SES config; marketing creation requires unsubscribe config. The send worker requires SES config, and marketing sends additionally require unsubscribe config plus `NUSEND_SES_MARKETING_CONFIGURATION_SET`. Worker config must satisfy `batchSize * requestTimeoutMs + 10000 < leaseSeconds * 1000`; the default batch size is `1` for conservative live SES sending.
+
+`NUSEND_PUBLIC_BASE_URL` must be an absolute HTTPS URL without a query string, fragment, or HTML-escapable characters (`&`, `'`, `"`, `<`, `>`). Retain delivery rows for at least 13 months so old signed unsubscribe links can resolve.
 
 Google OAuth callback URL:
 
@@ -198,7 +203,10 @@ Supported placeholders for now:
 
 - `{{ user.email }}`
 - `{{ vars.someKey }}`
+- `{{ unsubscribe.url }}` (marketing HTML templates only)
 
 HTML placeholder values are escaped. Missing/unsupported placeholders fail the delivery without calling SES.
 
-Marketing mailings can still be created and queued, but worker policy blocks actual marketing sends until unsubscribe support exists.
+Marketing mailings require unsubscribe config and an HTML `{{ unsubscribe.url }}` placeholder at creation. At send time, marketing deliveries retry if unsubscribe config or `NUSEND_SES_MARKETING_CONFIGURATION_SET` is missing; otherwise they include RFC 8058 one-click unsubscribe headers and are suppressed if the recipient unsubscribed after queueing.
+
+Before real marketing volume, verify in Gmail “Show original” that SES DKIM covers `List-Unsubscribe` and `List-Unsubscribe-Post`, monitor operations for marketing dead jobs/config retries, then add SES bounce/complaint ingestion or make an explicit risk decision.

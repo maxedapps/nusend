@@ -1,4 +1,4 @@
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Option } from "effect";
 import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
 
@@ -7,8 +7,9 @@ import type { CreateMailingInput } from "../mailings/schema.ts";
 import { runSendWorkerOnce } from "../queue/runner.ts";
 import { Database } from "../services/database.ts";
 import { EmailTransportError } from "../services/email-transport.ts";
+import { seedSubscribedContact } from "../testing/contact-fixtures.ts";
 import { fakeEmailTransportLayer, fakeSendingConfigLayer } from "../testing/email-transport.ts";
-import { runTest, type TestServices } from "../testing/layers.ts";
+import { fakeUnsubscribeConfig, runTest, type TestServices } from "../testing/layers.ts";
 
 const fixedTime = Date.parse("2026-07-03T12:00:00.000Z");
 
@@ -26,13 +27,25 @@ function baseInput(overrides: Partial<CreateMailingInput> = {}): CreateMailingIn
   };
 }
 
-function runSendingScenario<A, E, R>(effect: Effect.Effect<A, E, R>) {
+function runSendingScenario<A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+  options: { readonly marketingConfigurationSet?: string; readonly unsubscribe?: boolean } = {},
+) {
   const fake = fakeEmailTransportLayer();
   const provided = effect.pipe(
-    Effect.provide(Layer.mergeAll(fake.layer, fakeSendingConfigLayer())),
+    Effect.provide(
+      Layer.mergeAll(
+        fake.layer,
+        fakeSendingConfigLayer({
+          marketingConfigurationSet: options.marketingConfigurationSet ?? null,
+        }),
+      ),
+    ),
   ) as Effect.Effect<A, E, TestServices>;
 
-  return runTest(provided).then((result) => ({ result, sent: fake.state.sent }));
+  return runTest(provided, {
+    unsubscribe: options.unsubscribe ? Option.some(fakeUnsubscribeConfig()) : Option.none(),
+  }).then((result) => ({ result, sent: fake.state.sent }));
 }
 
 describe("processSendDeliveryJob", () => {
@@ -429,11 +442,16 @@ describe("processSendDeliveryJob", () => {
     expect(fake.state.sent).toHaveLength(1);
   });
 
-  it("blocks marketing sends as a terminal policy failure", async () => {
+  it("retries marketing sends when unsubscribe config is missing", async () => {
     const outcome = await runSendingScenario(
       Effect.gen(function* () {
         yield* TestClock.setTime(fixedTime);
-        yield* createMailing(baseInput({ purpose: "marketing" }));
+        yield* createMailing(
+          baseInput({
+            html: '<a href="{{ unsubscribe.url }}">Unsubscribe</a>',
+            purpose: "marketing",
+          }),
+        );
 
         const result = yield* runSendWorkerOnce({ workerId: "worker_1" });
 
@@ -447,23 +465,334 @@ describe("processSendDeliveryJob", () => {
             "assert:delivery",
             "SELECT status, last_error AS lastError FROM deliveries;",
           ),
-          job: yield* db.get("assert:job", "SELECT state FROM jobs;"),
+          job: yield* db.get("assert:job", "SELECT state, last_error AS lastError FROM jobs;"),
+          result,
+        };
+      }),
+      { marketingConfigurationSet: "marketing-set" },
+    );
+
+    expect(outcome.result.result.failed).toBe(1);
+    expect(outcome.result.job).toEqual({
+      lastError: "Marketing sending requires unsubscribe configuration.",
+      state: "queued",
+    });
+    expect(outcome.result.delivery).toEqual({
+      lastError: "Marketing sending requires unsubscribe configuration.",
+      status: "queued",
+    });
+    expect(outcome.result.attempt).toEqual({
+      errorMessage: "Marketing sending requires unsubscribe configuration.",
+      status: "failed",
+    });
+    expect(outcome.sent).toHaveLength(0);
+  });
+
+  it("retries marketing sends when the SES marketing configuration set is missing", async () => {
+    const outcome = await runSendingScenario(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(fixedTime);
+        yield* createMailing(
+          baseInput({
+            html: '<a href="{{ unsubscribe.url }}">Unsubscribe</a>',
+            purpose: "marketing",
+          }),
+        );
+
+        const result = yield* runSendWorkerOnce({ workerId: "worker_1" });
+        const db = yield* Database;
+        return {
+          delivery: yield* db.get(
+            "assert:delivery",
+            "SELECT status, last_error AS lastError FROM deliveries;",
+          ),
+          job: yield* db.get("assert:job", "SELECT state, last_error AS lastError FROM jobs;"),
+          result,
+        };
+      }),
+      { unsubscribe: true },
+    );
+
+    expect(outcome.result.result.failed).toBe(1);
+    expect(outcome.result.job).toEqual({
+      lastError: "Marketing sending requires an SES marketing configuration set.",
+      state: "queued",
+    });
+    expect(outcome.result.delivery).toEqual({
+      lastError: "Marketing sending requires an SES marketing configuration set.",
+      status: "queued",
+    });
+    expect(outcome.sent).toHaveLength(0);
+  });
+
+  it("sends marketing deliveries with unsubscribe config and marketing configuration set", async () => {
+    const outcome = await runSendingScenario(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(fixedTime);
+        yield* createMailing(
+          baseInput({
+            html: '<a href="{{ unsubscribe.url }}">Unsubscribe</a>',
+            purpose: "marketing",
+          }),
+        );
+
+        const result = yield* runSendWorkerOnce({ workerId: "worker_1" });
+        const db = yield* Database;
+        return {
+          delivery: yield* db.get(
+            "assert:delivery",
+            "SELECT status, ses_message_id AS sesMessageId, last_error AS lastError FROM deliveries;",
+          ),
+          result,
+        };
+      }),
+      { marketingConfigurationSet: "marketing-set", unsubscribe: true },
+    );
+
+    expect(outcome.result.result.succeeded).toBe(1);
+    expect(outcome.result.delivery).toEqual({
+      lastError: null,
+      sesMessageId: "fake-message-1",
+      status: "sent",
+    });
+    expect(outcome.sent).toHaveLength(1);
+    expect(outcome.sent[0]).toMatchObject({
+      configurationSetName: "marketing-set",
+      headers: {
+        "List-Unsubscribe": expect.stringMatching(
+          /^<https:\/\/unsubscribe\.example\.com\/unsubscribe\//,
+        ),
+        "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+      },
+      html: expect.stringMatching(/^<a href="https:\/\/unsubscribe\.example\.com\/unsubscribe\//),
+    });
+  });
+
+  it("suppresses marketing deliveries before retryable config gates", async () => {
+    const outcome = await runSendingScenario(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(fixedTime);
+        yield* createMailing(
+          baseInput({
+            html: '<a href="{{ unsubscribe.url }}">Unsubscribe</a>',
+            purpose: "marketing",
+          }),
+        );
+        const db = yield* Database;
+        yield* db.run(
+          "seed:marketing-suppression",
+          `INSERT INTO suppressions (id, email, scope, list_id, reason, created_at)
+           VALUES ('sup_1', 'user@example.com', 'marketing', NULL, 'unsubscribe', '2026-07-03T12:00:00.000Z');`,
+        );
+
+        const result = yield* runSendWorkerOnce({ workerId: "worker_1" });
+
+        return {
+          delivery: yield* db.get(
+            "assert:delivery",
+            "SELECT status, last_error AS lastError FROM deliveries;",
+          ),
+          job: yield* db.get("assert:job", "SELECT state, last_error AS lastError FROM jobs;"),
+          result,
+        };
+      }),
+      { marketingConfigurationSet: "marketing-set" },
+    );
+
+    expect(outcome.result.result.succeeded).toBe(1);
+    expect(outcome.result.delivery).toEqual({
+      lastError: "Recipient is suppressed for marketing.",
+      status: "suppressed",
+    });
+    expect(outcome.result.job).toEqual({ lastError: null, state: "succeeded" });
+    expect(outcome.sent).toHaveLength(0);
+  });
+
+  it("suppresses marketing deliveries when the recipient unsubscribes after creation", async () => {
+    const outcome = await runSendingScenario(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(fixedTime);
+        yield* createMailing(
+          baseInput({
+            html: '<a href="{{ unsubscribe.url }}">Unsubscribe</a>',
+            purpose: "marketing",
+          }),
+        );
+        const db = yield* Database;
+        yield* db.run(
+          "seed:marketing-suppression",
+          `INSERT INTO suppressions (id, email, scope, list_id, reason, created_at)
+           VALUES ('sup_1', 'USER@example.com', 'marketing', NULL, 'unsubscribe', '2026-07-03T12:00:00.000Z');`,
+        );
+
+        const result = yield* runSendWorkerOnce({ workerId: "worker_1" });
+
+        return {
+          delivery: yield* db.get(
+            "assert:delivery",
+            "SELECT status, last_error AS lastError FROM deliveries;",
+          ),
+          result,
+        };
+      }),
+      { marketingConfigurationSet: "marketing-set", unsubscribe: true },
+    );
+
+    expect(outcome.result.result.succeeded).toBe(1);
+    expect(outcome.result.delivery).toEqual({
+      lastError: "Recipient is suppressed for marketing.",
+      status: "suppressed",
+    });
+    expect(outcome.sent).toHaveLength(0);
+  });
+
+  it("suppresses marketing deliveries with global suppressions at send time", async () => {
+    const outcome = await runSendingScenario(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(fixedTime);
+        yield* createMailing(
+          baseInput({
+            html: '<a href="{{ unsubscribe.url }}">Unsubscribe</a>',
+            purpose: "marketing",
+          }),
+        );
+        const db = yield* Database;
+        yield* db.run(
+          "seed:global-suppression",
+          `INSERT INTO suppressions (id, email, scope, list_id, reason, created_at)
+           VALUES ('sup_1', 'user@example.com', 'all', NULL, 'manual', '2026-07-03T12:00:00.000Z');`,
+        );
+
+        const result = yield* runSendWorkerOnce({ workerId: "worker_1" });
+
+        return {
+          delivery: yield* db.get(
+            "assert:delivery",
+            "SELECT status, last_error AS lastError FROM deliveries;",
+          ),
+          result,
+        };
+      }),
+      { marketingConfigurationSet: "marketing-set", unsubscribe: true },
+    );
+
+    expect(outcome.result.result.succeeded).toBe(1);
+    expect(outcome.result.delivery).toEqual({
+      lastError: "Recipient is suppressed for marketing.",
+      status: "suppressed",
+    });
+    expect(outcome.sent).toHaveLength(0);
+  });
+
+  it("suppresses matching list-scoped marketing suppressions at send time", async () => {
+    const outcome = await runSendingScenario(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(fixedTime);
+        const db = yield* Database;
+        yield* seedSubscribedContact({ listId: "list_1" });
+        yield* createMailing(
+          baseInput({
+            html: '<a href="{{ unsubscribe.url }}">Unsubscribe</a>',
+            listId: "list_1",
+            purpose: "marketing",
+            recipients: null,
+            text: null,
+          }),
+        );
+        yield* db.run(
+          "seed:list-suppression",
+          `INSERT INTO suppressions (id, email, scope, list_id, reason, created_at)
+           VALUES ('sup_1', 'user@example.com', 'list', 'list_1', 'unsubscribe', '2026-07-03T12:00:00.000Z');`,
+        );
+
+        const result = yield* runSendWorkerOnce({ workerId: "worker_1" });
+
+        return {
+          delivery: yield* db.get(
+            "assert:delivery",
+            "SELECT status, last_error AS lastError FROM deliveries;",
+          ),
+          result,
+        };
+      }),
+      { marketingConfigurationSet: "marketing-set", unsubscribe: true },
+    );
+
+    expect(outcome.result.result.succeeded).toBe(1);
+    expect(outcome.result.delivery).toEqual({
+      lastError: "Recipient is suppressed for marketing.",
+      status: "suppressed",
+    });
+    expect(outcome.sent).toHaveLength(0);
+  });
+
+  it("ignores non-matching list suppressions for marketing sends", async () => {
+    const outcome = await runSendingScenario(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(fixedTime);
+        const db = yield* Database;
+        yield* seedSubscribedContact({ listId: "list_1" });
+        yield* db.run(
+          "seed:list-2",
+          "INSERT INTO lists (id, name, created_at) VALUES ('list_2', 'Other', '2026-07-03T12:00:00.000Z');",
+        );
+        yield* createMailing(
+          baseInput({
+            html: '<a href="{{ unsubscribe.url }}">Unsubscribe</a>',
+            listId: "list_1",
+            purpose: "marketing",
+            recipients: null,
+            text: null,
+          }),
+        );
+        yield* db.run(
+          "seed:list-suppression",
+          `INSERT INTO suppressions (id, email, scope, list_id, reason, created_at)
+           VALUES ('sup_1', 'user@example.com', 'list', 'list_2', 'unsubscribe', '2026-07-03T12:00:00.000Z');`,
+        );
+
+        const result = yield* runSendWorkerOnce({ workerId: "worker_1" });
+        const delivery = yield* db.get(
+          "assert:delivery",
+          "SELECT status, last_error AS lastError FROM deliveries;",
+        );
+        return { delivery, result };
+      }),
+      { marketingConfigurationSet: "marketing-set", unsubscribe: true },
+    );
+
+    expect(outcome.result.result.succeeded).toBe(1);
+    expect(outcome.result.delivery).toEqual({ lastError: null, status: "sent" });
+    expect(outcome.sent).toHaveLength(1);
+  });
+
+  it("ignores marketing suppressions before transactional sending", async () => {
+    const outcome = await runSendingScenario(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(fixedTime);
+        yield* createMailing(baseInput());
+        const db = yield* Database;
+        yield* db.run(
+          "seed:marketing-suppression",
+          `INSERT INTO suppressions (id, email, scope, list_id, reason, created_at)
+           VALUES ('sup_1', 'user@example.com', 'marketing', NULL, 'manual', '2026-07-03T12:00:00.000Z');`,
+        );
+
+        const result = yield* runSendWorkerOnce({ workerId: "worker_1" });
+
+        return {
+          delivery: yield* db.get(
+            "assert:delivery",
+            "SELECT status, last_error AS lastError FROM deliveries;",
+          ),
           result,
         };
       }),
     );
 
     expect(outcome.result.result.succeeded).toBe(1);
-    expect(outcome.result.job).toEqual({ state: "succeeded" });
-    expect(outcome.result.delivery).toEqual({
-      lastError: "Marketing sending requires unsubscribe support.",
-      status: "failed",
-    });
-    expect(outcome.result.attempt).toEqual({
-      errorMessage: "Marketing sending requires unsubscribe support.",
-      status: "failed",
-    });
-    expect(outcome.sent).toHaveLength(0);
+    expect(outcome.result.delivery).toEqual({ lastError: null, status: "sent" });
+    expect(outcome.sent).toHaveLength(1);
   });
 
   it("re-checks global suppressions before transactional sending", async () => {

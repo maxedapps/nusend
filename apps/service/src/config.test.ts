@@ -2,7 +2,14 @@ import { isAbsolute } from "node:path";
 import { ConfigProvider, Effect, Option, Redacted } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { sendingConfig, serviceConfig, type SendingConfig, type ServiceConfig } from "./config.ts";
+import {
+  sendingConfig,
+  serviceConfig,
+  unsubscribeConfig,
+  type SendingConfig,
+  type ServiceConfig,
+  type UnsubscribeConfig,
+} from "./config.ts";
 
 function load(fixture: Record<string, string>): Promise<ServiceConfig> {
   return Effect.runPromise(
@@ -15,6 +22,16 @@ function load(fixture: Record<string, string>): Promise<ServiceConfig> {
 function loadSending(fixture: Record<string, string>): Promise<SendingConfig> {
   return Effect.runPromise(
     sendingConfig.pipe(
+      Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(fixture)),
+    ),
+  );
+}
+
+function loadUnsubscribe(
+  fixture: Record<string, string>,
+): Promise<Option.Option<UnsubscribeConfig>> {
+  return Effect.runPromise(
+    unsubscribeConfig.pipe(
       Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(fixture)),
     ),
   );
@@ -171,6 +188,108 @@ describe("serviceConfig", () => {
         NODE_ENV: "production",
       }),
     ).rejects.toThrow(/HTTPS/);
+  });
+});
+
+describe("unsubscribeConfig", () => {
+  it("is absent when unsubscribe env vars are missing or blank", async () => {
+    expect(Option.isNone(await loadUnsubscribe({}))).toBe(true);
+    expect(
+      Option.isNone(
+        await loadUnsubscribe({ NUSEND_PUBLIC_BASE_URL: " ", NUSEND_UNSUBSCRIBE_SECRET: "" }),
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects partial config", async () => {
+    await expect(
+      loadUnsubscribe({ NUSEND_PUBLIC_BASE_URL: "https://example.com" }),
+    ).rejects.toThrow(/NUSEND_UNSUBSCRIBE_SECRET/);
+    await expect(loadUnsubscribe({ NUSEND_UNSUBSCRIBE_SECRET: "x".repeat(32) })).rejects.toThrow(
+      /NUSEND_PUBLIC_BASE_URL/,
+    );
+    await expect(
+      loadUnsubscribe({ NUSEND_UNSUBSCRIBE_PREVIOUS_SECRET: "y".repeat(32) }),
+    ).rejects.toThrow(/NUSEND_PUBLIC_BASE_URL/);
+  });
+
+  it("rejects non-HTTPS public base URLs", async () => {
+    await expect(
+      loadUnsubscribe({
+        NUSEND_PUBLIC_BASE_URL: "http://example.com",
+        NUSEND_UNSUBSCRIBE_SECRET: "x".repeat(32),
+      }),
+    ).rejects.toThrow(/absolute HTTPS URL/);
+    await expect(
+      loadUnsubscribe({
+        NUSEND_PUBLIC_BASE_URL: "not-a-url",
+        NUSEND_UNSUBSCRIBE_SECRET: "x".repeat(32),
+      }),
+    ).rejects.toThrow(/absolute HTTPS URL/);
+  });
+
+  it("rejects public base URLs with query strings or fragments", async () => {
+    await expect(
+      loadUnsubscribe({
+        NUSEND_PUBLIC_BASE_URL: "https://example.com?tenant=one",
+        NUSEND_UNSUBSCRIBE_SECRET: "x".repeat(32),
+      }),
+    ).rejects.toThrow(/query string or fragment/);
+    await expect(
+      loadUnsubscribe({
+        NUSEND_PUBLIC_BASE_URL: "https://example.com#unsubscribe",
+        NUSEND_UNSUBSCRIBE_SECRET: "x".repeat(32),
+      }),
+    ).rejects.toThrow(/query string or fragment/);
+  });
+
+  it.each(["&", "'", '"', "<", ">"])(
+    "rejects public base URLs with HTML-escapable character %s",
+    async (character) => {
+      await expect(
+        loadUnsubscribe({
+          NUSEND_PUBLIC_BASE_URL: `https://example.com/base${character}path`,
+          NUSEND_UNSUBSCRIBE_SECRET: "x".repeat(32),
+        }),
+      ).rejects.toThrow(/HTML-escapable characters/);
+    },
+  );
+
+  it("rejects short or repeated secrets", async () => {
+    await expect(
+      loadUnsubscribe({
+        NUSEND_PUBLIC_BASE_URL: "https://example.com",
+        NUSEND_UNSUBSCRIBE_SECRET: "short",
+      }),
+    ).rejects.toThrow(/NUSEND_UNSUBSCRIBE_SECRET/);
+    await expect(
+      loadUnsubscribe({
+        NUSEND_PUBLIC_BASE_URL: "https://example.com",
+        NUSEND_UNSUBSCRIBE_PREVIOUS_SECRET: "y".repeat(31),
+        NUSEND_UNSUBSCRIBE_SECRET: "x".repeat(32),
+      }),
+    ).rejects.toThrow(/NUSEND_UNSUBSCRIBE_PREVIOUS_SECRET/);
+    await expect(
+      loadUnsubscribe({
+        NUSEND_PUBLIC_BASE_URL: "https://example.com",
+        NUSEND_UNSUBSCRIBE_PREVIOUS_SECRET: "x".repeat(32),
+        NUSEND_UNSUBSCRIBE_SECRET: "x".repeat(32),
+      }),
+    ).rejects.toThrow(/must differ/);
+  });
+
+  it("loads valid config with canonical base URL and previous secret", async () => {
+    const loaded = await loadUnsubscribe({
+      NUSEND_PUBLIC_BASE_URL: "https://example.com/base/",
+      NUSEND_UNSUBSCRIBE_PREVIOUS_SECRET: "y".repeat(32),
+      NUSEND_UNSUBSCRIBE_SECRET: "x".repeat(32),
+    });
+    const config = Option.getOrThrow(loaded);
+
+    expect(config.publicBaseUrl).toBe("https://example.com/base");
+    expect(Redacted.value(config.currentSecret)).toBe("x".repeat(32));
+    expect(config.previousSecret).not.toBeNull();
+    expect(Redacted.value(config.previousSecret!)).toBe("y".repeat(32));
   });
 });
 

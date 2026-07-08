@@ -4,16 +4,16 @@
 import { ConfigProvider, Effect, Layer, ManagedRuntime, Option } from "effect";
 
 import { createApp } from "./app.ts";
-import { serviceConfig } from "./config.ts";
+import { serviceConfig, unsubscribeConfig } from "./config.ts";
 import { AuthLive } from "./services/auth-live.ts";
 import { Database } from "./services/database.ts";
 import { DatabaseBunLive } from "./services/database-bun.ts";
 import { IdGeneratorLive } from "./services/ids.ts";
+import { UnsubscribeConfigLive } from "./unsubscribe/config.ts";
 
+const configProvider = ConfigProvider.fromEnv();
 const config = await Effect.runPromise(
-  serviceConfig.pipe(
-    Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromEnv()),
-  ),
+  serviceConfig.pipe(Effect.provideService(ConfigProvider.ConfigProvider, configProvider)),
 ).catch((error: unknown) => {
   console.error(`Invalid configuration: ${error instanceof Error ? error.message : String(error)}`);
   return process.exit(1);
@@ -26,12 +26,20 @@ if (Option.isNone(config.auth)) {
   process.exit(1);
 }
 
+const unsubscribe = await Effect.runPromise(
+  unsubscribeConfig.pipe(Effect.provideService(ConfigProvider.ConfigProvider, configProvider)),
+).catch((error: unknown) => {
+  console.error(`Invalid configuration: ${error instanceof Error ? error.message : String(error)}`);
+  return process.exit(1);
+});
+
 // Reusing the same dbLayer reference is memoized to ONE database acquisition;
 // AuthLive consumes the raw SqliteHandle it provides.
 const dbLayer = DatabaseBunLive(config.databasePath);
 const appLayer = Layer.mergeAll(
   dbLayer,
   IdGeneratorLive,
+  UnsubscribeConfigLive(unsubscribe),
   AuthLive(config.auth.value).pipe(Layer.provide(dbLayer)),
 );
 const runtime = ManagedRuntime.make(appLayer);

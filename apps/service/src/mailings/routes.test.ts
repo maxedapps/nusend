@@ -1,11 +1,16 @@
 // Frozen envelopes (status codes, error.code values, auth messages) asserted
 // 1:1 from the pre-Effect scenarios. Validation message prose is Schema-derived
 // now, so those cases assert status + code only.
-import { Effect } from "effect";
+import { Effect, Option } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { Database } from "../services/database.ts";
-import { withTestApp, type FakeAuthBehavior, type TestRuntime } from "../testing/layers.ts";
+import {
+  fakeUnsubscribeConfig,
+  withTestApp,
+  type FakeAuthBehavior,
+  type TestRuntime,
+} from "../testing/layers.ts";
 import { maxIdempotencyKeyLength } from "./idempotency.ts";
 import { maxMailingHtmlLength, maxMailingRequestBodyBytes } from "./schema.ts";
 
@@ -100,6 +105,105 @@ describe("mailings routes", () => {
         expect(json.counts).toEqual({ deliveries: 1, queued: 1, suppressed: 0 });
         expect(typeof json.mailing.id).toBe("string");
         expect(typeof json.mailing.scheduledAt).toBe("string");
+        await expect(countRows(runtime)).resolves.toEqual({
+          deliveries: 1,
+          idempotencyKeys: 0,
+          jobs: 1,
+          mailings: 1,
+        });
+      },
+    );
+  });
+
+  it("rejects marketing mailings without unsubscribe configuration", async () => {
+    await withTestApp(
+      { auth: { apiKeyPermissions: { mailings: ["create"] } } },
+      async (app, runtime) => {
+        const response = await app.fetch(
+          new Request("http://localhost/api/mailings", {
+            body: JSON.stringify({
+              ...validBody,
+              html: '<a href="{{ unsubscribe.url }}">Unsubscribe</a>',
+              purpose: "marketing",
+            }),
+            headers: { "content-type": "application/json", "x-api-key": "valid" },
+            method: "POST",
+          }),
+        );
+
+        expect(response.status).toBe(400);
+        await expect(response.json()).resolves.toEqual({
+          error: {
+            code: "invalid_request",
+            message: "Marketing mailings require unsubscribe configuration.",
+          },
+        });
+        await expect(countRows(runtime)).resolves.toEqual({
+          deliveries: 0,
+          idempotencyKeys: 0,
+          jobs: 0,
+          mailings: 0,
+        });
+      },
+    );
+  });
+
+  it("rejects marketing mailings missing the unsubscribe URL placeholder", async () => {
+    await withTestApp(
+      {
+        auth: { apiKeyPermissions: { mailings: ["create"] } },
+        unsubscribe: Option.some(fakeUnsubscribeConfig()),
+      },
+      async (app, runtime) => {
+        const response = await app.fetch(
+          new Request("http://localhost/api/mailings", {
+            body: JSON.stringify({ ...validBody, purpose: "marketing" }),
+            headers: { "content-type": "application/json", "x-api-key": "valid" },
+            method: "POST",
+          }),
+        );
+
+        expect(response.status).toBe(400);
+        await expect(response.json()).resolves.toEqual({
+          error: {
+            code: "invalid_request",
+            message: "Marketing mailings must include {{ unsubscribe.url }} in the HTML template.",
+          },
+        });
+        await expect(countRows(runtime)).resolves.toEqual({
+          deliveries: 0,
+          idempotencyKeys: 0,
+          jobs: 0,
+          mailings: 0,
+        });
+      },
+    );
+  });
+
+  it("creates a marketing mailing when unsubscribe configuration and placeholder are present", async () => {
+    await withTestApp(
+      {
+        auth: { apiKeyPermissions: { mailings: ["create"] } },
+        unsubscribe: Option.some(fakeUnsubscribeConfig()),
+      },
+      async (app, runtime) => {
+        const response = await app.fetch(
+          new Request("http://localhost/api/mailings", {
+            body: JSON.stringify({
+              ...validBody,
+              html: '<a href="{{ unsubscribe.url }}">Unsubscribe</a>',
+              purpose: "marketing",
+            }),
+            headers: { "content-type": "application/json", "x-api-key": "valid" },
+            method: "POST",
+          }),
+        );
+
+        expect(response.status).toBe(201);
+        await expect(response.json()).resolves.toMatchObject({
+          counts: { deliveries: 1, queued: 1, suppressed: 0 },
+          mailing: { purpose: "marketing", state: "scheduled" },
+        });
         await expect(countRows(runtime)).resolves.toEqual({
           deliveries: 1,
           idempotencyKeys: 0,
@@ -271,19 +375,27 @@ describe("mailings routes", () => {
     const oversizedJson = (await oversizedField.json()) as { error: { code: string } };
     expect(oversizedJson.error.code).toBe("invalid_request");
 
-    const missingList = await postMailing(canCreate, {
-      body: JSON.stringify({
-        html: "<p>Hello</p>",
-        listId: "missing",
-        purpose: "marketing",
-        subject: "Hello",
-      }),
-      ...keyHeaders,
-    });
-    expect(missingList.status).toBe(404);
-    await expect(missingList.json()).resolves.toEqual({
-      error: { code: "not_found", message: "List not found." },
-    });
+    await withTestApp(
+      { auth: canCreate, unsubscribe: Option.some(fakeUnsubscribeConfig()) },
+      async (app) => {
+        const missingList = await app.fetch(
+          new Request("http://localhost/api/mailings", {
+            body: JSON.stringify({
+              html: '<a href="{{ unsubscribe.url }}">Unsubscribe</a>',
+              listId: "missing",
+              purpose: "marketing",
+              subject: "Hello",
+            }),
+            headers: { "content-type": "application/json", "x-api-key": "valid" },
+            method: "POST",
+          }),
+        );
+        expect(missingList.status).toBe(404);
+        await expect(missingList.json()).resolves.toEqual({
+          error: { code: "not_found", message: "List not found." },
+        });
+      },
+    );
 
     await withTestApp({ auth: canCreate }, async (app, runtime) => {
       await runtime.runPromise(

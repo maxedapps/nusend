@@ -10,6 +10,8 @@ import {
 } from "../services/email-transport.ts";
 import type { DatabaseService } from "../services/database.ts";
 import type { IdGeneratorService } from "../services/ids.ts";
+import type { UnsubscribeConfigService } from "../unsubscribe/config.ts";
+import { buildUnsubscribeUrl } from "../unsubscribe/url.ts";
 import {
   recordAmbiguousFailure,
   recordPermanentFailure,
@@ -29,7 +31,11 @@ export function processSendDeliveryJob(
 ): Effect.Effect<
   void,
   DatabaseError | SendProcessorError,
-  DatabaseService | EmailSendingConfigService | EmailTransportService | IdGeneratorService
+  | DatabaseService
+  | EmailSendingConfigService
+  | EmailTransportService
+  | IdGeneratorService
+  | UnsubscribeConfigService
 > {
   return Effect.gen(function* () {
     const context = yield* loadDeliveryContext(job);
@@ -48,7 +54,7 @@ export function processSendDeliveryJob(
 
     const attempt = started.attempt;
     const policy = yield* runPolicyGates(context);
-    if (policy.kind === "Block") {
+    if (policy.kind === "BlockPermanent") {
       yield* recordPermanentFailure({
         attemptId: attempt.attemptId,
         deliveryId: context.delivery.id,
@@ -57,8 +63,33 @@ export function processSendDeliveryJob(
       });
       return;
     }
+    if (policy.kind === "BlockRetryable") {
+      yield* recordRetryableFailure({
+        attemptId: attempt.attemptId,
+        deliveryId: context.delivery.id,
+        errorMessage: policy.message,
+      });
+      return yield* Effect.fail(new SendProcessorError({ message: policy.message }));
+    }
 
-    const renderedExit = yield* Effect.exit(renderDeliveryEmail(context));
+    const unsubscribeUrlExit = yield* Effect.exit(
+      context.mailing.purpose === "marketing"
+        ? buildUnsubscribeUrl(context.delivery.id)
+        : Effect.succeed(undefined),
+    );
+    if (Exit.isFailure(unsubscribeUrlExit)) {
+      const message = causeMessage(unsubscribeUrlExit.cause);
+      yield* recordRetryableFailure({
+        attemptId: attempt.attemptId,
+        deliveryId: context.delivery.id,
+        errorMessage: message,
+      });
+      return yield* Effect.fail(new SendProcessorError({ message }));
+    }
+
+    const renderedExit = yield* Effect.exit(
+      renderDeliveryEmail(context, { unsubscribeUrl: unsubscribeUrlExit.value }),
+    );
     if (Exit.isFailure(renderedExit)) {
       yield* recordPermanentFailure({
         attemptId: attempt.attemptId,

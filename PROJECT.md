@@ -31,15 +31,16 @@ Implemented today:
 - purpose-agnostic SES v2 email transport
 - send worker scripts for once/loop processing
 - transactional send pipeline with placeholder rendering
-- terminal marketing send policy block until unsubscribe support exists
+- self-managed unsubscribe support for marketing mailings (`{{ unsubscribe.url }}`, signed public links, one-click POST, local suppressions)
+- marketing send-time compliance gates for unsubscribe config, SES marketing configuration set, and suppressions
+- RFC 8058 `List-Unsubscribe` / `List-Unsubscribe-Post` headers for marketing sends
 - request/body/content limits
 - sanitized internal error logging
 - production HTTPS validation for auth URLs/trusted origins
 
 Not implemented yet:
 
-- marketing SES sending
-- unsubscribe routes/pages
+- production marketing volume (pending live SES/Gmail DKIM one-click verification and SES event ingestion)
 - SES event ingestion
 - contact/list management APIs
 - templates
@@ -59,6 +60,8 @@ Available routes:
 - `GET /api/operations/summary`
 - `GET /api/operations/deliveries`
 - `GET /api/operations/deliveries/:id`
+- `GET /unsubscribe/:token`
+- `POST /unsubscribe/:token`
 
 Current service scripts:
 
@@ -621,18 +624,21 @@ This cannot be eliminated completely without provider idempotency. Mitigate by r
 
 ### Marketing Compliance Gate
 
-Marketing sends are currently blocked by worker policy until unsubscribe support exists. Marketing jobs become terminal delivery failures with a clear policy error and do not call the raw transport.
+Marketing sends are no longer blanket-blocked, but they remain operationally gated. A marketing delivery is retried (not permanently failed) when unsubscribe config or `NUSEND_SES_MARKETING_CONFIGURATION_SET` is missing, and it is suppressed at send time when the recipient has a matching `all`, `marketing`, or list-scoped suppression.
 
-Create-time validation is not enough. The worker pipeline must enforce marketing compliance immediately before raw sending.
+Create-time validation is not enough. The worker pipeline enforces marketing compliance immediately before raw sending.
 
-Required before unblocking marketing:
+Implemented marketing compliance support:
 
-- public unsubscribe URL config
-- signed unsubscribe token generation
-- unsubscribe endpoint/page
-- suppression write on unsubscribe
-- `List-Unsubscribe` headers
-- policy tests proving marketing cannot send without this support
+- public HTTPS unsubscribe URL config
+- signed delivery-id unsubscribe token generation with current/previous secret support
+- public unsubscribe confirmation/one-click endpoints
+- local `scope='marketing'` suppression write on unsubscribe
+- optional originating list membership `unsubscribed_at` update
+- `List-Unsubscribe` and `List-Unsubscribe-Post` headers
+- policy tests proving marketing retries without config and suppresses recipients at send time
+
+Before real marketing volume, perform live SES/Gmail DKIM verification for the unsubscribe headers, monitor operations for marketing config retry/dead-job buildup, and implement SES bounce/complaint ingestion or make an explicit risk decision.
 
 ## SES Integration Vision
 
@@ -664,14 +670,19 @@ Current SES / send-worker config:
 AWS_REGION
 NUSEND_SES_FROM_EMAIL
 NUSEND_SES_TRANSACTIONAL_CONFIGURATION_SET optional
-NUSEND_SES_MARKETING_CONFIGURATION_SET optional, future
+NUSEND_SES_MARKETING_CONFIGURATION_SET required for marketing sends
 NUSEND_SES_REQUEST_TIMEOUT_MS default 30000
 NUSEND_SEND_WORKER_LEASE_SECONDS default 300
 NUSEND_SEND_WORKER_BATCH_SIZE default 1
 NUSEND_SEND_WORKER_POLL_MS default 5000
+NUSEND_PUBLIC_BASE_URL required for marketing sends; absolute HTTPS URL without query, fragment, or HTML-escapable characters (`&`, `'`, `"`, `<`, `>`)
+NUSEND_UNSUBSCRIBE_SECRET required for marketing sends; at least 32 characters
+NUSEND_UNSUBSCRIBE_PREVIOUS_SECRET optional during unsubscribe token secret rotation; at least 32 characters and different from current
 ```
 
 `NUSEND_SEND_WORKER_BATCH_SIZE * NUSEND_SES_REQUEST_TIMEOUT_MS + 10000` must stay below `NUSEND_SEND_WORKER_LEASE_SECONDS * 1000`.
+
+Delivery rows must be retained for at least 13 months so old signed unsubscribe links can resolve honestly. If a retained delivery no longer exists, unsubscribe routes return an expired-link response instead of pretending success.
 
 SES tags should include:
 

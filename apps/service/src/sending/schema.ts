@@ -48,4 +48,5 @@ export type RenderedEmail = {
   readonly html: string;
   readonly subject: string;
   readonly text: string | null;
+  readonly unsubscribeUrl: string | null;
 };

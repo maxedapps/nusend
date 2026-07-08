@@ -23,6 +23,7 @@ export function prepareEmail(
       purpose: context.mailing.purpose,
     };
     yield* validatePreparedTags(tags);
+    const headers = yield* unsubscribeHeaders(context, rendered);
 
     return {
       configurationSetName:
@@ -30,13 +31,41 @@ export function prepareEmail(
           ? config.transactionalConfigurationSet
           : config.marketingConfigurationSet,
       from: config.fromEmail,
-      headers: {},
+      headers,
       html: rendered.html,
       subject: rendered.subject,
       tags,
       text: rendered.text,
       to: context.delivery.email,
     };
+  });
+}
+
+function unsubscribeHeaders(
+  context: DeliveryContext,
+  rendered: RenderedEmail,
+): Effect.Effect<Record<string, string>, SendPreparationError> {
+  if (context.mailing.purpose === "transactional") return Effect.succeed({});
+
+  if (rendered.unsubscribeUrl === null) {
+    return Effect.fail(
+      new SendPreparationError({ message: "Marketing email requires an unsubscribe URL." }),
+    );
+  }
+
+  // This checks URL presence, not perfect visual visibility. It assumes the current
+  // unsubscribe URLs are path-token URLs without query parameters.
+  if (!rendered.html.includes(rendered.unsubscribeUrl)) {
+    return Effect.fail(
+      new SendPreparationError({
+        message: "Marketing email HTML must include the rendered unsubscribe URL.",
+      }),
+    );
+  }
+
+  return Effect.succeed({
+    "List-Unsubscribe": `<${rendered.unsubscribeUrl}>`,
+    "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
   });
 }
 

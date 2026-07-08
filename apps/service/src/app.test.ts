@@ -1,9 +1,10 @@
-import { Effect, Layer, ManagedRuntime } from "effect";
+import { Effect, Layer, ManagedRuntime, Option } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { createApp } from "./app.ts";
 import { Database, type DatabaseService } from "./services/database.ts";
 import { FakeAuthLive, sequentialIdsLayer, withTestApp } from "./testing/layers.ts";
+import { UnsubscribeConfigLive } from "./unsubscribe/config.ts";
 
 describe("createApp", () => {
   it("returns basic health status", async () => {
@@ -29,7 +30,12 @@ describe("createApp", () => {
 
   it("returns unavailable database health status", async () => {
     const runtime = ManagedRuntime.make(
-      Layer.mergeAll(unavailableDatabaseLayer(), sequentialIdsLayer("id"), FakeAuthLive()),
+      Layer.mergeAll(
+        unavailableDatabaseLayer(),
+        sequentialIdsLayer("id"),
+        FakeAuthLive(),
+        UnsubscribeConfigLive(Option.none()),
+      ),
     );
 
     try {

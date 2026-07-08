@@ -10,6 +10,8 @@ import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Config, ConfigProvider, Effect, Option, Redacted } from "effect";
 
+import type { UnsubscribeConfig as ParsedUnsubscribeConfig } from "./unsubscribe/config.ts";
+
 export type AuthConfig = {
   baseUrl: string;
   googleClientId: string;
@@ -34,6 +36,8 @@ export type SendingConfig = {
   workerBatchSize: number;
   workerLeaseSeconds: number;
 };
+
+export type { ParsedUnsubscribeConfig as UnsubscribeConfig };
 
 const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
 const defaultDatabasePath = ".data/nusend.sqlite";
@@ -179,6 +183,69 @@ export const serviceConfig: Effect.Effect<ServiceConfig, Config.ConfigError> = E
     };
   },
 );
+
+export const unsubscribeConfig: Effect.Effect<
+  Option.Option<ParsedUnsubscribeConfig>,
+  Config.ConfigError
+> = Effect.gen(function* () {
+  const publicBaseUrl = yield* trimmedOption("NUSEND_PUBLIC_BASE_URL");
+  const currentSecret = yield* trimmedOption("NUSEND_UNSUBSCRIBE_SECRET");
+  const previousSecret = yield* trimmedOption("NUSEND_UNSUBSCRIBE_PREVIOUS_SECRET");
+
+  if ([publicBaseUrl, currentSecret, previousSecret].every(Option.isNone)) {
+    return Option.none<ParsedUnsubscribeConfig>();
+  }
+
+  const missing: string[] = [];
+  if (Option.isNone(publicBaseUrl)) missing.push("NUSEND_PUBLIC_BASE_URL");
+  if (Option.isNone(currentSecret)) missing.push("NUSEND_UNSUBSCRIBE_SECRET");
+  if (missing.length > 0) {
+    return yield* configFailure(
+      `Unsubscribe is partially configured. Missing: ${missing.join(", ")}.`,
+    );
+  }
+
+  const parsedBaseUrl = parseAbsoluteUrl(Option.getOrThrow(publicBaseUrl));
+  if (!parsedBaseUrl || parsedBaseUrl.protocol !== "https:") {
+    return yield* configFailure("NUSEND_PUBLIC_BASE_URL must be an absolute HTTPS URL.");
+  }
+  if (parsedBaseUrl.search !== "" || parsedBaseUrl.hash !== "") {
+    return yield* configFailure(
+      "NUSEND_PUBLIC_BASE_URL must not include a query string or fragment.",
+    );
+  }
+  if (/[&'"<>]/.test(Option.getOrThrow(publicBaseUrl))) {
+    return yield* configFailure(
+      "NUSEND_PUBLIC_BASE_URL must not include HTML-escapable characters.",
+    );
+  }
+
+  const current = Option.getOrThrow(currentSecret);
+  if (current.length < 32) {
+    return yield* configFailure("NUSEND_UNSUBSCRIBE_SECRET must be at least 32 characters.");
+  }
+
+  let previous: Redacted.Redacted<string> | null = null;
+  if (Option.isSome(previousSecret)) {
+    if (previousSecret.value.length < 32) {
+      return yield* configFailure(
+        "NUSEND_UNSUBSCRIBE_PREVIOUS_SECRET must be at least 32 characters.",
+      );
+    }
+    if (previousSecret.value === current) {
+      return yield* configFailure(
+        "NUSEND_UNSUBSCRIBE_PREVIOUS_SECRET must differ from NUSEND_UNSUBSCRIBE_SECRET.",
+      );
+    }
+    previous = Redacted.make(previousSecret.value);
+  }
+
+  return Option.some<ParsedUnsubscribeConfig>({
+    currentSecret: Redacted.make(current),
+    previousSecret: previous,
+    publicBaseUrl: parsedBaseUrl.toString().replace(/\/$/, ""),
+  });
+});
 
 export const sendingConfig: Effect.Effect<SendingConfig, Config.ConfigError> = Effect.gen(
   function* () {

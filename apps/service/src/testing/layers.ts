@@ -2,7 +2,7 @@
 // same interface, same SQL text as the bun:sqlite production layer (parity is
 // guarded by the driver-parity bun-scenario smoke).
 import { DatabaseSync } from "node:sqlite";
-import { Clock, Effect, Layer, ManagedRuntime, Result } from "effect";
+import { Clock, Effect, Layer, ManagedRuntime, Option, Redacted, Result } from "effect";
 import { TestClock } from "effect/testing";
 
 import type { Hono } from "hono";
@@ -13,6 +13,11 @@ import { DatabaseError } from "../errors.ts";
 import { Auth, type AuthService } from "../services/auth.ts";
 import { Database, makeTransaction, type DatabaseService } from "../services/database.ts";
 import { IdGenerator, type IdGeneratorService } from "../services/ids.ts";
+import {
+  UnsubscribeConfigLive,
+  type UnsubscribeConfig,
+  type UnsubscribeConfigService,
+} from "../unsubscribe/config.ts";
 
 export type DatabaseNodeOptions = {
   readonly migrate?: boolean;
@@ -128,6 +133,7 @@ export type TestLayerOptions = {
   // Ids drawn from a fixed list instead of the sequential generator.
   readonly ids?: readonly string[];
   readonly migrate?: boolean;
+  readonly unsubscribe?: Option.Option<UnsubscribeConfig>;
   // Replaces the default TestClock (e.g. steppingClockLayer). Programs using
   // TestClock.setTime require the default.
   readonly clock?: Layer.Layer<never>;
@@ -138,6 +144,7 @@ export function testLayer(options: TestLayerOptions = {}) {
     DatabaseNodeLive(":memory:", { migrate: options.migrate }),
     options.clock ?? TestClock.layer(),
     options.ids ? listIdsLayer(options.ids) : sequentialIdsLayer(options.idPrefix ?? "id"),
+    UnsubscribeConfigLive(options.unsubscribe ?? Option.none()),
   );
 }
 
@@ -151,6 +158,23 @@ export function runTest<A, E>(
   options: TestLayerOptions = {},
 ): Promise<A> {
   return Effect.runPromise(effect.pipe(Effect.provide(testLayer(options))));
+}
+
+export function fakeUnsubscribeConfig(
+  overrides: Partial<UnsubscribeConfig> = {},
+): UnsubscribeConfig {
+  return {
+    currentSecret: Redacted.make("current-unsubscribe-secret-value-32"),
+    previousSecret: null,
+    publicBaseUrl: "https://unsubscribe.example.com",
+    ...overrides,
+  };
+}
+
+export function fakeUnsubscribeConfigLayer(
+  config: Option.Option<UnsubscribeConfig> = Option.some(fakeUnsubscribeConfig()),
+): Layer.Layer<UnsubscribeConfigService> {
+  return UnsubscribeConfigLive(config);
 }
 
 export type FakeAuthBehavior = {
@@ -200,6 +224,7 @@ export type TestAppOptions = {
   readonly auth?: FakeAuthBehavior;
   readonly idPrefix?: string;
   readonly ids?: readonly string[];
+  readonly unsubscribe?: Option.Option<UnsubscribeConfig>;
 };
 
 export function makeTestRuntime(options: TestAppOptions = {}) {
@@ -209,6 +234,7 @@ export function makeTestRuntime(options: TestAppOptions = {}) {
       TestClock.layer(),
       options.ids ? listIdsLayer(options.ids) : sequentialIdsLayer(options.idPrefix ?? "id"),
       FakeAuthLive(options.auth),
+      UnsubscribeConfigLive(options.unsubscribe ?? Option.none()),
     ),
   );
 }
