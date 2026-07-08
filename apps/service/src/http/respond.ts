@@ -18,12 +18,25 @@ import type {
 import type { AuthService } from "../services/auth.ts";
 import type { DatabaseService } from "../services/database.ts";
 import type { IdGeneratorService } from "../services/ids.ts";
+import type { SesFeedbackConfigService } from "../ses-feedback/config.ts";
+import type {
+  SesFeedbackDisabledError,
+  SesFeedbackForbiddenError,
+  SesFeedbackMalformedError,
+  SnsConfirmationError,
+  SnsVerificationError,
+} from "../ses-feedback/errors.ts";
+import type { SnsSubscriptionConfirmerService } from "../ses-feedback/sns-confirmer.ts";
+import type { SnsMessageVerifierService } from "../ses-feedback/sns-verifier.ts";
 import type { UnsubscribeConfigService } from "../unsubscribe/config.ts";
 
 export type AppServices =
   | AuthService
   | DatabaseService
   | IdGeneratorService
+  | SesFeedbackConfigService
+  | SnsMessageVerifierService
+  | SnsSubscriptionConfirmerService
   | UnsubscribeConfigService;
 
 export type AppRuntime = ManagedRuntime.ManagedRuntime<AppServices, unknown>;
@@ -41,6 +54,14 @@ export type RouteError =
   | NotFoundError
   | RequestValidationError
   | UnauthenticatedError;
+
+export type WebhookRouteError =
+  | DatabaseError
+  | SesFeedbackDisabledError
+  | SesFeedbackForbiddenError
+  | SesFeedbackMalformedError
+  | SnsConfirmationError
+  | SnsVerificationError;
 
 export type ErrorBody = { error: { code: string; message: string } };
 
@@ -107,6 +128,32 @@ export async function runHtmlRoute<A>(
   return context.html("Internal error.", 500);
 }
 
+export async function runWebhookRoute<A>(
+  context: Context,
+  runtime: AppRuntime,
+  program: Effect.Effect<A, WebhookRouteError, AppServices>,
+  onSuccess: (value: A) => Response,
+): Promise<Response> {
+  const responded = program.pipe(
+    Effect.map(onSuccess),
+    Effect.catchTags({
+      DatabaseError: (error) => emptyInternalError(context, error),
+      SesFeedbackDisabledError: () => Effect.succeed(new Response(null, { status: 404 })),
+      SesFeedbackForbiddenError: () => Effect.succeed(new Response(null, { status: 403 })),
+      SesFeedbackMalformedError: () => Effect.succeed(new Response(null, { status: 400 })),
+      SnsConfirmationError: (error) => emptyInternalError(context, error),
+      SnsVerificationError: () => Effect.succeed(new Response(null, { status: 403 })),
+    }),
+  );
+
+  const exit = await runtime.runPromiseExit(responded);
+
+  if (Exit.isSuccess(exit)) return exit.value;
+
+  logCause(exit.cause);
+  return new Response(null, { status: 500 });
+}
+
 export async function runRoute<A>(
   context: Context,
   runtime: AppRuntime,
@@ -165,6 +212,13 @@ function internalHtmlError(context: Context, error: DatabaseError) {
   return Effect.sync(() => {
     logCause(Cause.fail(error));
     return context.html("Internal error.", 500);
+  });
+}
+
+function emptyInternalError(_context: Context, error: DatabaseError | SnsConfirmationError) {
+  return Effect.sync(() => {
+    logCause(Cause.fail(error));
+    return new Response(null, { status: 500 });
   });
 }
 

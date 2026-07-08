@@ -3,6 +3,9 @@ import { describe, expect, it } from "vitest";
 
 import { createApp } from "./app.ts";
 import { Database, type DatabaseService } from "./services/database.ts";
+import { SesFeedbackConfigLive } from "./ses-feedback/config.ts";
+import { FakeSnsSubscriptionConfirmerLive } from "./ses-feedback/sns-confirmer.ts";
+import { FakeSnsMessageVerifierLive } from "./ses-feedback/sns-verifier.ts";
 import { FakeAuthLive, sequentialIdsLayer, withTestApp } from "./testing/layers.ts";
 import { UnsubscribeConfigLive } from "./unsubscribe/config.ts";
 
@@ -34,6 +37,9 @@ describe("createApp", () => {
         unavailableDatabaseLayer(),
         sequentialIdsLayer("id"),
         FakeAuthLive(),
+        SesFeedbackConfigLive(Option.none()),
+        FakeSnsMessageVerifierLive(() => Effect.die(new Error("unused"))),
+        FakeSnsSubscriptionConfirmerLive([]),
         UnsubscribeConfigLive(Option.none()),
       ),
     );

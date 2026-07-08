@@ -8,7 +8,7 @@ It is not a Mailchimp clone and not a hosted multi-tenant SaaS. The goal is a le
 
 ## Current Status
 
-Nusend currently supports creating protected mailings, queueing per-recipient delivery jobs, idempotent mailing creation, and a send worker foundation that can send transactional deliveries through AWS SES v2.
+Nusend currently supports creating protected mailings, queueing per-recipient delivery jobs, idempotent mailing creation, a send worker foundation that can send through AWS SES v2, and SES feedback ingestion through SNS webhooks.
 
 Implemented today:
 
@@ -34,14 +34,15 @@ Implemented today:
 - self-managed unsubscribe support for marketing mailings (`{{ unsubscribe.url }}`, signed public links, one-click POST, local suppressions)
 - marketing send-time compliance gates for unsubscribe config, SES marketing configuration set, and suppressions
 - RFC 8058 `List-Unsubscribe` / `List-Unsubscribe-Post` headers for marketing sends
+- SES configuration-set/SNS feedback ingestion with local bounce/complaint suppressions
+- sanitized SES feedback operations endpoint
 - request/body/content limits
 - sanitized internal error logging
 - production HTTPS validation for auth URLs/trusted origins
 
 Not implemented yet:
 
-- production marketing volume (pending live SES/Gmail DKIM one-click verification and SES event ingestion)
-- SES event ingestion
+- production marketing volume (pending live SES simulator feedback validation, operations monitoring, and Gmail DKIM one-click verification)
 - contact/list management APIs
 - templates
 - Cloudflare R2 assets
@@ -60,6 +61,8 @@ Available routes:
 - `GET /api/operations/summary`
 - `GET /api/operations/deliveries`
 - `GET /api/operations/deliveries/:id`
+- `GET /api/operations/ses-feedback`
+- `POST /api/webhooks/aws/sns/ses`
 - `GET /unsubscribe/:token`
 - `POST /unsubscribe/:token`
 
@@ -90,7 +93,7 @@ pnpm --filter @nusend/service worker:send
 
 Roadmap integrations:
 
-- AWS SNS HTTPS webhook for SES events
+- SNS→SQS SES feedback worker alternative if HTTPS webhook delivery becomes operationally painful
 - Cloudflare R2 / S3-compatible API for public email assets
 
 ## Product Boundaries
@@ -291,7 +294,7 @@ Notes:
 - list recipient personalization is not implemented yet because contacts have no attrs column.
 - `ses_message_id` stores the provider message ID after SES accepts a send.
 - `last_error` stores a safe, bounded delivery-level failure reason.
-- future SES event ingestion may add `delivered`, `bounced`, and `complained` statuses.
+- SES feedback is recorded separately in `ses_feedback_*` audit tables; it does not add `delivered`, `bounced`, or `complained` delivery statuses.
 - future pause/cancel APIs may add cancelled delivery/job states; draft mailings should only be added with a real draft workflow.
 
 ### Jobs
@@ -404,7 +407,7 @@ Scope and privacy:
 
 - read-only: no retry, cancel, release, or queue mutation controls
 - delivery list/detail include job and latest/all attempt context
-- responses omit recipient `vars_json`, mailing HTML/text, auth/session data, and API-key data
+- responses omit recipient `vars_json`, mailing HTML/text, auth/session data, API-key data, and raw SES/SNS feedback JSON
 - standalone jobs/attempts endpoints, queue mutation APIs, and an admin UI remain future work
 
 ## Sending Architecture
@@ -638,7 +641,7 @@ Implemented marketing compliance support:
 - `List-Unsubscribe` and `List-Unsubscribe-Post` headers
 - policy tests proving marketing retries without config and suppresses recipients at send time
 
-Before real marketing volume, perform live SES/Gmail DKIM verification for the unsubscribe headers, monitor operations for marketing config retry/dead-job buildup, and implement SES bounce/complaint ingestion or make an explicit risk decision.
+Before real marketing volume, validate SES feedback ingestion with the simulator in production, perform live SES/Gmail DKIM verification for the unsubscribe headers, and monitor operations for marketing config retry/dead-job buildup.
 
 ## SES Integration Vision
 
@@ -671,6 +674,7 @@ AWS_REGION
 NUSEND_SES_FROM_EMAIL
 NUSEND_SES_TRANSACTIONAL_CONFIGURATION_SET optional
 NUSEND_SES_MARKETING_CONFIGURATION_SET required for marketing sends
+NUSEND_SES_FEEDBACK_TOPIC_ARNS optional comma-separated allowed SNS topic ARNs; enables feedback webhook
 NUSEND_SES_REQUEST_TIMEOUT_MS default 30000
 NUSEND_SEND_WORKER_LEASE_SECONDS default 300
 NUSEND_SEND_WORKER_BATCH_SIZE default 1
@@ -694,21 +698,41 @@ purpose
 
 Configuration sets should be selected in the prepare stage and passed to the raw transport as already-computed data.
 
-## SES Events Roadmap
+## SES Feedback Ingestion
 
-Use SES configuration sets and SNS HTTPS webhook delivery.
+Nusend uses SES configuration sets with SNS HTTPS webhook delivery:
 
-Future event table:
+```txt
+SES configuration set -> SNS Standard topic -> POST /api/webhooks/aws/sns/ses
+```
+
+Current audit tables:
 
 ```sql
-ses_events(
+ses_feedback_notifications(
+  sns_message_id,
+  sns_topic_arn,
+  sns_type,
+  event_type,
+  ses_message_id,
+  raw_json,
+  received_at
+)
+
+ses_feedback_recipients(
   id,
   sns_message_id,
-  ses_message_id,
   event_type,
   delivery_id,
-  raw_json,
-  processed_at,
+  mailing_id,
+  ses_message_id,
+  recipient_email,
+  feedback_id,
+  bounce_type,
+  bounce_sub_type,
+  complaint_feedback_type,
+  diagnostic_code,
+  action_taken,
   created_at
 )
 ```
@@ -716,30 +740,20 @@ ses_events(
 Webhook flow:
 
 ```txt
-receive SNS request
+receive raw SNS request
+  -> parse outer SNS JSON shape
   -> verify SNS signature
-  -> validate expected TopicArn
-  -> handle SubscriptionConfirmation
-  -> store raw event
-  -> idempotently process event
-  -> map SES message ID to delivery
-  -> update delivery status
-  -> update suppressions for bounces/complaints/unsubscribes
+  -> validate exact TopicArn allowlist
+  -> handle SubscriptionConfirmation safely
+  -> store raw SNS/SES audit JSON
+  -> idempotently store per-recipient feedback
+  -> map by delivery_id tag, then SES message ID
+  -> insert global suppressions for permanent bounces and complaints
 ```
 
-SNS signature verification is required.
+Permanent bounces create `scope=all reason=bounce`; complaints create `scope=all reason=complaint` except `complaintFeedbackType='not-spam'`. Transient bounces, rejects, delivery delays, deliveries, and unknown authentic event types are recorded without suppression. Delivery status remains send-processing-only.
 
-Events to support early:
-
-- Bounce
-- Complaint
-- Delivery
-- Send
-- Reject
-- Rendering Failure
-- DeliveryDelay
-
-Open/click tracking should be optional and only added if explicitly desired.
+Supported event types for the current milestone: Bounce, Complaint, Reject, DeliveryDelay, optional Delivery, and authentic unknown events. Open/click tracking should be optional and only added if explicitly desired. SNS→SQS remains a documented alternative if public webhook delivery/retry/security becomes painful.
 
 ## Suppression and Unsubscribe Policy
 
@@ -748,16 +762,15 @@ Nusend's database suppressions are the application source of truth.
 Recommended policy:
 
 - hard permanent bounce -> `scope=all`, `reason=bounce`
+- SES complaint feedback -> `scope=all`, `reason=complaint` unless `complaintFeedbackType='not-spam'`
 - marketing unsubscribe -> `scope=list` or `scope=marketing`, `reason=unsubscribe`
-- marketing complaint -> `scope=marketing` or `scope=list`, `reason=complaint`
-- transactional complaint -> record event; do not automatically block all transactional email
 - manual suppression -> caller chooses scope deliberately
 
-Rationale: a complaint should stop unwanted marketing, but should not automatically make password resets, login codes, receipts, or account-critical transactional email impossible.
+Rationale: hard bounces and complaints are reputation-critical and should block both transactional and marketing sends; marketing unsubscribes remain marketing/list-scoped.
 
 Do not use SES-managed `ListManagementOptions` initially because Nusend owns contacts, lists, unsubscribe links, and suppression behavior.
 
-SES configuration sets should be used primarily for event publishing and optional suppression behavior. Operators must configure SES suppression carefully because account-level complaint suppression can interfere with transactional mail.
+SES configuration sets are used for event publishing. Operators should also enable SES account-level suppression for `BOUNCE` and `COMPLAINT` as defense in depth, while keeping local SQLite suppressions as the application source of truth.
 
 ## Templates and Rendering Roadmap
 

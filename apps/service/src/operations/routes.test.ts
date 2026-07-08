@@ -538,6 +538,64 @@ describe("operations routes", () => {
     });
   });
 
+  it("lists sanitized SES feedback rows newest first", async () => {
+    await withTestApp({ auth: { session: { userId: "user_1" } } }, async (app, runtime) => {
+      await seedOperationsData(runtime);
+      await runtime.runPromise(
+        Effect.gen(function* () {
+          const db = yield* Database;
+          yield* db.run(
+            "test:seed:feedback-notification",
+            `INSERT INTO ses_feedback_notifications (
+               sns_message_id, sns_topic_arn, sns_type, event_type, ses_message_id, raw_json, received_at
+             ) VALUES (
+               'sns_1', 'arn:aws:sns:us-east-1:123456789012:nusend-test', 'Notification',
+               'Bounce', 'ses_1', '{"raw":"secret"}', '2026-07-03T12:00:08.000Z'
+             );`,
+          );
+          yield* db.run(
+            "test:seed:feedback-recipient",
+            `INSERT INTO ses_feedback_recipients (
+               id, sns_message_id, event_type, delivery_id, mailing_id, ses_message_id,
+               recipient_email, feedback_id, bounce_type, bounce_sub_type,
+               complaint_feedback_type, diagnostic_code, action_taken, created_at
+             ) VALUES (
+               'feedback_1', 'sns_1', 'Bounce', 'delivery_1', 'mailing_1', 'ses_1',
+               'user1@example.com', 'feedback-id', 'Permanent', 'General', NULL,
+               '${"x".repeat(550)}', 'suppressed', '2026-07-03T12:00:09.000Z'
+             );`,
+          );
+        }),
+      );
+
+      const response = await app.fetch(new Request("http://localhost/api/operations/ses-feedback"));
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body).toEqual({
+        items: [
+          {
+            actionTaken: "suppressed",
+            bounceSubType: "General",
+            bounceType: "Permanent",
+            complaintFeedbackType: null,
+            createdAt: "2026-07-03T12:00:09.000Z",
+            deliveryId: "delivery_1",
+            diagnosticCode: `${"x".repeat(500)}…`,
+            eventType: "Bounce",
+            feedbackId: "feedback-id",
+            id: "feedback_1",
+            mailingId: "mailing_1",
+            recipientEmail: "user1@example.com",
+            sesMessageId: "ses_1",
+          },
+        ],
+      });
+      expect(JSON.stringify(body)).not.toContain("raw");
+      expect(JSON.stringify(body)).not.toContain("secret");
+    });
+  });
+
   it("returns generic not_found for a missing delivery detail", async () => {
     const response = await getOperations("/deliveries/missing", { session: { userId: "user_1" } });
 

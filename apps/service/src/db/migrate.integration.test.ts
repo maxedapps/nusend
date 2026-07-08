@@ -21,14 +21,17 @@ describe("migration runner", () => {
     const initialStatus = runMigrationCommand("status", databasePath).stdout;
     expect(initialStatus).toContain("pending  0001_initial_schema");
     expect(initialStatus).toContain("pending  0002_simplify_send_queue_and_states");
+    expect(initialStatus).toContain("pending  0003_ses_feedback_ingestion");
 
     const migrateUp = runMigrationCommand("up", databasePath).stdout;
     expect(migrateUp).toContain("Applied migration 0001_initial_schema.");
     expect(migrateUp).toContain("Applied migration 0002_simplify_send_queue_and_states.");
+    expect(migrateUp).toContain("Applied migration 0003_ses_feedback_ingestion.");
 
     const migratedStatus = runMigrationCommand("status", databasePath).stdout;
     expect(migratedStatus).toContain("applied  0001_initial_schema");
     expect(migratedStatus).toContain("applied  0002_simplify_send_queue_and_states");
+    expect(migratedStatus).toContain("applied  0003_ses_feedback_ingestion");
 
     expect(readTableNames(databasePath)).toEqual([
       "accounts",
@@ -42,6 +45,8 @@ describe("migration runner", () => {
       "mailings",
       "schema_migrations",
       "send_attempts",
+      "ses_feedback_notifications",
+      "ses_feedback_recipients",
       "sessions",
       "suppressions",
       "users",
@@ -61,6 +66,23 @@ describe("migration runner", () => {
     );
     expect(readColumnNames(databasePath, "mailing_idempotency_keys")).toEqual(
       expect.arrayContaining(["key", "request_hash", "mailing_id", "response_json"]),
+    );
+    expect(readColumnNames(databasePath, "ses_feedback_notifications")).toEqual(
+      expect.arrayContaining(["sns_message_id", "raw_json", "received_at"]),
+    );
+    expect(readColumnNames(databasePath, "ses_feedback_recipients")).toEqual(
+      expect.arrayContaining(["sns_message_id", "recipient_email", "action_taken"]),
+    );
+    expect(readIndexNames(databasePath, "ses_feedback_recipients")).toEqual(
+      expect.arrayContaining([
+        "ses_feedback_recipients_delivery_id_idx",
+        "ses_feedback_recipients_ses_message_id_idx",
+        "ses_feedback_recipients_email_idx",
+        "ses_feedback_recipients_event_created_idx",
+      ]),
+    );
+    expect(readTableSql(databasePath, "ses_feedback_recipients")).toContain(
+      "action_taken IN ('recorded', 'suppressed', 'ignored')",
     );
 
     const drift = runBun(
@@ -87,6 +109,9 @@ describe("migration runner", () => {
     expect(restore.status).toBe(0);
 
     expect(runMigrationCommand("down", databasePath).stdout).toContain(
+      "Rolled back migration 0003_ses_feedback_ingestion.",
+    );
+    expect(runMigrationCommand("down", databasePath).stdout).toContain(
       "Rolled back migration 0002_simplify_send_queue_and_states.",
     );
     expect(readColumnNames(databasePath, "jobs")).toContain("kind");
@@ -101,6 +126,7 @@ describe("migration runner", () => {
     const migrateUpAgain = runMigrationCommand("up", databasePath).stdout;
     expect(migrateUpAgain).toContain("Applied migration 0001_initial_schema.");
     expect(migrateUpAgain).toContain("Applied migration 0002_simplify_send_queue_and_states.");
+    expect(migrateUpAgain).toContain("Applied migration 0003_ses_feedback_ingestion.");
 
     const synthetic = runBun(
       [
@@ -200,6 +226,34 @@ function readColumnNames(databasePath: string, tableName: string): string[] {
   expect(result.status).toBe(0);
 
   return JSON.parse(result.stdout) as string[];
+}
+
+function readIndexNames(databasePath: string, tableName: string): string[] {
+  const result = runBun(
+    [
+      "-e",
+      `import { Database } from 'bun:sqlite'; const db = new Database(process.env.NUSEND_DB_PATH); const rows = db.query("SELECT name FROM sqlite_schema WHERE type = 'index' AND tbl_name = '${tableName}' ORDER BY name;").all(); console.log(JSON.stringify(rows.map((row) => row.name))); db.close();`,
+    ],
+    databasePath,
+  );
+
+  expect(result.status).toBe(0);
+
+  return JSON.parse(result.stdout) as string[];
+}
+
+function readTableSql(databasePath: string, tableName: string): string {
+  const result = runBun(
+    [
+      "-e",
+      `import { Database } from 'bun:sqlite'; const db = new Database(process.env.NUSEND_DB_PATH); const row = db.query("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = '${tableName}';").get(); console.log(row.sql); db.close();`,
+    ],
+    databasePath,
+  );
+
+  expect(result.status).toBe(0);
+
+  return result.stdout;
 }
 
 function runBun(args: string[], databasePath: string) {

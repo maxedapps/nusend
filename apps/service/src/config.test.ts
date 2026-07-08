@@ -5,9 +5,11 @@ import { describe, expect, it } from "vitest";
 import {
   sendingConfig,
   serviceConfig,
+  sesFeedbackConfig,
   unsubscribeConfig,
   type SendingConfig,
   type ServiceConfig,
+  type SesFeedbackConfig,
   type UnsubscribeConfig,
 } from "./config.ts";
 
@@ -22,6 +24,16 @@ function load(fixture: Record<string, string>): Promise<ServiceConfig> {
 function loadSending(fixture: Record<string, string>): Promise<SendingConfig> {
   return Effect.runPromise(
     sendingConfig.pipe(
+      Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(fixture)),
+    ),
+  );
+}
+
+function loadSesFeedback(
+  fixture: Record<string, string>,
+): Promise<Option.Option<SesFeedbackConfig>> {
+  return Effect.runPromise(
+    sesFeedbackConfig.pipe(
       Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(fixture)),
     ),
   );
@@ -188,6 +200,41 @@ describe("serviceConfig", () => {
         NODE_ENV: "production",
       }),
     ).rejects.toThrow(/HTTPS/);
+  });
+});
+
+describe("sesFeedbackConfig", () => {
+  it("is absent when feedback topic ARNs are missing or blank", async () => {
+    expect(Option.isNone(await loadSesFeedback({}))).toBe(true);
+    expect(Option.isNone(await loadSesFeedback({ NUSEND_SES_FEEDBACK_TOPIC_ARNS: " ,  " }))).toBe(
+      true,
+    );
+  });
+
+  it("loads trimmed comma-separated topic ARNs and removes duplicates", async () => {
+    const loaded = await loadSesFeedback({
+      NUSEND_SES_FEEDBACK_TOPIC_ARNS:
+        " arn:aws:sns:us-east-1:123456789012:nusend-prod , arn:aws-us-gov:sns:us-gov-west-1:123456789012:nusend-gov, arn:aws:sns:us-east-1:123456789012:nusend-prod ",
+    });
+
+    expect(Option.getOrThrow(loaded).topicArns).toEqual([
+      "arn:aws:sns:us-east-1:123456789012:nusend-prod",
+      "arn:aws-us-gov:sns:us-gov-west-1:123456789012:nusend-gov",
+    ]);
+  });
+
+  it("rejects invalid topic ARN entries", async () => {
+    await expect(
+      loadSesFeedback({ NUSEND_SES_FEEDBACK_TOPIC_ARNS: "arn:aws:sqs:us-east-1:123:queue" }),
+    ).rejects.toThrow(/NUSEND_SES_FEEDBACK_TOPIC_ARNS/);
+  });
+
+  it("does not require send-worker SES config", async () => {
+    const loaded = await loadSesFeedback({
+      NUSEND_SES_FEEDBACK_TOPIC_ARNS: "arn:aws:sns:us-east-1:123456789012:nusend-prod",
+    });
+
+    expect(Option.isSome(loaded)).toBe(true);
   });
 });
 

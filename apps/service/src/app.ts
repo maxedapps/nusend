@@ -6,6 +6,7 @@ import { createMailingsRoutes } from "./mailings/routes.ts";
 import { createOperationsRoutes } from "./operations/routes.ts";
 import { Auth } from "./services/auth.ts";
 import { Database } from "./services/database.ts";
+import { createSesFeedbackRoutes } from "./ses-feedback/routes.ts";
 import { createUnsubscribeRoutes } from "./unsubscribe/routes.ts";
 
 type AppOptions = {
@@ -42,6 +43,7 @@ export function createApp(options: AppOptions): Hono {
   );
 
   app.route("/unsubscribe", createUnsubscribeRoutes({ runtime: options.runtime }));
+  app.route("/api/webhooks", createSesFeedbackRoutes({ runtime: options.runtime }));
 
   app.route("/api/mailings", createMailingsRoutes({ runtime: options.runtime }));
   app.route("/api/operations", createOperationsRoutes({ runtime: options.runtime }));

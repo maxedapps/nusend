@@ -14,6 +14,17 @@ import { Auth, type AuthService } from "../services/auth.ts";
 import { Database, makeTransaction, type DatabaseService } from "../services/database.ts";
 import { IdGenerator, type IdGeneratorService } from "../services/ids.ts";
 import {
+  SesFeedbackConfigLive,
+  type SesFeedbackConfig,
+  type SesFeedbackConfigService,
+} from "../ses-feedback/config.ts";
+import { SnsVerificationError } from "../ses-feedback/errors.ts";
+import { FakeSnsSubscriptionConfirmerLive } from "../ses-feedback/sns-confirmer.ts";
+import {
+  FakeSnsMessageVerifierLive,
+  type SnsMessageVerifierService,
+} from "../ses-feedback/sns-verifier.ts";
+import {
   UnsubscribeConfigLive,
   type UnsubscribeConfig,
   type UnsubscribeConfigService,
@@ -133,6 +144,9 @@ export type TestLayerOptions = {
   // Ids drawn from a fixed list instead of the sequential generator.
   readonly ids?: readonly string[];
   readonly migrate?: boolean;
+  readonly sesFeedback?: Option.Option<SesFeedbackConfig>;
+  readonly snsConfirmerCalls?: string[];
+  readonly snsVerifier?: Parameters<typeof FakeSnsMessageVerifierLive>[0];
   readonly unsubscribe?: Option.Option<UnsubscribeConfig>;
   // Replaces the default TestClock (e.g. steppingClockLayer). Programs using
   // TestClock.setTime require the default.
@@ -144,6 +158,11 @@ export function testLayer(options: TestLayerOptions = {}) {
     DatabaseNodeLive(":memory:", { migrate: options.migrate }),
     options.clock ?? TestClock.layer(),
     options.ids ? listIdsLayer(options.ids) : sequentialIdsLayer(options.idPrefix ?? "id"),
+    SesFeedbackConfigLive(options.sesFeedback ?? Option.none()),
+    options.snsVerifier
+      ? FakeSnsMessageVerifierLive(options.snsVerifier)
+      : defaultSnsMessageVerifierLayer(),
+    FakeSnsSubscriptionConfirmerLive(options.snsConfirmerCalls ?? []),
     UnsubscribeConfigLive(options.unsubscribe ?? Option.none()),
   );
 }
@@ -158,6 +177,27 @@ export function runTest<A, E>(
   options: TestLayerOptions = {},
 ): Promise<A> {
   return Effect.runPromise(effect.pipe(Effect.provide(testLayer(options))));
+}
+
+export function fakeSesFeedbackConfig(
+  overrides: Partial<SesFeedbackConfig> = {},
+): SesFeedbackConfig {
+  return {
+    topicArns: ["arn:aws:sns:us-east-1:123456789012:nusend-test"],
+    ...overrides,
+  };
+}
+
+export function fakeSesFeedbackConfigLayer(
+  config: Option.Option<SesFeedbackConfig> = Option.some(fakeSesFeedbackConfig()),
+): Layer.Layer<SesFeedbackConfigService> {
+  return SesFeedbackConfigLive(config);
+}
+
+function defaultSnsMessageVerifierLayer(): Layer.Layer<SnsMessageVerifierService> {
+  return FakeSnsMessageVerifierLive(() =>
+    Effect.fail(new SnsVerificationError({ reason: "No fake SNS verifier configured." })),
+  );
 }
 
 export function fakeUnsubscribeConfig(
@@ -224,16 +264,25 @@ export type TestAppOptions = {
   readonly auth?: FakeAuthBehavior;
   readonly idPrefix?: string;
   readonly ids?: readonly string[];
+  readonly migrate?: boolean;
+  readonly sesFeedback?: Option.Option<SesFeedbackConfig>;
+  readonly snsConfirmerCalls?: string[];
+  readonly snsVerifier?: Parameters<typeof FakeSnsMessageVerifierLive>[0];
   readonly unsubscribe?: Option.Option<UnsubscribeConfig>;
 };
 
 export function makeTestRuntime(options: TestAppOptions = {}) {
   return ManagedRuntime.make(
     Layer.mergeAll(
-      DatabaseNodeLive(":memory:"),
+      DatabaseNodeLive(":memory:", { migrate: options.migrate }),
       TestClock.layer(),
       options.ids ? listIdsLayer(options.ids) : sequentialIdsLayer(options.idPrefix ?? "id"),
       FakeAuthLive(options.auth),
+      SesFeedbackConfigLive(options.sesFeedback ?? Option.none()),
+      options.snsVerifier
+        ? FakeSnsMessageVerifierLive(options.snsVerifier)
+        : defaultSnsMessageVerifierLayer(),
+      FakeSnsSubscriptionConfirmerLive(options.snsConfirmerCalls ?? []),
       UnsubscribeConfigLive(options.unsubscribe ?? Option.none()),
     ),
   );

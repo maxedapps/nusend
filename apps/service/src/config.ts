@@ -10,6 +10,7 @@ import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Config, ConfigProvider, Effect, Option, Redacted } from "effect";
 
+import type { SesFeedbackConfig as ParsedSesFeedbackConfig } from "./ses-feedback/config.ts";
 import type { UnsubscribeConfig as ParsedUnsubscribeConfig } from "./unsubscribe/config.ts";
 
 export type AuthConfig = {
@@ -37,7 +38,10 @@ export type SendingConfig = {
   workerLeaseSeconds: number;
 };
 
-export type { ParsedUnsubscribeConfig as UnsubscribeConfig };
+export type {
+  ParsedSesFeedbackConfig as SesFeedbackConfig,
+  ParsedUnsubscribeConfig as UnsubscribeConfig,
+};
 
 const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
 const defaultDatabasePath = ".data/nusend.sqlite";
@@ -183,6 +187,34 @@ export const serviceConfig: Effect.Effect<ServiceConfig, Config.ConfigError> = E
     };
   },
 );
+
+export const sesFeedbackConfig: Effect.Effect<
+  Option.Option<ParsedSesFeedbackConfig>,
+  Config.ConfigError
+> = Effect.gen(function* () {
+  const raw = yield* trimmedOption("NUSEND_SES_FEEDBACK_TOPIC_ARNS");
+  if (Option.isNone(raw)) return Option.none<ParsedSesFeedbackConfig>();
+
+  const topicArns = raw.value
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+
+  if (topicArns.length === 0) return Option.none<ParsedSesFeedbackConfig>();
+
+  const invalid = topicArns.find((arn) => !isSnsTopicArn(arn));
+  if (invalid) {
+    return yield* configFailure(
+      "NUSEND_SES_FEEDBACK_TOPIC_ARNS must be a comma-separated list of SNS topic ARNs.",
+    );
+  }
+
+  return Option.some<ParsedSesFeedbackConfig>({ topicArns: [...new Set(topicArns)] });
+});
+
+function isSnsTopicArn(value: string): boolean {
+  return /^arn:(aws|aws-us-gov|aws-cn):sns:[a-z0-9-]+:\d{12}:[A-Za-z0-9_-]{1,256}$/.test(value);
+}
 
 export const unsubscribeConfig: Effect.Effect<
   Option.Option<ParsedUnsubscribeConfig>,

@@ -3,7 +3,12 @@ import { Hono } from "hono";
 
 import { requirePrincipal } from "../auth/middleware.ts";
 import { runRoute, type AppRuntime } from "../http/respond.ts";
-import { getDeliveryDetail, getOperationsSummary, listDeliveries } from "./read-model.ts";
+import {
+  getDeliveryDetail,
+  getOperationsSummary,
+  listDeliveries,
+  listSesFeedback,
+} from "./read-model.ts";
 import { parseDeliveriesQuery } from "./query.ts";
 
 type OperationsRoutesOptions = {
@@ -34,6 +39,10 @@ export function createOperationsRoutes(options: OperationsRoutesOptions): Hono {
     runRoute(context, options.runtime, getDeliveryDetail(context.req.param("id")), (result) =>
       context.json(result),
     ),
+  );
+
+  routes.get("/ses-feedback", requireOperationsRead, (context) =>
+    runRoute(context, options.runtime, listSesFeedback(), (result) => context.json(result)),
   );
 
   return routes;
