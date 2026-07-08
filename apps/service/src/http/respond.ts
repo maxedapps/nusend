@@ -5,6 +5,7 @@ import type { Context } from "hono";
 
 import type {
   AuthError,
+  ConflictError,
   DatabaseError,
   EmptyRecipientSetError,
   ForbiddenError,
@@ -45,6 +46,7 @@ export type AppRuntime = ManagedRuntime.ManagedRuntime<AppServices, unknown>;
 // of it exhaustively, so the compiler proves every route's errors are mapped.
 export type RouteError =
   | AuthError
+  | ConflictError
   | DatabaseError
   | EmptyRecipientSetError
   | ForbiddenError
@@ -165,6 +167,8 @@ export async function runRoute<A>(
     Effect.catchTags({
       AuthError: (error) => internalError(context, error),
       DatabaseError: (error) => internalError(context, error),
+      ConflictError: (error) =>
+        Effect.succeed(context.json(errorEnvelope("conflict", error.message), 409)),
       EmptyRecipientSetError: (error) =>
         Effect.succeed(context.json(errorEnvelope("empty_recipient_set", error.reason), 422)),
       RecipientLimitExceededError: (error) =>

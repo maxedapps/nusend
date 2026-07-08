@@ -42,6 +42,10 @@ export class IdempotencyConflictError extends Data.TaggedError("IdempotencyConfl
   readonly key: string;
 }> {}
 
+export class ConflictError extends Data.TaggedError("ConflictError")<{
+  readonly message: string;
+}> {}
+
 export class JobNotLeasedError extends Data.TaggedError("JobNotLeasedError")<{
   readonly jobId: string;
 }> {}

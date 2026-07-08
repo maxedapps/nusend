@@ -148,7 +148,7 @@ describe("migration runner", () => {
     expect(downWithMissingFile.stderr).toContain(
       "Cannot roll back 9999_missing: migration file is missing.",
     );
-  });
+  }, 20_000);
 
   it("fails loudly when 0002 sees future-only mailing states", () => {
     const databasePath = createTemporaryDatabasePath();

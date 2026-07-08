@@ -1,12 +1,15 @@
 import { Effect } from "effect";
 import { Hono } from "hono";
 
+import { createContactsRoutes } from "./contacts/routes.ts";
 import { errorEnvelope, runRoute, type AppRuntime } from "./http/respond.ts";
+import { createListsRoutes } from "./lists/routes.ts";
 import { createMailingsRoutes } from "./mailings/routes.ts";
 import { createOperationsRoutes } from "./operations/routes.ts";
 import { Auth } from "./services/auth.ts";
 import { Database } from "./services/database.ts";
 import { createSesFeedbackRoutes } from "./ses-feedback/routes.ts";
+import { createSuppressionsRoutes } from "./suppressions/routes.ts";
 import { createUnsubscribeRoutes } from "./unsubscribe/routes.ts";
 
 type AppOptions = {
@@ -45,8 +48,11 @@ export function createApp(options: AppOptions): Hono {
   app.route("/unsubscribe", createUnsubscribeRoutes({ runtime: options.runtime }));
   app.route("/api/webhooks", createSesFeedbackRoutes({ runtime: options.runtime }));
 
+  app.route("/api/contacts", createContactsRoutes({ runtime: options.runtime }));
+  app.route("/api/lists", createListsRoutes({ runtime: options.runtime }));
   app.route("/api/mailings", createMailingsRoutes({ runtime: options.runtime }));
   app.route("/api/operations", createOperationsRoutes({ runtime: options.runtime }));
+  app.route("/api/suppressions", createSuppressionsRoutes({ runtime: options.runtime }));
 
   app.notFound((context) => context.json(errorEnvelope("not_found", "Not found."), 404));
 

@@ -21,6 +21,8 @@ Implemented today:
 - user-owned Better Auth API keys
 - protected `POST /api/mailings`
 - protected read-only `/api/operations/*` inspection endpoints
+- contact/list management APIs
+- manual suppression management APIs
 - transactional mailing creation with explicit recipients
 - marketing mailing creation from existing list data
 - recipient snapshotting into `deliveries`
@@ -43,7 +45,6 @@ Implemented today:
 Not implemented yet:
 
 - production marketing volume (pending live SES simulator feedback validation, operations monitoring, and Gmail DKIM one-click verification)
-- contact/list management APIs
 - templates
 - Cloudflare R2 assets
 - CLI/client tooling
@@ -57,11 +58,27 @@ Available routes:
 - `GET /health`
 - `GET /health/db`
 - `/api/auth/*` Better Auth passthrough for standard auth methods
+- `POST /api/contacts`
+- `GET /api/contacts`
+- `GET /api/contacts/:id`
+- `PATCH /api/contacts/:id`
+- `DELETE /api/contacts/:id`
+- `POST /api/lists`
+- `GET /api/lists`
+- `GET /api/lists/:id`
+- `PATCH /api/lists/:id`
+- `DELETE /api/lists/:id`
+- `GET /api/lists/:id/contacts`
+- `POST /api/lists/:id/contacts`
+- `DELETE /api/lists/:id/contacts/:contactId`
 - `POST /api/mailings`
 - `GET /api/operations/summary`
 - `GET /api/operations/deliveries`
 - `GET /api/operations/deliveries/:id`
 - `GET /api/operations/ses-feedback`
+- `POST /api/suppressions`
+- `GET /api/suppressions`
+- `DELETE /api/suppressions/:id`
 - `POST /api/webhooks/aws/sns/ses`
 - `GET /unsubscribe/:token`
 - `POST /unsubscribe/:token`
@@ -142,7 +159,7 @@ Rules:
 - a valid session is the instance owner
 - session principals bypass per-route permissions intentionally
 - API keys are user-owned and permission-scoped
-- current API-key permission surface is `mailings:create` and `operations:read`
+- current API-key permission surface is `contacts:read/write`, `lists:read/write`, `mailings:create`, `operations:read`, and `suppressions:read/write`
 - Better Auth organizations/workspaces are intentionally not used
 - no organization tables or active-organization fields exist in the live schema
 
@@ -196,7 +213,7 @@ list_memberships(
 )
 ```
 
-Important limitation: list/contact management APIs do not exist yet. Lists and contacts can currently only be managed directly in the database or tests.
+Contacts and lists are manageable through protected `/api/contacts` and `/api/lists` endpoints. List-recipient personalization is still not implemented.
 
 A membership is subscribed when:
 
@@ -397,6 +414,7 @@ Routes:
 - `GET /api/operations/summary`
 - `GET /api/operations/deliveries`
 - `GET /api/operations/deliveries/:id`
+- `GET /api/operations/ses-feedback`
 
 Auth:
 
@@ -858,12 +876,19 @@ nusend/
         main.ts
         config.ts
         auth/
+        contacts/
         db/
         http/
+        lists/
         mailings/
+        operations/
         queue/
+        sending/
         services/
+        ses-feedback/
+        suppressions/
         testing/
+        unsubscribe/
 ```
 
 No `apps/cli` and no `packages/*` exist today.
@@ -901,15 +926,16 @@ Recommended next phases:
 - SNS signature verification
 - raw event storage
 - idempotent event processing
-- delivery status updates
+- audit/read-model storage without mutating `deliveries.status`
 - bounce/complaint suppressions
 
-### 4. Contact/list management APIs
+### 4. Contact/list/suppression management APIs
 
-- create/update/delete lists
+- create/update/delete contacts and lists
 - add/import contacts
-- subscribe/unsubscribe memberships
-- manage suppressions manually
+- subscribe/unsubscribe/resubscribe memberships
+- list and manage manual suppressions
+- keep automated bounce/complaint/unsubscribe suppressions read-only through the API
 
 ### 5. Templates and placeholder rendering
 

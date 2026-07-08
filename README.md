@@ -103,7 +103,49 @@ Google OAuth callback URL:
 http://localhost:3000/api/auth/callback/google
 ```
 
-Nusend uses Google-only Better Auth login with public signup disabled. Precreate the instance owner with `auth:bootstrap`; unknown Google accounts should be rejected. Programmatic clients should send user-owned API keys via `x-api-key`; API keys require `mailings:create` for mailing creation and `operations:read` for read-only operations inspection.
+Nusend uses Google-only Better Auth login with public signup disabled. Precreate the instance owner with `auth:bootstrap`; unknown Google accounts should be rejected. Programmatic clients should send user-owned API keys via `x-api-key`; API keys require scoped permissions such as `contacts:read/write`, `lists:read/write`, `mailings:create`, `operations:read`, and `suppressions:read/write`.
+
+## Contacts, lists, and suppressions
+
+Protected recipient-management APIs are available for single-owner operation:
+
+```txt
+POST /api/contacts
+GET /api/contacts
+GET /api/contacts/:id
+PATCH /api/contacts/:id
+DELETE /api/contacts/:id
+
+POST /api/lists
+GET /api/lists
+GET /api/lists/:id
+PATCH /api/lists/:id
+DELETE /api/lists/:id
+GET /api/lists/:id/contacts
+POST /api/lists/:id/contacts
+DELETE /api/lists/:id/contacts/:contactId
+
+POST /api/suppressions
+GET /api/suppressions
+DELETE /api/suppressions/:id
+```
+
+Examples:
+
+```sh
+curl -H 'x-api-key: nusend_...' -H 'content-type: application/json' \
+  --data '{"name":"Customers"}' http://localhost:3000/api/lists
+
+curl -H 'x-api-key: nusend_...' -H 'content-type: application/json' \
+  --data '{"contacts":[{"email":"user@example.com"}]}' \
+  http://localhost:3000/api/lists/<list-id>/contacts
+
+curl -H 'x-api-key: nusend_...' -H 'content-type: application/json' \
+  --data '{"email":"user@example.com","scope":"marketing"}' \
+  http://localhost:3000/api/suppressions
+```
+
+Contact updates do not rewrite historical delivery snapshots or email-based suppressions. List membership unsubscribe/resubscribe does not remove marketing/global suppressions. Automated bounce, complaint, and unsubscribe suppressions are visible through `GET /api/suppressions` but only `reason='manual'` suppressions can be deleted through the API in this milestone.
 
 ## Mailings API
 

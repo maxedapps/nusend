@@ -1,6 +1,9 @@
 export const authStatements = {
+  contacts: ["read", "write"],
+  lists: ["read", "write"],
   mailings: ["create"],
   operations: ["read"],
+  suppressions: ["read", "write"],
 } as const;
 
 export type PermissionSet = Partial<Record<keyof typeof authStatements, string[]>>;
