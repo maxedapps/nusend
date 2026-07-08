@@ -1,7 +1,7 @@
 ---
 name: cloudflare-workers
 description: >
-  Use this skill when working on Cloudflare Workers platform code or configuration: Wrangler, wrangler.jsonc/toml, D1 databases and migrations, Worker bindings/env/secrets, Cloudflare Vite plugin, @cloudflare/vitest-pool-workers tests, cron triggers, waitUntil/background work, nodejs_compat, observability/logging, R2 provisioning, deployment, or local-vs-remote Cloudflare behavior. Use it for implementation, debugging, review, planning, and config changes in Cloudflare-hosted TypeScript apps. Do not use for generic frontend-only React work unless Worker runtime/config/bindings are involved.
+  Use this skill when working on actual Cloudflare Workers platform code or configuration: Wrangler, wrangler.jsonc/toml, D1 databases and migrations, Worker bindings/env/secrets, Cloudflare Vite plugin, @cloudflare/vitest-pool-workers tests, cron triggers, waitUntil/background work, nodejs_compat, observability/logging, R2 provisioning, deployment, or local-vs-remote Cloudflare behavior. In Nusend, this skill is currently dormant because apps/service runs on Bun/VPS with SQLite; do not use it for ordinary Nusend database, migrations, mailings, queue, or sending analysis unless Cloudflare-specific files/config or future R2 work are in scope. Do not use for generic frontend-only React work unless Worker runtime/config/bindings are involved.
 metadata:
   short-description: Cloudflare Workers, Wrangler, D1, Vite, testing, observability, and project conventions
 ---
