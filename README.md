@@ -181,7 +181,18 @@ pnpm --filter @nusend/service worker:send:once
 pnpm --filter @nusend/service worker:send
 ```
 
-The worker runs `send_delivery` jobs through the pipeline: load context, start attempt, policy gates, placeholder rendering, SES preparation, raw SES send, and outcome recording. The raw SES transport is purpose-agnostic.
+The worker runs send-delivery jobs through the pipeline: load context, start attempt, policy gates, placeholder rendering, SES preparation, raw SES send, outcome recording, queue completion/failure, and mailing-state refresh. The raw SES transport is purpose-agnostic.
+
+Current state model:
+
+```txt
+mailings.state = scheduled | sending | completed
+deliveries.status = queued | sending | sent | failed | suppressed
+jobs.state = queued | leased | succeeded | dead
+jobs.delivery_id -> deliveries.id
+```
+
+`completed` means send processing is finished for all deliveries, not SES inbox delivery confirmation. Future SES event ingestion may add `delivered`, `bounced`, and `complained`; future pause/cancel/draft workflows may add their own states when implemented.
 
 Supported placeholders for now:
 

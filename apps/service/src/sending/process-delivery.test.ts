@@ -4,12 +4,11 @@ import { describe, expect, it } from "vitest";
 
 import { createMailing } from "../mailings/create-mailing.ts";
 import type { CreateMailingInput } from "../mailings/schema.ts";
-import { runOnce } from "../queue/runner.ts";
+import { runSendWorkerOnce } from "../queue/runner.ts";
 import { Database } from "../services/database.ts";
 import { EmailTransportError } from "../services/email-transport.ts";
 import { fakeEmailTransportLayer, fakeSendingConfigLayer } from "../testing/email-transport.ts";
 import { runTest, type TestServices } from "../testing/layers.ts";
-import { processSendDeliveryJob } from "./process-delivery.ts";
 
 const fixedTime = Date.parse("2026-07-03T12:00:00.000Z");
 
@@ -43,11 +42,7 @@ describe("processSendDeliveryJob", () => {
         yield* TestClock.setTime(fixedTime);
         yield* createMailing(baseInput());
 
-        const result = yield* runOnce({
-          kinds: ["send_delivery"],
-          processJob: processSendDeliveryJob,
-          workerId: "worker_1",
-        });
+        const result = yield* runSendWorkerOnce({ workerId: "worker_1" });
 
         const db = yield* Database;
         return {
@@ -98,11 +93,7 @@ describe("processSendDeliveryJob", () => {
         yield* TestClock.setTime(fixedTime);
         yield* createMailing(baseInput());
 
-        const result = yield* runOnce({
-          kinds: ["send_delivery"],
-          processJob: processSendDeliveryJob,
-          workerId: "worker_1",
-        });
+        const result = yield* runSendWorkerOnce({ workerId: "worker_1" });
 
         const db = yield* Database;
         return {
@@ -115,6 +106,7 @@ describe("processSendDeliveryJob", () => {
             "SELECT status, last_error AS lastError FROM deliveries;",
           ),
           job: yield* db.get("assert:job", "SELECT state, last_error AS lastError FROM jobs;"),
+          mailing: yield* db.get("assert:mailing", "SELECT state FROM mailings;"),
           result,
         };
       }).pipe(Effect.provide(Layer.mergeAll(fake.layer, fakeSendingConfigLayer()))),
@@ -129,11 +121,53 @@ describe("processSendDeliveryJob", () => {
       lastError: "Email transport retryable failure.",
       status: "queued",
     });
+    expect(outcome.mailing).toEqual({ state: "sending" });
     expect(outcome.attempt).toEqual({
       errorMessage: "Email transport retryable failure.",
       status: "failed",
     });
     expect(fake.state.sent).toHaveLength(1);
+  });
+
+  it("marks delivery failed and mailing completed when a retryable failure exhausts attempts", async () => {
+    const fake = fakeEmailTransportLayer([
+      {
+        kind: "Fail",
+        error: new EmailTransportError({ kind: "retryable", operation: "send" }),
+      },
+    ]);
+
+    const outcome = await runTest(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(fixedTime);
+        yield* createMailing(baseInput());
+        const db = yield* Database;
+        yield* db.run("force:max-attempts", "UPDATE jobs SET max_attempts = 1;");
+
+        const result = yield* runSendWorkerOnce({ workerId: "worker_1" });
+
+        return {
+          delivery: yield* db.get(
+            "assert:delivery",
+            "SELECT status, last_error AS lastError FROM deliveries;",
+          ),
+          job: yield* db.get("assert:job", "SELECT state, last_error AS lastError FROM jobs;"),
+          mailing: yield* db.get("assert:mailing", "SELECT state FROM mailings;"),
+          result,
+        };
+      }).pipe(Effect.provide(Layer.mergeAll(fake.layer, fakeSendingConfigLayer()))),
+    );
+
+    expect(outcome.result.dead).toBe(1);
+    expect(outcome.job).toEqual({
+      lastError: "Email transport retryable failure.",
+      state: "dead",
+    });
+    expect(outcome.delivery).toEqual({
+      lastError: "Email transport retryable failure.",
+      status: "failed",
+    });
+    expect(outcome.mailing).toEqual({ state: "completed" });
   });
 
   it("records ambiguous transport failures as terminal ambiguous outcomes", async () => {
@@ -149,11 +183,7 @@ describe("processSendDeliveryJob", () => {
         yield* TestClock.setTime(fixedTime);
         yield* createMailing(baseInput());
 
-        const result = yield* runOnce({
-          kinds: ["send_delivery"],
-          processJob: processSendDeliveryJob,
-          workerId: "worker_1",
-        });
+        const result = yield* runSendWorkerOnce({ workerId: "worker_1" });
 
         const db = yield* Database;
         return {
@@ -190,11 +220,7 @@ describe("processSendDeliveryJob", () => {
         yield* TestClock.setTime(fixedTime);
         yield* createMailing(baseInput({ purpose: "marketing" }));
 
-        const result = yield* runOnce({
-          kinds: ["send_delivery"],
-          processJob: processSendDeliveryJob,
-          workerId: "worker_1",
-        });
+        const result = yield* runSendWorkerOnce({ workerId: "worker_1" });
 
         const db = yield* Database;
         return {
@@ -237,11 +263,7 @@ describe("processSendDeliveryJob", () => {
            VALUES ('sup_1', 'user@example.com', 'all', NULL, 'manual', '2026-07-03T12:00:00.000Z');`,
         );
 
-        const result = yield* runOnce({
-          kinds: ["send_delivery"],
-          processJob: processSendDeliveryJob,
-          workerId: "worker_1",
-        });
+        const result = yield* runSendWorkerOnce({ workerId: "worker_1" });
 
         return {
           delivery: yield* db.get(
@@ -276,11 +298,7 @@ describe("processSendDeliveryJob", () => {
           }),
         );
 
-        const result = yield* runOnce({
-          kinds: ["send_delivery"],
-          processJob: processSendDeliveryJob,
-          workerId: "worker_1",
-        });
+        const result = yield* runSendWorkerOnce({ workerId: "worker_1" });
 
         return { result };
       }),
@@ -302,11 +320,7 @@ describe("processSendDeliveryJob", () => {
         yield* TestClock.setTime(fixedTime);
         yield* createMailing(baseInput({ html: "<p>{{ vars.missing }}</p>" }));
 
-        const result = yield* runOnce({
-          kinds: ["send_delivery"],
-          processJob: processSendDeliveryJob,
-          workerId: "worker_1",
-        });
+        const result = yield* runSendWorkerOnce({ workerId: "worker_1" });
 
         const db = yield* Database;
         return {
@@ -335,11 +349,7 @@ describe("processSendDeliveryJob", () => {
         const db = yield* Database;
         yield* db.run("corrupt:vars", "UPDATE deliveries SET vars_json = '{';");
 
-        const result = yield* runOnce({
-          kinds: ["send_delivery"],
-          processJob: processSendDeliveryJob,
-          workerId: "worker_1",
-        });
+        const result = yield* runSendWorkerOnce({ workerId: "worker_1" });
 
         return {
           delivery: yield* db.get(
@@ -370,11 +380,7 @@ describe("processSendDeliveryJob", () => {
           }),
         );
 
-        const result = yield* runOnce({
-          kinds: ["send_delivery"],
-          processJob: processSendDeliveryJob,
-          workerId: "worker_1",
-        });
+        const result = yield* runSendWorkerOnce({ workerId: "worker_1" });
 
         const db = yield* Database;
         return {
@@ -395,35 +401,6 @@ describe("processSendDeliveryJob", () => {
     expect(outcome.sent).toHaveLength(0);
   });
 
-  it("completes orphaned send delivery jobs without retry spin", async () => {
-    const outcome = await runSendingScenario(
-      Effect.gen(function* () {
-        yield* TestClock.setTime(fixedTime);
-        const db = yield* Database;
-        yield* db.run(
-          "seed:orphan-job",
-          `INSERT INTO jobs (id, kind, state, run_at, ref_id, created_at, updated_at)
-           VALUES ('job_1', 'send_delivery', 'queued', '2026-07-03T12:00:00.000Z', 'missing_delivery', '2026-07-03T12:00:00.000Z', '2026-07-03T12:00:00.000Z');`,
-        );
-
-        const result = yield* runOnce({
-          kinds: ["send_delivery"],
-          processJob: processSendDeliveryJob,
-          workerId: "worker_1",
-        });
-
-        return {
-          job: yield* db.get("assert:job", "SELECT state, last_error AS lastError FROM jobs;"),
-          result,
-        };
-      }),
-    );
-
-    expect(outcome.result.result.succeeded).toBe(1);
-    expect(outcome.result.job).toEqual({ lastError: null, state: "succeeded" });
-    expect(outcome.sent).toHaveLength(0);
-  });
-
   it("skips terminal deliveries without calling transport", async () => {
     const outcome = await runSendingScenario(
       Effect.gen(function* () {
@@ -432,11 +409,7 @@ describe("processSendDeliveryJob", () => {
         const db = yield* Database;
         yield* db.run("mark:sent", "UPDATE deliveries SET status = 'sent';");
 
-        const result = yield* runOnce({
-          kinds: ["send_delivery"],
-          processJob: processSendDeliveryJob,
-          workerId: "worker_1",
-        });
+        const result = yield* runSendWorkerOnce({ workerId: "worker_1" });
 
         return {
           attempts: yield* db.get<{ count: number }>(
@@ -470,11 +443,7 @@ describe("processSendDeliveryJob", () => {
            LIMIT 1;`,
         );
 
-        const result = yield* runOnce({
-          kinds: ["send_delivery"],
-          processJob: processSendDeliveryJob,
-          workerId: "worker_1",
-        });
+        const result = yield* runSendWorkerOnce({ workerId: "worker_1" });
 
         return {
           attempt: yield* db.get(

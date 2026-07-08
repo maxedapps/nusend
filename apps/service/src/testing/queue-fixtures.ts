@@ -7,11 +7,10 @@ export type SeedJobOptions = {
   id: string;
   attempts?: number;
   createdAt?: string;
-  kind?: string;
+  deliveryId?: string;
   lockedBy?: string | null;
   lockedUntil?: string | null;
   maxAttempts?: number;
-  refId?: string;
   runAt?: string;
   state?: string;
 };
@@ -23,19 +22,31 @@ export function seedJob(
 
   return Effect.gen(function* () {
     const db = yield* Database;
+    const deliveryId = options.deliveryId ?? `delivery_${options.id}`;
+    yield* db.run(
+      "seed-job:mailing",
+      `INSERT OR IGNORE INTO mailings (id, purpose, state, name, subject, html, text, list_id, scheduled_at, created_at, updated_at)
+       VALUES ('mailing_seed', 'transactional', 'scheduled', NULL, 'Seed', '<p>Seed</p>', NULL, NULL, $createdAt, $createdAt, $updatedAt);`,
+      { createdAt: now, updatedAt: now },
+    );
+    yield* db.run(
+      "seed-job:delivery",
+      `INSERT OR IGNORE INTO deliveries (id, mailing_id, email, contact_id, vars_json, status, created_at, updated_at)
+       VALUES ($deliveryId, 'mailing_seed', $email, NULL, NULL, 'queued', $createdAt, $updatedAt);`,
+      { createdAt: now, deliveryId, email: `${deliveryId}@example.com`, updatedAt: now },
+    );
     yield* db.run(
       "seed-job",
-      `INSERT INTO jobs (id, kind, state, run_at, attempts, max_attempts, locked_by, locked_until, ref_id, last_error, created_at, updated_at)
-       VALUES ($id, $kind, $state, $runAt, $attempts, $maxAttempts, $lockedBy, $lockedUntil, $refId, NULL, $createdAt, $updatedAt);`,
+      `INSERT INTO jobs (id, state, run_at, attempts, max_attempts, locked_by, locked_until, delivery_id, last_error, created_at, updated_at)
+       VALUES ($id, $state, $runAt, $attempts, $maxAttempts, $lockedBy, $lockedUntil, $deliveryId, NULL, $createdAt, $updatedAt);`,
       {
         attempts: options.attempts ?? 0,
         createdAt: now,
+        deliveryId,
         id: options.id,
-        kind: options.kind ?? "send_delivery",
         lockedBy: options.lockedBy ?? null,
         lockedUntil: options.lockedUntil ?? null,
         maxAttempts: options.maxAttempts ?? 10,
-        refId: options.refId ?? `ref_${options.id}`,
         runAt: options.runAt ?? "2026-07-03T11:00:00.000Z",
         state: options.state ?? "queued",
         updatedAt: now,

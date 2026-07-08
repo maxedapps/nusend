@@ -7,34 +7,35 @@ import { describe, expect, it } from "vitest";
 import { Database } from "../services/database.ts";
 import { runTest } from "../testing/layers.ts";
 import { seedJob } from "../testing/queue-fixtures.ts";
-import { claimJobs, completeJob, failJob, releaseExpiredLeases } from "./jobs.ts";
+import {
+  claimSendDeliveryJobs,
+  completeSendDeliveryJob,
+  failSendDeliveryJob,
+  releaseExpiredSendDeliveryLeases,
+} from "./jobs.ts";
 
 describe("queue jobs", () => {
-  it("claims due queued jobs atomically with lease metadata, limit, and kind filters", async () => {
+  it("claims due queued send-delivery jobs atomically with lease metadata and limit", async () => {
     const outcome = await runTest(
       Effect.gen(function* () {
         yield* TestClock.setTime(Date.parse("2026-07-03T12:00:00.000Z"));
-        yield* seedJob({ id: "future", kind: "send_delivery", runAt: "2026-07-03T12:10:00.000Z" });
+        yield* seedJob({ id: "future", runAt: "2026-07-03T12:10:00.000Z" });
         yield* seedJob({
           createdAt: "2026-07-03T11:59:01.000Z",
           id: "due_2",
-          kind: "send_delivery",
           runAt: "2026-07-03T11:59:00.000Z",
         });
         yield* seedJob({
           id: "due_0",
-          kind: "send_delivery",
           runAt: "2026-07-03T11:58:00.000Z",
         });
         yield* seedJob({
           createdAt: "2026-07-03T11:59:00.000Z",
           id: "due_1",
-          kind: "send_delivery",
           runAt: "2026-07-03T11:59:00.000Z",
         });
 
-        const claimed = yield* claimJobs({
-          kinds: ["send_delivery"],
+        const claimed = yield* claimSendDeliveryJobs({
           leaseSeconds: 30,
           limit: 1,
           workerId: "worker_1",
@@ -60,12 +61,11 @@ describe("queue jobs", () => {
       attempts: 1,
       createdAt: "2026-07-03T11:00:00.000Z",
       id: "due_0",
-      kind: "send_delivery",
       lastError: null,
       lockedBy: "worker_1",
       lockedUntil: "2026-07-03T12:00:30.000Z",
       maxAttempts: 10,
-      refId: "ref_due_0",
+      deliveryId: "delivery_due_0",
       runAt: "2026-07-03T11:58:00.000Z",
       state: "leased",
       updatedAt: "2026-07-03T12:00:00.000Z",
@@ -84,14 +84,14 @@ describe("queue jobs", () => {
     });
   });
 
-  it("does not claim terminal or cancelled jobs", async () => {
+  it("does not claim terminal jobs", async () => {
     const claimed = await runTest(
       Effect.gen(function* () {
         yield* TestClock.setTime(Date.parse("2026-07-03T12:00:00.000Z"));
-        for (const state of ["succeeded", "dead", "cancelled"]) {
+        for (const state of ["succeeded", "dead"]) {
           yield* seedJob({ id: state, state });
         }
-        return yield* claimJobs({ workerId: "worker_1" });
+        return yield* claimSendDeliveryJobs({ workerId: "worker_1" });
       }),
     );
 
@@ -103,16 +103,19 @@ describe("queue jobs", () => {
       Effect.gen(function* () {
         yield* TestClock.setTime(Date.parse("2026-07-03T12:00:00.000Z"));
         yield* seedJob({ id: "job_1" });
-        yield* claimJobs({ workerId: "worker_1" });
+        yield* claimSendDeliveryJobs({ workerId: "worker_1" });
 
         yield* TestClock.setTime(Date.parse("2026-07-03T12:01:00.000Z"));
-        const staleAttempt = yield* completeJob({ jobId: "job_1", workerId: "other" }).pipe(
+        const staleAttempt = yield* completeSendDeliveryJob({
+          jobId: "job_1",
+          workerId: "other",
+        }).pipe(
           Effect.map(() => "unexpected success"),
           Effect.catchTag("JobNotLeasedError", (error) =>
             Effect.succeed(`not_leased:${error.jobId}`),
           ),
         );
-        const completed = yield* completeJob({ jobId: "job_1", workerId: "worker_1" });
+        const completed = yield* completeSendDeliveryJob({ jobId: "job_1", workerId: "worker_1" });
 
         const db = yield* Database;
         return {
@@ -144,15 +147,15 @@ describe("queue jobs", () => {
         yield* TestClock.setTime(Date.parse("2026-07-03T12:00:00.000Z"));
         yield* seedJob({ id: "retry" });
         yield* seedJob({ id: "dead", maxAttempts: 1 });
-        yield* claimJobs({ limit: 2, workerId: "worker_1" });
+        yield* claimSendDeliveryJobs({ limit: 2, workerId: "worker_1" });
 
         yield* TestClock.setTime(Date.parse("2026-07-03T12:01:00.000Z"));
-        const retry = yield* failJob({
+        const retry = yield* failSendDeliveryJob({
           errorMessage: "temporary failure",
           jobId: "retry",
           workerId: "worker_1",
         });
-        const dead = yield* failJob({
+        const dead = yield* failSendDeliveryJob({
           errorMessage: "permanent failure",
           jobId: "dead",
           workerId: "worker_1",
@@ -204,7 +207,7 @@ describe("queue jobs", () => {
           state: "leased",
         });
 
-        const released = yield* releaseExpiredLeases({});
+        const released = yield* releaseExpiredSendDeliveryLeases({});
 
         const db = yield* Database;
         return {

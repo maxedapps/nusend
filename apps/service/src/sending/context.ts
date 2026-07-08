@@ -1,7 +1,7 @@
 import { Effect } from "effect";
 
 import type { DatabaseError } from "../errors.ts";
-import type { QueueJob } from "../queue/schema.ts";
+import type { SendDeliveryJob } from "../queue/schema.ts";
 import { Database, type DatabaseService } from "../services/database.ts";
 import type { DeliveryContext, DeliveryStatus } from "./schema.ts";
 
@@ -24,7 +24,7 @@ type MailingRow = {
 };
 
 export function loadDeliveryContext(
-  job: QueueJob,
+  job: SendDeliveryJob,
 ): Effect.Effect<DeliveryContext | null, DatabaseError, DatabaseService> {
   return Effect.gen(function* () {
     const db = yield* Database;
@@ -38,7 +38,7 @@ export function loadDeliveryContext(
               status
        FROM deliveries
        WHERE id = $deliveryId;`,
-      { deliveryId: job.refId },
+      { deliveryId: job.deliveryId },
     );
 
     if (!delivery) return null;

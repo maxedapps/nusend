@@ -112,10 +112,10 @@ async function seedOperationsData(runtime: TestRuntime): Promise<void> {
       yield* db.run(
         "test:seed:job-1",
         `INSERT INTO jobs (
-           id, kind, state, run_at, attempts, max_attempts, locked_by, locked_until, ref_id,
+           id, state, run_at, attempts, max_attempts, locked_by, locked_until, delivery_id,
            last_error, created_at, updated_at
          ) VALUES (
-           'job_1', 'send_delivery', 'succeeded', '2026-07-03T12:00:01.000Z', 1, 10,
+           'job_1', 'succeeded', '2026-07-03T12:00:01.000Z', 1, 10,
            NULL, NULL, 'delivery_1', NULL,
            '2026-07-03T12:00:01.000Z', '2026-07-03T12:00:03.000Z'
          );`,
@@ -123,10 +123,10 @@ async function seedOperationsData(runtime: TestRuntime): Promise<void> {
       yield* db.run(
         "test:seed:job-2",
         `INSERT INTO jobs (
-           id, kind, state, run_at, attempts, max_attempts, locked_by, locked_until, ref_id,
+           id, state, run_at, attempts, max_attempts, locked_by, locked_until, delivery_id,
            last_error, created_at, updated_at
          ) VALUES (
-           'job_2', 'send_delivery', 'failed', '2026-07-03T12:00:02.000Z', 2, 10,
+           'job_2', 'leased', '2026-07-03T12:00:02.000Z', 2, 10,
            'worker_1', '2026-07-03T12:05:00.000Z', 'delivery_2', 'job failed',
            '2026-07-03T12:00:02.000Z', '2026-07-03T12:00:06.000Z'
          );`,
@@ -134,10 +134,10 @@ async function seedOperationsData(runtime: TestRuntime): Promise<void> {
       yield* db.run(
         "test:seed:job-3",
         `INSERT INTO jobs (
-           id, kind, state, run_at, attempts, max_attempts, locked_by, locked_until, ref_id,
+           id, state, run_at, attempts, max_attempts, locked_by, locked_until, delivery_id,
            last_error, created_at, updated_at
          ) VALUES (
-           'job_3', 'send_delivery', 'queued', '2026-07-03T12:01:00.000Z', 1, 10,
+           'job_3', 'queued', '2026-07-03T12:01:00.000Z', 1, 10,
            NULL, NULL, 'delivery_3', 'retry later',
            '2026-07-03T12:00:03.000Z', '2026-07-03T12:00:07.000Z'
          );`,
@@ -146,10 +146,10 @@ async function seedOperationsData(runtime: TestRuntime): Promise<void> {
       yield* db.run(
         "test:seed:job-5",
         `INSERT INTO jobs (
-           id, kind, state, run_at, attempts, max_attempts, locked_by, locked_until, ref_id,
+           id, state, run_at, attempts, max_attempts, locked_by, locked_until, delivery_id,
            last_error, created_at, updated_at
          ) VALUES (
-           'job_5', 'send_delivery', 'succeeded', '2026-07-03T12:00:00.500Z', 1, 10,
+           'job_5', 'succeeded', '2026-07-03T12:00:00.500Z', 1, 10,
            NULL, NULL, 'delivery_attempt_only_issue', NULL,
            '2026-07-03T12:00:00.500Z', '2026-07-03T12:00:00.700Z'
          );`,
@@ -267,21 +267,14 @@ describe("operations routes", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
       deliveries: {
-        bounced: 0,
-        cancelled: 0,
-        complained: 0,
-        delivered: 0,
         failed: 0,
         queued: 0,
-        scheduled: 0,
         sending: 0,
         sent: 0,
         suppressed: 0,
       },
       jobs: {
-        cancelled: 0,
         dead: 0,
-        failed: 0,
         leased: 0,
         queued: 0,
         succeeded: 0,
@@ -301,22 +294,15 @@ describe("operations routes", () => {
       expect(response.status).toBe(200);
       await expect(response.json()).resolves.toEqual({
         deliveries: {
-          bounced: 0,
-          cancelled: 0,
-          complained: 0,
-          delivered: 0,
           failed: 1,
           queued: 3,
-          scheduled: 0,
           sending: 0,
           sent: 1,
           suppressed: 0,
         },
         jobs: {
-          cancelled: 0,
           dead: 0,
-          failed: 1,
-          leased: 0,
+          leased: 1,
           queued: 1,
           succeeded: 2,
         },
@@ -334,7 +320,7 @@ describe("operations routes", () => {
             kind: "job",
             message: "job failed",
             relatedId: "delivery_2",
-            status: "failed",
+            status: "leased",
             updatedAt: "2026-07-03T12:00:06.000Z",
           },
           {
@@ -518,7 +504,7 @@ describe("operations routes", () => {
           lockedUntil: "2026-07-03T12:05:00.000Z",
           maxAttempts: 10,
           runAt: "2026-07-03T12:00:02.000Z",
-          state: "failed",
+          state: "leased",
           updatedAt: "2026-07-03T12:00:06.000Z",
         },
         mailing: {

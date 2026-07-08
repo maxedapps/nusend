@@ -20,15 +20,15 @@ describe("migration runner", () => {
 
     const initialStatus = runMigrationCommand("status", databasePath).stdout;
     expect(initialStatus).toContain("pending  0001_initial_schema");
-    expect(initialStatus).not.toContain("0002_auth");
+    expect(initialStatus).toContain("pending  0002_simplify_send_queue_and_states");
 
     const migrateUp = runMigrationCommand("up", databasePath).stdout;
     expect(migrateUp).toContain("Applied migration 0001_initial_schema.");
-    expect(migrateUp).not.toContain("0002_auth");
+    expect(migrateUp).toContain("Applied migration 0002_simplify_send_queue_and_states.");
 
     const migratedStatus = runMigrationCommand("status", databasePath).stdout;
     expect(migratedStatus).toContain("applied  0001_initial_schema");
-    expect(migratedStatus).not.toContain("0002_auth");
+    expect(migratedStatus).toContain("applied  0002_simplify_send_queue_and_states");
 
     expect(readTableNames(databasePath)).toEqual([
       "accounts",
@@ -54,6 +54,8 @@ describe("migration runner", () => {
     expect(readColumnNames(databasePath, "deliveries")).toEqual(
       expect.arrayContaining(["ses_message_id", "last_error"]),
     );
+    expect(readColumnNames(databasePath, "jobs")).not.toContain("kind");
+    expect(readColumnNames(databasePath, "jobs")).toContain("delivery_id");
     expect(readColumnNames(databasePath, "send_attempts")).toEqual(
       expect.arrayContaining(["delivery_id", "job_id", "attempt_no", "status"]),
     );
@@ -85,15 +87,20 @@ describe("migration runner", () => {
     expect(restore.status).toBe(0);
 
     expect(runMigrationCommand("down", databasePath).stdout).toContain(
+      "Rolled back migration 0002_simplify_send_queue_and_states.",
+    );
+    expect(readColumnNames(databasePath, "jobs")).toContain("kind");
+    expect(readColumnNames(databasePath, "jobs")).toContain("ref_id");
+    expect(runMigrationCommand("down", databasePath).stdout).toContain(
       "Rolled back migration 0001_initial_schema.",
     );
     expect(readTableNames(databasePath)).toEqual(["schema_migrations"]);
     expect(runMigrationCommand("down", databasePath).stdout).toContain(
       "No applied migrations to roll back.",
     );
-    expect(runMigrationCommand("up", databasePath).stdout).toContain(
-      "Applied migration 0001_initial_schema.",
-    );
+    const migrateUpAgain = runMigrationCommand("up", databasePath).stdout;
+    expect(migrateUpAgain).toContain("Applied migration 0001_initial_schema.");
+    expect(migrateUpAgain).toContain("Applied migration 0002_simplify_send_queue_and_states.");
 
     const synthetic = runBun(
       [
@@ -114,6 +121,44 @@ describe("migration runner", () => {
     expect(downWithMissingFile.status).not.toBe(0);
     expect(downWithMissingFile.stderr).toContain(
       "Cannot roll back 9999_missing: migration file is missing.",
+    );
+  });
+
+  it("fails loudly when 0002 sees future-only mailing states", () => {
+    const databasePath = createTemporaryDatabasePath();
+    const seeded = runBun(
+      [
+        "-e",
+        `import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { Database } from 'bun:sqlite';
+const db = new Database(process.env.NUSEND_DB_PATH, { strict: true });
+const content = readFileSync('src/db/migrations/sql/0001_initial_schema.sql', 'utf8');
+const upSql = content.split(/\\n--\\s*migrate:down\\s*\\n/i)[0].replace(/^\\s*--\\s*migrate:up\\s*/i, '');
+const checksum = createHash('sha256').update(content).digest('hex');
+db.exec(\`CREATE TABLE schema_migrations (
+  version TEXT PRIMARY KEY,
+  checksum TEXT NOT NULL,
+  applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);\`);
+db.exec(upSql);
+db.query("INSERT INTO schema_migrations (version, checksum) VALUES ('0001_initial_schema', $checksum);").run({ checksum });
+db.query(\`INSERT INTO mailings (id, purpose, state, subject, html, created_at, updated_at)
+  VALUES ('mailing_future_state', 'transactional', 'draft', 'Subject', '<p>Hello</p>', '2026-07-03T12:00:00.000Z', '2026-07-03T12:00:00.000Z');\`).run();
+db.close();`,
+      ],
+      databasePath,
+    );
+    expect(seeded.status).toBe(0);
+
+    const result = runMigrationCommand("up", databasePath);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(
+      "Database error during migrate:apply:0002_simplify_send_queue_and_states",
+    );
+    expect(runMigrationCommand("status", databasePath).stdout).toContain(
+      "pending  0002_simplify_send_queue_and_states",
     );
   });
 });

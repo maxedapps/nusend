@@ -275,7 +275,7 @@ function deliveryAndJob(): Effect.Effect<
       "test:delivery-job",
       `SELECT deliveries.id AS deliveryId, jobs.id AS jobId
        FROM deliveries
-       INNER JOIN jobs ON jobs.ref_id = deliveries.id
+       INNER JOIN jobs ON jobs.delivery_id = deliveries.id
        LIMIT 1;`,
     );
     if (!row) throw new Error("Expected seeded delivery and job.");
@@ -317,7 +317,7 @@ function currentState(): Effect.Effect<
          deliveries.status AS deliveryStatus,
          jobs.state AS jobState
        FROM deliveries
-       INNER JOIN jobs ON jobs.ref_id = deliveries.id
+       INNER JOIN jobs ON jobs.delivery_id = deliveries.id
        INNER JOIN send_attempts ON send_attempts.delivery_id = deliveries.id
        LIMIT 1;`,
     );

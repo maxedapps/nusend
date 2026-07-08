@@ -1,7 +1,7 @@
 import { Cause, Effect, Exit } from "effect";
 
 import { type DatabaseError } from "../errors.ts";
-import type { QueueJob } from "../queue/schema.ts";
+import type { SendDeliveryJob } from "../queue/schema.ts";
 import {
   EmailTransport,
   EmailTransportError,
@@ -25,19 +25,13 @@ import { renderDeliveryEmail } from "./render.ts";
 import { SendProcessorError } from "./schema.ts";
 
 export function processSendDeliveryJob(
-  job: QueueJob,
+  job: SendDeliveryJob,
 ): Effect.Effect<
   void,
   DatabaseError | SendProcessorError,
   DatabaseService | EmailSendingConfigService | EmailTransportService | IdGeneratorService
 > {
   return Effect.gen(function* () {
-    if (job.kind !== "send_delivery") {
-      return yield* Effect.fail(
-        new SendProcessorError({ message: `Unsupported job kind: ${job.kind}.` }),
-      );
-    }
-
     const context = yield* loadDeliveryContext(job);
     if (!context) return;
 

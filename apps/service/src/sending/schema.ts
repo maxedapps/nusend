@@ -1,21 +1,10 @@
 import { Data } from "effect";
 
 import type { MailingPurpose } from "../mailings/schema.ts";
-import type { QueueJob } from "../queue/schema.ts";
+import type { SendDeliveryJob } from "../queue/schema.ts";
 
-// Mirrors the deliveries.status SQLite CHECK constraint in 0001_initial_schema.sql.
-export const DeliveryStatusValues = [
-  "scheduled",
-  "queued",
-  "sending",
-  "sent",
-  "delivered",
-  "bounced",
-  "complained",
-  "failed",
-  "suppressed",
-  "cancelled",
-] as const;
+// Mirrors the deliveries.status SQLite CHECK constraint after 0002.
+export const DeliveryStatusValues = ["queued", "sending", "sent", "failed", "suppressed"] as const;
 export type DeliveryStatus = (typeof DeliveryStatusValues)[number];
 
 // Mirrors the send_attempts.status SQLite CHECK constraint in 0001_initial_schema.sql.
@@ -31,7 +20,7 @@ export type DeliveryContext = {
     readonly status: DeliveryStatus;
     readonly varsJson: string | null;
   };
-  readonly job: QueueJob;
+  readonly job: SendDeliveryJob;
   readonly mailing: {
     readonly html: string;
     readonly id: string;

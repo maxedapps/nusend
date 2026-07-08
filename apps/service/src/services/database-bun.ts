@@ -52,11 +52,52 @@ function applyConnectionPragmas(db: BunDatabase): void {
   db.run("PRAGMA trusted_schema = OFF;");
 }
 
+function splitSqlStatements(sql: string): string[] {
+  const statements: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | "`" | null = null;
+
+  for (let index = 0; index < sql.length; index += 1) {
+    const char = sql[index];
+    const next = sql[index + 1];
+    current += char;
+
+    if (quote === "'" && char === "'" && next === "'") {
+      current += next;
+      index += 1;
+      continue;
+    }
+
+    if (quote !== null) {
+      if (char === quote) quote = null;
+      continue;
+    }
+
+    if (char === "'" || char === '"' || char === "`") {
+      quote = char;
+      continue;
+    }
+
+    if (char === ";") {
+      const statement = current.trim();
+      if (statement.length > 0) statements.push(statement);
+      current = "";
+    }
+  }
+
+  const trailing = current.trim();
+  if (trailing.length > 0) statements.push(trailing);
+
+  return statements;
+}
+
 function makeService(db: BunDatabase): DatabaseService {
   const exec: DatabaseService["exec"] = (operation, sql) =>
     Effect.try({
       try: () => {
-        db.run(sql);
+        for (const statement of splitSqlStatements(sql)) {
+          db.query(statement).run();
+        }
       },
       catch: (cause) => new DatabaseError({ cause, operation }),
     });

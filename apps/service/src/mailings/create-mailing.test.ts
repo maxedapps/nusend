@@ -120,7 +120,10 @@ describe("createMailing", () => {
             "assert:delivery",
             "SELECT email, status, vars_json AS varsJson FROM deliveries;",
           ),
-          job: yield* db.get("assert:job", "SELECT kind, state, run_at AS runAt FROM jobs;"),
+          job: yield* db.get(
+            "assert:job",
+            "SELECT state, run_at AS runAt, delivery_id AS deliveryId FROM jobs;",
+          ),
           mailing: yield* db.get(
             "assert:mailing",
             "SELECT purpose, state, scheduled_at AS scheduledAt FROM mailings;",
@@ -143,7 +146,7 @@ describe("createMailing", () => {
       varsJson: '{"firstName":"Max"}',
     });
     expect(outcome.job).toEqual({
-      kind: "send_delivery",
+      deliveryId: expect.any(String),
       runAt: "2026-07-03T12:00:00.000Z",
       state: "queued",
     });

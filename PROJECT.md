@@ -25,7 +25,7 @@ Implemented today:
 - marketing mailing creation from existing list data
 - recipient snapshotting into `deliveries`
 - suppression checks during mailing creation
-- durable `send_delivery` queue primitives
+- durable send-delivery queue primitives
 - mailing creation idempotency via `Idempotency-Key`
 - send attempts / SES message IDs / delivery error persistence
 - purpose-agnostic SES v2 email transport
@@ -149,7 +149,7 @@ The central model is:
 ```txt
 mailings   = content + sending context
 deliveries = one recipient snapshot + delivery state
-jobs       = durable queue records pointing at domain rows
+jobs       = durable send-delivery queue records pointing at deliveries
 ```
 
 ### Auth Tables
@@ -238,7 +238,7 @@ Current schema:
 mailings(
   id,
   purpose,      -- transactional | marketing
-  state,        -- draft | scheduled | sending | paused | cancelled | completed
+  state,        -- scheduled | sending | completed
   name,
   subject,
   html,
@@ -257,7 +257,9 @@ Notes:
 - current placeholders are limited to `{{ user.email }}` and `{{ vars.<key> }}`; HTML placeholder values are escaped.
 - raw Markdown is not stored in Nusend.
 - a marketing campaign is represented as a marketing mailing.
-- currently all created mailings use `state = scheduled`.
+- new mailings start as `scheduled`.
+- the send worker advances mailings to `sending` when the first attempt starts.
+- `completed` means all deliveries are terminal (`sent`, `failed`, or `suppressed`), not that recipient inbox delivery was confirmed by SES events.
 
 ### Deliveries
 
@@ -270,7 +272,7 @@ deliveries(
   email,
   contact_id,
   vars_json,
-  status,       -- scheduled | queued | sending | sent | delivered | bounced | complained | failed | suppressed | cancelled
+  status,       -- queued | sending | sent | failed | suppressed
   ses_message_id,
   last_error,
   created_at,
@@ -286,6 +288,8 @@ Notes:
 - list recipient personalization is not implemented yet because contacts have no attrs column.
 - `ses_message_id` stores the provider message ID after SES accepts a send.
 - `last_error` stores a safe, bounded delivery-level failure reason.
+- future SES event ingestion may add `delivered`, `bounced`, and `complained` statuses.
+- future pause/cancel APIs may add cancelled delivery/job states; draft mailings should only be added with a real draft workflow.
 
 ### Jobs
 
@@ -294,21 +298,20 @@ Current schema:
 ```sql
 jobs(
   id,
-  kind,          -- send_delivery
-  state,         -- queued | leased | succeeded | failed | dead | cancelled
+  state,         -- queued | leased | succeeded | dead
   run_at,
   attempts,
   max_attempts,
   locked_by,
   locked_until,
-  ref_id,
+  delivery_id,
   last_error,
   created_at,
   updated_at
 )
 ```
 
-`jobs.ref_id` points to `deliveries.id` for `send_delivery` jobs.
+`jobs.delivery_id` points to `deliveries.id`. The queue is intentionally send-delivery-specific, not a generic internal job platform.
 
 Current queue primitives support:
 
@@ -319,7 +322,7 @@ Current queue primitives support:
 - complete jobs
 - fail jobs into retry or dead state
 
-`worker:send:once` and `worker:send` consume due `send_delivery` jobs. The queue runner owns complete/fail transitions; the send processor records delivery/attempt state and returns success/failure.
+`worker:send:once` and `worker:send` consume due send-delivery jobs. The queue runner owns complete/fail transitions, reconciles dead jobs back to terminal delivery state, and refreshes mailing state. The send processor records delivery/attempt state and returns success/failure.
 
 ### Send Attempts
 
@@ -343,7 +346,7 @@ Attempts are created before the external SES call, then updated after success/fa
 
 ## Current Mailings API
 
-`POST /api/mailings` creates a mailing, snapshots recipients into deliveries, and queues one `send_delivery` job per unsuppressed delivery.
+`POST /api/mailings` creates a mailing, snapshots recipients into deliveries, and queues one send-delivery job per unsuppressed delivery.
 
 Auth:
 
@@ -408,7 +411,7 @@ Email sending should be a pipeline. The raw sender should remain purpose-agnosti
 Final worker flow:
 
 ```txt
-claim send_delivery job
+claim send-delivery job
   -> load delivery + mailing
   -> start send attempt
   -> run policy gates
@@ -451,12 +454,13 @@ Those belong in earlier pipeline stages.
    - job remains leased while processing
 
 2. **Load context**
-   - load delivery by `job.ref_id`
+   - load delivery by `job.delivery_id`
    - load mailing by `delivery.mailing_id`
 
 3. **Start attempt**
    - insert `send_attempts` row
    - mark delivery `sending`
+   - mark mailing `sending` if it was still `scheduled`
    - do this in a short DB transaction
 
 4. **Policy gates**
@@ -492,8 +496,9 @@ Those belong in earlier pipeline stages.
 9. **Record failure**
    - mark attempt failed
    - store safe error message
-   - for retryable failures, `failJob` so queue backoff handles retry/dead state
-   - for permanent policy failures, mark delivery failed/suppressed and complete or intentionally dead-letter according to the policy
+   - for retryable failures, fail the send-delivery job so queue backoff handles retry/dead state
+   - if a job reaches `dead`, mark its delivery `failed` and refresh mailing state
+   - for permanent policy failures, mark delivery failed/suppressed and complete the job
 
 Never hold a DB transaction open while calling SES.
 
@@ -526,7 +531,7 @@ POST /api/mailings purpose=marketing listId=...
   -> apply create-time suppressions
   -> create mailing
   -> snapshot deliveries
-  -> create send_delivery jobs
+  -> create send-delivery jobs
 ```
 
 Worker policy/preparation flow:
@@ -932,7 +937,7 @@ Default lean choices:
 - no CLI until a concrete need exists
 - no shared packages initially
 - `mailings` + `deliveries` as the core model
-- one `send_delivery` job per unsuppressed delivery
+- one send-delivery job per unsuppressed delivery
 - Nusend-owned suppression/unsubscribe model
 - SES configuration sets for feedback events
 - transactional sending before marketing sending

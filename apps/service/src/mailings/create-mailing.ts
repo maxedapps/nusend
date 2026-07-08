@@ -86,18 +86,16 @@ const insertDeliverySql = `INSERT INTO deliveries (
 
 const insertJobSql = `INSERT INTO jobs (
   id,
-  kind,
   state,
   run_at,
-  ref_id,
+  delivery_id,
   created_at,
   updated_at
 ) VALUES (
   $id,
-  'send_delivery',
   'queued',
   $runAt,
-  $refId,
+  $deliveryId,
   $now,
   $now
 );`;
@@ -190,9 +188,9 @@ export function createMailingRows(
 
       queued += 1;
       yield* db.run("jobs:insert", insertJobSql, {
+        deliveryId,
         id: yield* ids.next,
         now,
-        refId: deliveryId,
         runAt: effectiveScheduledAt,
       });
     }

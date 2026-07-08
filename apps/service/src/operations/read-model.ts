@@ -14,14 +14,7 @@ import type { DeliveriesQuery } from "./query.ts";
 const DeliveryStatusSchema = Schema.Literals(DeliveryStatusValues);
 const SendAttemptStatusSchema = Schema.Literals(SendAttemptStatusValues);
 const MailingPurposeSchema = Schema.Literals(["transactional", "marketing"]);
-const MailingStateSchema = Schema.Literals([
-  "draft",
-  "scheduled",
-  "sending",
-  "paused",
-  "cancelled",
-  "completed",
-]);
+const MailingStateSchema = Schema.Literals(["scheduled", "sending", "completed"]);
 
 const JobCountRow = Schema.Struct({ count: Schema.Number, state: JobState });
 const DeliveryCountRow = Schema.Struct({ count: Schema.Number, status: DeliveryStatusSchema });
@@ -146,7 +139,7 @@ export function getOperationsSummary(): Effect.Effect<
         "operations:summary:recent-issues",
         `SELECT kind, id, relatedId, status, message, updatedAt
          FROM (
-           SELECT 'job' AS kind, id, ref_id AS relatedId, state AS status,
+           SELECT 'job' AS kind, id, delivery_id AS relatedId, state AS status,
              last_error AS message, updated_at AS updatedAt
            FROM jobs
            WHERE last_error IS NOT NULL
@@ -226,7 +219,7 @@ export function listDeliveries(
        LEFT JOIN jobs j ON j.id = (
          SELECT latest_job.id
          FROM jobs latest_job
-         WHERE latest_job.kind = 'send_delivery' AND latest_job.ref_id = d.id
+         WHERE latest_job.delivery_id = d.id
          ORDER BY latest_job.created_at DESC, latest_job.id DESC
          LIMIT 1
        )
@@ -274,7 +267,7 @@ export function getDeliveryDetail(
            created_at AS createdAt,
            updated_at AS updatedAt
          FROM jobs
-         WHERE kind = 'send_delivery' AND ref_id = $deliveryId
+         WHERE delivery_id = $deliveryId
          ORDER BY created_at DESC, id DESC
          LIMIT 1;`,
         { deliveryId },

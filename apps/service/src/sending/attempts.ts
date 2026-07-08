@@ -2,6 +2,7 @@ import { Effect } from "effect";
 
 import type { DatabaseError } from "../errors.ts";
 import { currentIso } from "../lib/iso-time.ts";
+import { markMailingSending } from "../mailings/lifecycle.ts";
 import { Database, type DatabaseService } from "../services/database.ts";
 import { IdGenerator, type IdGeneratorService } from "../services/ids.ts";
 import type { DeliveryContext, DeliveryStatus, StartedAttempt } from "./schema.ts";
@@ -39,6 +40,8 @@ export function startSendAttempt(
           );
           return { kind: "Skipped" as const, status: row?.status ?? null };
         }
+
+        yield* markMailingSending(context.delivery.mailingId);
 
         const count = yield* db.get<{ count: number }>(
           "sending:attempt:count",
@@ -141,6 +144,35 @@ export function recordAmbiguousFailure(options: {
   errorMessage: string;
 }): Effect.Effect<void, DatabaseError, DatabaseService> {
   return recordFailure({ ...options, attemptStatus: "ambiguous", deliveryStatus: "failed" });
+}
+
+export function markDeliveryFailedForDeadJob(options: {
+  deliveryId: string;
+  errorMessage: string;
+}): Effect.Effect<void, DatabaseError, DatabaseService> {
+  return Effect.gen(function* () {
+    const db = yield* Database;
+    const now = yield* currentIso;
+    const errorMessage = truncate(options.errorMessage);
+
+    yield* db.run(
+      "sending:delivery:dead-job-failed",
+      `UPDATE deliveries
+       SET status = 'failed', last_error = $errorMessage, updated_at = $now
+       WHERE id = $deliveryId AND status IN ('queued', 'sending');`,
+      { deliveryId: options.deliveryId, errorMessage, now },
+    );
+  });
+}
+
+export function markReleasedDeadJobDeliveryAmbiguous(options: {
+  deliveryId: string;
+  errorMessage: string;
+}): Effect.Effect<void, DatabaseError, DatabaseService> {
+  return Effect.gen(function* () {
+    yield* recordStaleSendingAsAmbiguous(options);
+    yield* markDeliveryFailedForDeadJob(options);
+  });
 }
 
 export function recordStaleSendingAsAmbiguous(options: {

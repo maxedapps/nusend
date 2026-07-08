@@ -7,7 +7,12 @@ import { TestClock } from "effect/testing";
 
 import { readMigrationFiles } from "../db/migration-files.ts";
 import type { DatabaseError } from "../errors.ts";
-import { claimJobs, completeJob, failJob, releaseExpiredLeases } from "../queue/jobs.ts";
+import {
+  claimSendDeliveryJobs,
+  completeSendDeliveryJob,
+  failSendDeliveryJob,
+  releaseExpiredSendDeliveryLeases,
+} from "../queue/jobs.ts";
 import { Database, type DatabaseService } from "../services/database.ts";
 import { seedJob } from "./queue-fixtures.ts";
 
@@ -35,22 +40,28 @@ export function runDriverParityCycle(
       state: "leased",
     });
 
-    const released = yield* releaseExpiredLeases({});
-    const claimed = yield* claimJobs({ workerId: "worker_1" });
+    const released = yield* releaseExpiredSendDeliveryLeases({});
+    const claimed = yield* claimSendDeliveryJobs({ workerId: "worker_1" });
 
     yield* TestClock.setTime(Date.parse("2026-07-03T12:01:00.000Z"));
-    const completed = yield* completeJob({ jobId: "complete_me", workerId: "worker_1" });
-    const failed = yield* failJob({
+    const completed = yield* completeSendDeliveryJob({
+      jobId: "complete_me",
+      workerId: "worker_1",
+    });
+    const failed = yield* failSendDeliveryJob({
       errorMessage: "parity failure",
       jobId: "fail_me",
       workerId: "worker_1",
     });
-    const dead = yield* failJob({
+    const dead = yield* failSendDeliveryJob({
       errorMessage: "parity dead",
       jobId: "dead_me",
       workerId: "worker_1",
     });
-    const stale = yield* completeJob({ jobId: "complete_me", workerId: "worker_1" }).pipe(
+    const stale = yield* completeSendDeliveryJob({
+      jobId: "complete_me",
+      workerId: "worker_1",
+    }).pipe(
       Effect.map(() => "unexpected success"),
       Effect.catchTag("JobNotLeasedError", (error) => Effect.succeed(`not_leased:${error.jobId}`)),
     );
