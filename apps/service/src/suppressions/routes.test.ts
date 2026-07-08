@@ -54,6 +54,23 @@ describe("suppressions routes", () => {
         })
       ).status,
     ).toBe(200);
+
+    const writeDenied = await Promise.all(
+      (
+        [
+          { body: { email: "user@example.com", scope: "all" }, method: "POST", path: "" },
+          { method: "DELETE", path: "/supp_1" },
+        ] as const
+      ).map((request) =>
+        suppressionRequest(request.path, {
+          auth: { apiKeyPermissions: { suppressions: ["read"] } },
+          body: "body" in request ? request.body : undefined,
+          headers: { "x-api-key": "valid" },
+          method: request.method,
+        }),
+      ),
+    );
+    expect(writeDenied.map((response) => response.status)).toEqual([403, 403]);
   });
 
   it("creates all, marketing, and list suppressions with validation", async () => {

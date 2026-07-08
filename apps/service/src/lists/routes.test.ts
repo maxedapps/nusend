@@ -54,6 +54,30 @@ describe("lists routes", () => {
         })
       ).status,
     ).toBe(200);
+
+    const writeDenied = await Promise.all(
+      (
+        [
+          { body: { name: "Customers" }, method: "POST", path: "" },
+          { body: { name: "Customers 2026" }, method: "PATCH", path: "/list_1" },
+          {
+            body: { contacts: [{ email: "user@example.com" }] },
+            method: "POST",
+            path: "/list_1/contacts",
+          },
+          { method: "DELETE", path: "/list_1/contacts/contact_1" },
+          { method: "DELETE", path: "/list_1" },
+        ] as const
+      ).map((request) =>
+        listRequest(request.path, {
+          auth: { apiKeyPermissions: { lists: ["read"] } },
+          body: "body" in request ? request.body : undefined,
+          headers: { "x-api-key": "valid" },
+          method: request.method,
+        }),
+      ),
+    );
+    expect(writeDenied.map((response) => response.status)).toEqual([403, 403, 403, 403, 403]);
   });
 
   it("creates, lists, reads, updates, and deletes lists with counts", async () => {

@@ -56,6 +56,20 @@ export function updateContactEmail(
 > {
   return Effect.gen(function* () {
     const db = yield* Database;
+    return yield* db.transaction(updateContactEmailRows(contactId, email));
+  });
+}
+
+function updateContactEmailRows(
+  contactId: string,
+  email: string,
+): Effect.Effect<
+  ContactWriteResult,
+  ConflictError | DatabaseError | NotFoundError,
+  DatabaseService
+> {
+  return Effect.gen(function* () {
+    const db = yield* Database;
     const now = yield* currentIso;
 
     const existing = yield* getContactRow(contactId);

@@ -1026,4 +1026,3 @@ None blocking. The plan chooses the safer default for `DELETE /api/suppressions/
 - **Browser/manual verification:** skipped; this milestone adds JSON APIs/docs/tests only, no browser UI or browser-visible flow. API behavior is covered by in-process HTTP route tests.
 - **Human checkpoint:** not needed; plan had no open questions and no destructive/production actions.
 - **Deviations:** No schema migration was added, as planned. Direct Claude CLI review was used as fallback because the Pi reviewer subagent timed out.
-

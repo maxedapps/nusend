@@ -87,6 +87,24 @@ describe("contacts routes", () => {
     });
     expect(canRead.status).toBe(200);
 
+    const writeDenied = await Promise.all(
+      (
+        [
+          { body: { email: "user@example.com" }, method: "POST", path: "" },
+          { body: { email: "new@example.com" }, method: "PATCH", path: "/contact_1" },
+          { method: "DELETE", path: "/contact_1" },
+        ] as const
+      ).map((request) =>
+        contactRequest(request.path, {
+          auth: { apiKeyPermissions: { contacts: ["read"] } },
+          body: "body" in request ? request.body : undefined,
+          headers: { "x-api-key": "valid" },
+          method: request.method,
+        }),
+      ),
+    );
+    expect(writeDenied.map((response) => response.status)).toEqual([403, 403, 403]);
+
     const session = await contactRequest("", { auth: { session: { userId: "user_1" } } });
     expect(session.status).toBe(200);
   });
@@ -193,6 +211,48 @@ describe("contacts routes", () => {
       await expect(conflict.json()).resolves.toEqual({
         error: { code: "conflict", message: "Another contact already uses this email." },
       });
+    });
+  });
+
+  it("updates contact email without rewriting delivery snapshots or suppressions", async () => {
+    await withTestApp({ auth: { session: { userId: "user_1" } } }, async (app, runtime) => {
+      await seedContactScenario(runtime);
+
+      const update = await app.fetch(
+        new Request("http://localhost/api/contacts/contact_1", {
+          body: JSON.stringify({ email: "new@example.com" }),
+          headers: { "content-type": "application/json" },
+          method: "PATCH",
+        }),
+      );
+      expect(update.status).toBe(200);
+      await expect(update.json()).resolves.toMatchObject({
+        contact: { email: "new@example.com", id: "contact_1" },
+      });
+
+      const state = await runtime.runPromise(
+        Effect.gen(function* () {
+          const db = yield* Database;
+          return {
+            delivery: yield* db.get<{ contactId: string | null; email: string }>(
+              "test:update-delivery-snapshot",
+              "SELECT contact_id AS contactId, email FROM deliveries WHERE id = 'delivery_1';",
+            ),
+            newEmailSuppressions: yield* db.get<{ count: number }>(
+              "test:update-new-suppression-count",
+              "SELECT count(*) AS count FROM suppressions WHERE email = 'new@example.com';",
+            ),
+            oldEmailSuppressions: yield* db.get<{ count: number }>(
+              "test:update-old-suppression-count",
+              "SELECT count(*) AS count FROM suppressions WHERE email = 'user@example.com';",
+            ),
+          };
+        }),
+      );
+
+      expect(state.delivery).toEqual({ contactId: "contact_1", email: "user@example.com" });
+      expect(state.oldEmailSuppressions?.count).toBe(1);
+      expect(state.newEmailSuppressions?.count).toBe(0);
     });
   });
 
