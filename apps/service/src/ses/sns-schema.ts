@@ -1,6 +1,6 @@
 import { Effect, Schema } from "effect";
 
-import { SesFeedbackMalformedError } from "./errors.ts";
+import { SesOperationsMalformedError } from "./errors.ts";
 
 export const SnsMessageType = Schema.Literals([
   "Notification",
@@ -32,20 +32,20 @@ export type VerifiedSnsEnvelope = SnsEnvelope;
 
 export function decodeUnverifiedSnsEnvelopeString(
   input: string,
-): Effect.Effect<SnsEnvelope, SesFeedbackMalformedError> {
+): Effect.Effect<SnsEnvelope, SesOperationsMalformedError> {
   return Schema.decodeUnknownEffect(SnsEnvelopeJsonSchema)(input, { errors: "all" }).pipe(
     Effect.mapError(
-      () => new SesFeedbackMalformedError({ reason: "SNS envelope has an invalid shape." }),
+      () => new SesOperationsMalformedError({ reason: "SNS envelope has an invalid shape." }),
     ),
   );
 }
 
 export function decodeSnsEnvelope(
   input: unknown,
-): Effect.Effect<SnsEnvelope, SesFeedbackMalformedError> {
+): Effect.Effect<SnsEnvelope, SesOperationsMalformedError> {
   return Schema.decodeUnknownEffect(SnsEnvelopeSchema)(input, { errors: "all" }).pipe(
     Effect.mapError(
-      () => new SesFeedbackMalformedError({ reason: "SNS envelope has an invalid shape." }),
+      () => new SesOperationsMalformedError({ reason: "SNS envelope has an invalid shape." }),
     ),
   );
 }

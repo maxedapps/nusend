@@ -10,7 +10,10 @@ import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Config, ConfigProvider, Effect, Option, Redacted } from "effect";
 
-import type { SesFeedbackConfig as ParsedSesFeedbackConfig } from "./ses-feedback/config.ts";
+import type {
+  SesOperationsConfig as ParsedSesOperationsConfig,
+  SesOperationsConfigIssue,
+} from "./ses/config.ts";
 import type { UnsubscribeConfig as ParsedUnsubscribeConfig } from "./unsubscribe/config.ts";
 
 export type AuthConfig = {
@@ -39,7 +42,7 @@ export type SendingConfig = {
 };
 
 export type {
-  ParsedSesFeedbackConfig as SesFeedbackConfig,
+  ParsedSesOperationsConfig as SesOperationsConfig,
   ParsedUnsubscribeConfig as UnsubscribeConfig,
 };
 
@@ -188,32 +191,158 @@ export const serviceConfig: Effect.Effect<ServiceConfig, Config.ConfigError> = E
   },
 );
 
-export const sesFeedbackConfig: Effect.Effect<
-  Option.Option<ParsedSesFeedbackConfig>,
-  Config.ConfigError
-> = Effect.gen(function* () {
-  const raw = yield* trimmedOption("NUSEND_SES_FEEDBACK_TOPIC_ARNS");
-  if (Option.isNone(raw)) return Option.none<ParsedSesFeedbackConfig>();
+export const sesOperationsConfig: Effect.Effect<ParsedSesOperationsConfig, Config.ConfigError> =
+  Effect.gen(function* () {
+    const issues: SesOperationsConfigIssue[] = [];
+    const requestTimeoutMs = parseOperationsInteger({
+      fallback: 30000,
+      id: "config.request_timeout_ms",
+      issue: issues,
+      max: null,
+      min: 1,
+      name: "NUSEND_SES_REQUEST_TIMEOUT_MS",
+      value: yield* trimmedOption("NUSEND_SES_REQUEST_TIMEOUT_MS"),
+    });
+    const workerBatchSize = parseOperationsInteger({
+      fallback: 1,
+      id: "config.worker_batch_size",
+      issue: issues,
+      max: 50,
+      min: 1,
+      name: "NUSEND_SEND_WORKER_BATCH_SIZE",
+      value: yield* trimmedOption("NUSEND_SEND_WORKER_BATCH_SIZE"),
+    });
+    const workerLeaseSeconds = parseOperationsInteger({
+      fallback: 300,
+      id: "config.worker_lease_seconds",
+      issue: issues,
+      max: null,
+      min: 1,
+      name: "NUSEND_SEND_WORKER_LEASE_SECONDS",
+      value: yield* trimmedOption("NUSEND_SEND_WORKER_LEASE_SECONDS"),
+    });
+    const workerPollMs = parseOperationsInteger({
+      fallback: 5000,
+      id: "config.worker_poll_ms",
+      issue: issues,
+      max: null,
+      min: 1,
+      name: "NUSEND_SEND_WORKER_POLL_MS",
+      value: yield* trimmedOption("NUSEND_SEND_WORKER_POLL_MS"),
+    });
 
-  const topicArns = raw.value
-    .split(",")
-    .map((value) => value.trim())
-    .filter((value) => value.length > 0);
+    if (workerBatchSize * requestTimeoutMs + sendWorkerLeaseMarginMs >= workerLeaseSeconds * 1000) {
+      issues.push({
+        id: "config.worker_budget",
+        message:
+          "NUSEND_SEND_WORKER_LEASE_SECONDS must exceed NUSEND_SEND_WORKER_BATCH_SIZE * NUSEND_SES_REQUEST_TIMEOUT_MS by at least 10 seconds.",
+      });
+    }
 
-  if (topicArns.length === 0) return Option.none<ParsedSesFeedbackConfig>();
-
-  const invalid = topicArns.find((arn) => !isSnsTopicArn(arn));
-  if (invalid) {
-    return yield* configFailure(
-      "NUSEND_SES_FEEDBACK_TOPIC_ARNS must be a comma-separated list of SNS topic ARNs.",
+    const publicBaseUrl = normalizeOperationsPublicBaseUrl(
+      yield* trimmedOption("NUSEND_PUBLIC_BASE_URL"),
+      issues,
     );
+
+    return {
+      awsRegion: yield* trimmedOption("AWS_REGION"),
+      configIssues: issues,
+      feedbackTopicArns: uniqueCsv(
+        Option.getOrElse(yield* trimmedOption("NUSEND_SES_FEEDBACK_TOPIC_ARNS"), () => ""),
+      ),
+      fromEmail: yield* trimmedOption("NUSEND_SES_FROM_EMAIL"),
+      marketingConfigurationSet: yield* trimmedOption("NUSEND_SES_MARKETING_CONFIGURATION_SET"),
+      publicBaseUrl,
+      requestTimeoutMs,
+      trackingCustomRedirectDomain: yield* trimmedOption(
+        "NUSEND_SES_TRACKING_CUSTOM_REDIRECT_DOMAIN",
+      ),
+      trackingEvents: parseTrackingEvents(
+        Option.getOrElse(yield* trimmedOption("NUSEND_SES_TRACKING_EVENTS"), () => ""),
+      ),
+      transactionalConfigurationSet: yield* trimmedOption(
+        "NUSEND_SES_TRANSACTIONAL_CONFIGURATION_SET",
+      ),
+      unsubscribeSecretConfigured: Option.isSome(yield* trimmedOption("NUSEND_UNSUBSCRIBE_SECRET")),
+      workerBatchSize,
+      workerLeaseSeconds,
+      workerPollMs,
+    };
+  });
+
+function uniqueCsv(value: string): string[] {
+  return [
+    ...new Set(
+      value
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean),
+    ),
+  ];
+}
+
+function parseTrackingEvents(value: string): ("click" | "open")[] {
+  return uniqueCsv(value).filter(
+    (item): item is "click" | "open" => item === "click" || item === "open",
+  );
+}
+
+function parseOperationsInteger(input: {
+  fallback: number;
+  id: string;
+  issue: SesOperationsConfigIssue[];
+  max: number | null;
+  min: number;
+  name: string;
+  value: Option.Option<string>;
+}): number {
+  if (Option.isNone(input.value)) return input.fallback;
+
+  const parsed = Number(input.value.value);
+  const valid =
+    Number.isInteger(parsed) && parsed >= input.min && (input.max === null || parsed <= input.max);
+  if (valid) return parsed;
+
+  input.issue.push({
+    id: input.id,
+    message:
+      input.max === null
+        ? `${input.name} must be an integer >= ${input.min}.`
+        : `${input.name} must be an integer between ${input.min} and ${input.max}.`,
+  });
+  return input.fallback;
+}
+
+function normalizeOperationsPublicBaseUrl(
+  value: Option.Option<string>,
+  issues: SesOperationsConfigIssue[],
+): Option.Option<string> {
+  if (Option.isNone(value)) return Option.none();
+
+  const parsed = parseAbsoluteUrl(value.value);
+  if (!parsed || parsed.protocol !== "https:") {
+    issues.push({
+      id: "config.public_base_url",
+      message: "NUSEND_PUBLIC_BASE_URL must be an absolute HTTPS URL.",
+    });
+    return value;
+  }
+  if (parsed.search !== "" || parsed.hash !== "") {
+    issues.push({
+      id: "config.public_base_url",
+      message: "NUSEND_PUBLIC_BASE_URL must not include a query string or fragment.",
+    });
+    return value;
+  }
+  if (/[&'"<>]/.test(value.value)) {
+    issues.push({
+      id: "config.public_base_url",
+      message: "NUSEND_PUBLIC_BASE_URL must not include HTML-escapable characters.",
+    });
+    return value;
   }
 
-  return Option.some<ParsedSesFeedbackConfig>({ topicArns: [...new Set(topicArns)] });
-});
-
-function isSnsTopicArn(value: string): boolean {
-  return /^arn:(aws|aws-us-gov|aws-cn):sns:[a-z0-9-]+:\d{12}:[A-Za-z0-9_-]{1,256}$/.test(value);
+  return Option.some(parsed.toString().replace(/\/$/, ""));
 }
 
 export const unsubscribeConfig: Effect.Effect<

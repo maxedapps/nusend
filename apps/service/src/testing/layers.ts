@@ -13,17 +13,17 @@ import { DatabaseError } from "../errors.ts";
 import { Auth, type AuthService } from "../services/auth.ts";
 import { Database, makeTransaction, type DatabaseService } from "../services/database.ts";
 import { IdGenerator, type IdGeneratorService } from "../services/ids.ts";
+import { AwsAdminError } from "../aws/errors.ts";
+import { FakeSesAdminLive, type SesAdminService } from "../aws/ses-admin.ts";
+import { FakeSnsAdminLive, type SnsAdminService } from "../aws/sns-admin.ts";
 import {
-  SesFeedbackConfigLive,
-  type SesFeedbackConfig,
-  type SesFeedbackConfigService,
-} from "../ses-feedback/config.ts";
-import { SnsVerificationError } from "../ses-feedback/errors.ts";
-import { FakeSnsSubscriptionConfirmerLive } from "../ses-feedback/sns-confirmer.ts";
-import {
-  FakeSnsMessageVerifierLive,
-  type SnsMessageVerifierService,
-} from "../ses-feedback/sns-verifier.ts";
+  SesOperationsConfigLive,
+  type SesOperationsConfig,
+  type SesOperationsConfigService,
+} from "../ses/config.ts";
+import { SnsVerificationError } from "../ses/errors.ts";
+import { FakeSnsSubscriptionConfirmerLive } from "../ses/sns-confirmer.ts";
+import { FakeSnsMessageVerifierLive, type SnsMessageVerifierService } from "../ses/sns-verifier.ts";
 import {
   UnsubscribeConfigLive,
   type UnsubscribeConfig,
@@ -144,7 +144,9 @@ export type TestLayerOptions = {
   // Ids drawn from a fixed list instead of the sequential generator.
   readonly ids?: readonly string[];
   readonly migrate?: boolean;
-  readonly sesFeedback?: Option.Option<SesFeedbackConfig>;
+  readonly sesOperations?: SesOperationsConfig;
+  readonly sesAdmin?: SesAdminService;
+  readonly snsAdmin?: SnsAdminService;
   readonly snsConfirmerCalls?: string[];
   readonly snsVerifier?: Parameters<typeof FakeSnsMessageVerifierLive>[0];
   readonly unsubscribe?: Option.Option<UnsubscribeConfig>;
@@ -158,11 +160,13 @@ export function testLayer(options: TestLayerOptions = {}) {
     DatabaseNodeLive(":memory:", { migrate: options.migrate }),
     options.clock ?? TestClock.layer(),
     options.ids ? listIdsLayer(options.ids) : sequentialIdsLayer(options.idPrefix ?? "id"),
-    SesFeedbackConfigLive(options.sesFeedback ?? Option.none()),
+    SesOperationsConfigLive(options.sesOperations ?? fakeSesOperationsConfig()),
     options.snsVerifier
       ? FakeSnsMessageVerifierLive(options.snsVerifier)
       : defaultSnsMessageVerifierLayer(),
     FakeSnsSubscriptionConfirmerLive(options.snsConfirmerCalls ?? []),
+    FakeSesAdminLive(options.sesAdmin ?? defaultSesAdmin()),
+    FakeSnsAdminLive(options.snsAdmin ?? defaultSnsAdmin()),
     UnsubscribeConfigLive(options.unsubscribe ?? Option.none()),
   );
 }
@@ -179,25 +183,58 @@ export function runTest<A, E>(
   return Effect.runPromise(effect.pipe(Effect.provide(testLayer(options))));
 }
 
-export function fakeSesFeedbackConfig(
-  overrides: Partial<SesFeedbackConfig> = {},
-): SesFeedbackConfig {
+export function fakeSesOperationsConfig(
+  overrides: Partial<SesOperationsConfig> = {},
+): SesOperationsConfig {
   return {
-    topicArns: ["arn:aws:sns:us-east-1:123456789012:nusend-test"],
+    awsRegion: Option.some("us-east-1"),
+    configIssues: [],
+    feedbackTopicArns: ["arn:aws:sns:us-east-1:123456789012:nusend-test"],
+    fromEmail: Option.some("sender@example.com"),
+    marketingConfigurationSet: Option.some("marketing-set"),
+    publicBaseUrl: Option.some("https://mail.example.com"),
+    requestTimeoutMs: 30000,
+    trackingCustomRedirectDomain: Option.none(),
+    trackingEvents: [],
+    transactionalConfigurationSet: Option.some("transactional-set"),
+    unsubscribeSecretConfigured: true,
+    workerBatchSize: 1,
+    workerLeaseSeconds: 300,
+    workerPollMs: 5000,
     ...overrides,
   };
 }
 
-export function fakeSesFeedbackConfigLayer(
-  config: Option.Option<SesFeedbackConfig> = Option.some(fakeSesFeedbackConfig()),
-): Layer.Layer<SesFeedbackConfigService> {
-  return SesFeedbackConfigLive(config);
+export function fakeSesOperationsConfigLayer(
+  config: SesOperationsConfig = fakeSesOperationsConfig(),
+): Layer.Layer<SesOperationsConfigService> {
+  return SesOperationsConfigLive(config);
 }
 
 function defaultSnsMessageVerifierLayer(): Layer.Layer<SnsMessageVerifierService> {
   return FakeSnsMessageVerifierLive(() =>
     Effect.fail(new SnsVerificationError({ reason: "No fake SNS verifier configured." })),
   );
+}
+
+function defaultSesAdmin(): SesAdminService {
+  const failure = () =>
+    Effect.fail(new AwsAdminError({ kind: "missing_credentials", operation: "fake-ses-admin" }));
+  return {
+    getAccount: failure,
+    getConfigurationSet: failure,
+    getConfigurationSetEventDestinations: failure,
+    getEmailIdentity: failure,
+  };
+}
+
+function defaultSnsAdmin(): SnsAdminService {
+  const failure = () =>
+    Effect.fail(new AwsAdminError({ kind: "missing_credentials", operation: "fake-sns-admin" }));
+  return {
+    getTopicAttributes: failure,
+    listSubscriptionsByTopic: failure,
+  };
 }
 
 export function fakeUnsubscribeConfig(
@@ -265,7 +302,9 @@ export type TestAppOptions = {
   readonly idPrefix?: string;
   readonly ids?: readonly string[];
   readonly migrate?: boolean;
-  readonly sesFeedback?: Option.Option<SesFeedbackConfig>;
+  readonly sesOperations?: SesOperationsConfig;
+  readonly sesAdmin?: SesAdminService;
+  readonly snsAdmin?: SnsAdminService;
   readonly snsConfirmerCalls?: string[];
   readonly snsVerifier?: Parameters<typeof FakeSnsMessageVerifierLive>[0];
   readonly unsubscribe?: Option.Option<UnsubscribeConfig>;
@@ -278,11 +317,13 @@ export function makeTestRuntime(options: TestAppOptions = {}) {
       TestClock.layer(),
       options.ids ? listIdsLayer(options.ids) : sequentialIdsLayer(options.idPrefix ?? "id"),
       FakeAuthLive(options.auth),
-      SesFeedbackConfigLive(options.sesFeedback ?? Option.none()),
+      SesOperationsConfigLive(options.sesOperations ?? fakeSesOperationsConfig()),
       options.snsVerifier
         ? FakeSnsMessageVerifierLive(options.snsVerifier)
         : defaultSnsMessageVerifierLayer(),
       FakeSnsSubscriptionConfirmerLive(options.snsConfirmerCalls ?? []),
+      FakeSesAdminLive(options.sesAdmin ?? defaultSesAdmin()),
+      FakeSnsAdminLive(options.snsAdmin ?? defaultSnsAdmin()),
       UnsubscribeConfigLive(options.unsubscribe ?? Option.none()),
     ),
   );

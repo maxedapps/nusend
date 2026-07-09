@@ -8,7 +8,8 @@ import { createMailingsRoutes } from "./mailings/routes.ts";
 import { createOperationsRoutes } from "./operations/routes.ts";
 import { Auth } from "./services/auth.ts";
 import { Database } from "./services/database.ts";
-import { createSesFeedbackRoutes } from "./ses-feedback/routes.ts";
+import { createSesOperationsRoutes } from "./ses/routes.ts";
+import { createSesWebhookRoutes } from "./ses/webhook-routes.ts";
 import { createSuppressionsRoutes } from "./suppressions/routes.ts";
 import { createUnsubscribeRoutes } from "./unsubscribe/routes.ts";
 
@@ -18,6 +19,25 @@ type AppOptions = {
 
 export function createApp(options: AppOptions): Hono {
   const app = new Hono();
+
+  app.use("*", async (context, next) => {
+    const path = new URL(context.req.url).pathname;
+    if (path === "/health" || path === "/health/db") {
+      await next();
+      return;
+    }
+
+    const started = performance.now();
+    await next();
+    await options.runtime.runPromise(
+      Effect.logInfo("http request completed", {
+        durationMs: Math.round(performance.now() - started),
+        method: context.req.method,
+        path: sanitizedLogPath(path),
+        status: context.res.status,
+      }),
+    );
+  });
 
   app.get("/health", (context) =>
     context.json({
@@ -46,15 +66,21 @@ export function createApp(options: AppOptions): Hono {
   );
 
   app.route("/unsubscribe", createUnsubscribeRoutes({ runtime: options.runtime }));
-  app.route("/api/webhooks", createSesFeedbackRoutes({ runtime: options.runtime }));
+  app.route("/api/webhooks", createSesWebhookRoutes({ runtime: options.runtime }));
 
   app.route("/api/contacts", createContactsRoutes({ runtime: options.runtime }));
   app.route("/api/lists", createListsRoutes({ runtime: options.runtime }));
   app.route("/api/mailings", createMailingsRoutes({ runtime: options.runtime }));
   app.route("/api/operations", createOperationsRoutes({ runtime: options.runtime }));
+  app.route("/api/operations/ses", createSesOperationsRoutes({ runtime: options.runtime }));
   app.route("/api/suppressions", createSuppressionsRoutes({ runtime: options.runtime }));
 
   app.notFound((context) => context.json(errorEnvelope("not_found", "Not found."), 404));
 
   return app;
+}
+
+export function sanitizedLogPath(path: string): string {
+  if (path.startsWith("/unsubscribe/")) return "/unsubscribe/:token";
+  return path;
 }

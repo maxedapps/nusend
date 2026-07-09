@@ -9,12 +9,15 @@
     "db:status": "bun src/db/migrate.ts status",
     "dev": "bun --hot src/main.ts",
     "start": "bun src/main.ts",
+    "ses:simulate": "bun src/ses/simulator-main.ts",
+    "ses:simulate:all": "bun src/ses/simulator-main.ts all",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "worker:send": "bun src/sending/worker-main.ts loop",
     "worker:send:once": "bun src/sending/worker-main.ts once"
   },
   "dependencies": {
     "@aws-sdk/client-sesv2": "3.1080.0",
+    "@aws-sdk/client-sns": "3.1080.0",
     "@better-auth/api-key": "1.6.23",
     "better-auth": "1.6.23",
     "effect": "4.0.0-beta.93",

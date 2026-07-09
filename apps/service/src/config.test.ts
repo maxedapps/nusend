@@ -5,11 +5,11 @@ import { describe, expect, it } from "vitest";
 import {
   sendingConfig,
   serviceConfig,
-  sesFeedbackConfig,
+  sesOperationsConfig,
   unsubscribeConfig,
   type SendingConfig,
   type ServiceConfig,
-  type SesFeedbackConfig,
+  type SesOperationsConfig,
   type UnsubscribeConfig,
 } from "./config.ts";
 
@@ -29,11 +29,9 @@ function loadSending(fixture: Record<string, string>): Promise<SendingConfig> {
   );
 }
 
-function loadSesFeedback(
-  fixture: Record<string, string>,
-): Promise<Option.Option<SesFeedbackConfig>> {
+function loadSesOperations(fixture: Record<string, string>): Promise<SesOperationsConfig> {
   return Effect.runPromise(
-    sesFeedbackConfig.pipe(
+    sesOperationsConfig.pipe(
       Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(fixture)),
     ),
   );
@@ -203,38 +201,55 @@ describe("serviceConfig", () => {
   });
 });
 
-describe("sesFeedbackConfig", () => {
-  it("is absent when feedback topic ARNs are missing or blank", async () => {
-    expect(Option.isNone(await loadSesFeedback({}))).toBe(true);
-    expect(Option.isNone(await loadSesFeedback({ NUSEND_SES_FEEDBACK_TOPIC_ARNS: " ,  " }))).toBe(
-      true,
+describe("sesOperationsConfig", () => {
+  it("loads incomplete SES setup as structured readiness data", async () => {
+    const loaded = await loadSesOperations({});
+
+    expect(Option.isNone(loaded.awsRegion)).toBe(true);
+    expect(Option.isNone(loaded.fromEmail)).toBe(true);
+    expect(loaded.feedbackTopicArns).toEqual([]);
+    expect(loaded.requestTimeoutMs).toBe(30000);
+    expect(loaded.workerBatchSize).toBe(1);
+    expect(loaded.workerLeaseSeconds).toBe(300);
+  });
+
+  it("reports invalid SES operations config as diagnostics without failing startup", async () => {
+    const loaded = await loadSesOperations({
+      NUSEND_PUBLIC_BASE_URL: "http://mail.example.com/path",
+      NUSEND_SEND_WORKER_BATCH_SIZE: "51",
+      NUSEND_SEND_WORKER_LEASE_SECONDS: "1",
+      NUSEND_SES_REQUEST_TIMEOUT_MS: "abc",
+    });
+
+    expect(loaded.requestTimeoutMs).toBe(30000);
+    expect(loaded.workerBatchSize).toBe(1);
+    expect(loaded.workerLeaseSeconds).toBe(1);
+    expect(loaded.configIssues.map((issue) => issue.id)).toEqual(
+      expect.arrayContaining([
+        "config.public_base_url",
+        "config.request_timeout_ms",
+        "config.worker_batch_size",
+        "config.worker_budget",
+      ]),
     );
   });
 
-  it("loads trimmed comma-separated topic ARNs and removes duplicates", async () => {
-    const loaded = await loadSesFeedback({
+  it("loads SES operations settings without requiring complete send config", async () => {
+    const loaded = await loadSesOperations({
+      AWS_REGION: " us-east-1 ",
+      NUSEND_PUBLIC_BASE_URL: " https://mail.example.com ",
       NUSEND_SES_FEEDBACK_TOPIC_ARNS:
-        " arn:aws:sns:us-east-1:123456789012:nusend-prod , arn:aws-us-gov:sns:us-gov-west-1:123456789012:nusend-gov, arn:aws:sns:us-east-1:123456789012:nusend-prod ",
+        " arn:aws:sns:us-east-1:123456789012:nusend-prod , arn:aws:sns:us-east-1:123456789012:nusend-prod ",
+      NUSEND_SES_TRACKING_CUSTOM_REDIRECT_DOMAIN: "tracking.example.com",
+      NUSEND_SES_TRACKING_EVENTS: "open, click, invalid",
     });
 
-    expect(Option.getOrThrow(loaded).topicArns).toEqual([
-      "arn:aws:sns:us-east-1:123456789012:nusend-prod",
-      "arn:aws-us-gov:sns:us-gov-west-1:123456789012:nusend-gov",
-    ]);
-  });
-
-  it("rejects invalid topic ARN entries", async () => {
-    await expect(
-      loadSesFeedback({ NUSEND_SES_FEEDBACK_TOPIC_ARNS: "arn:aws:sqs:us-east-1:123:queue" }),
-    ).rejects.toThrow(/NUSEND_SES_FEEDBACK_TOPIC_ARNS/);
-  });
-
-  it("does not require send-worker SES config", async () => {
-    const loaded = await loadSesFeedback({
-      NUSEND_SES_FEEDBACK_TOPIC_ARNS: "arn:aws:sns:us-east-1:123456789012:nusend-prod",
-    });
-
-    expect(Option.isSome(loaded)).toBe(true);
+    expect(Option.getOrThrow(loaded.awsRegion)).toBe("us-east-1");
+    expect(Option.getOrThrow(loaded.publicBaseUrl)).toBe("https://mail.example.com");
+    expect(loaded.configIssues).toEqual([]);
+    expect(loaded.feedbackTopicArns).toEqual(["arn:aws:sns:us-east-1:123456789012:nusend-prod"]);
+    expect(loaded.trackingEvents).toEqual(["open", "click"]);
+    expect(Option.getOrThrow(loaded.trackingCustomRedirectDomain)).toBe("tracking.example.com");
   });
 });
 

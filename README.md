@@ -58,7 +58,9 @@ AWS_REGION=us-east-1
 NUSEND_SES_FROM_EMAIL=sender@example.com
 NUSEND_SES_TRANSACTIONAL_CONFIGURATION_SET=optional-ses-config-set
 NUSEND_SES_MARKETING_CONFIGURATION_SET=required-for-marketing-sends
-NUSEND_SES_FEEDBACK_TOPIC_ARNS=arn:aws:sns:us-east-1:123456789012:nusend-ses-feedback-prod
+NUSEND_SES_FEEDBACK_TOPIC_ARNS=arn:aws:sns:us-east-1:123456789012:nusend-ses-events-prod
+NUSEND_SES_TRACKING_EVENTS=open,click
+NUSEND_SES_TRACKING_CUSTOM_REDIRECT_DOMAIN=tracking.example.com
 NUSEND_SES_REQUEST_TIMEOUT_MS=30000
 NUSEND_SEND_WORKER_LEASE_SECONDS=300
 NUSEND_SEND_WORKER_BATCH_SIZE=1
@@ -68,11 +70,11 @@ NUSEND_UNSUBSCRIBE_SECRET=at-least-32-characters
 NUSEND_UNSUBSCRIBE_PREVIOUS_SECRET=optional-previous-secret-for-rotation
 ```
 
-AWS credentials use the standard AWS SDK provider chain. The API service can queue transactional mailings without SES send-worker config; marketing creation requires unsubscribe config. The send worker requires SES config, and marketing sends additionally require unsubscribe config plus `NUSEND_SES_MARKETING_CONFIGURATION_SET`. `NUSEND_SES_FEEDBACK_TOPIC_ARNS` is optional for the API service; when unset, the SES feedback webhook returns `404`. Worker config must satisfy `batchSize * requestTimeoutMs + 10000 < leaseSeconds * 1000`; the default batch size is `1` for conservative live SES sending.
+AWS credentials use the standard AWS SDK provider chain. The API service can queue transactional mailings without SES send-worker config; marketing creation requires unsubscribe config. The send worker requires SES config, and marketing sends additionally require unsubscribe config plus `NUSEND_SES_MARKETING_CONFIGURATION_SET`. `NUSEND_SES_FEEDBACK_TOPIC_ARNS` is optional for the API service; when unset, the SES operations webhook returns `404`. Worker config must satisfy `batchSize * requestTimeoutMs + 10000 < leaseSeconds * 1000`; the default batch size is `1` for conservative live SES sending.
 
 `NUSEND_PUBLIC_BASE_URL` must be an absolute HTTPS URL without a query string, fragment, or HTML-escapable characters (`&`, `'`, `"`, `<`, `>`). Retain delivery rows for at least 13 months so old signed unsubscribe links can resolve.
 
-SES feedback ingestion uses an SNS HTTPS webhook:
+SES operations ingestion uses an SNS HTTPS webhook:
 
 ```txt
 POST https://<public-host>/api/webhooks/aws/sns/ses
@@ -80,11 +82,11 @@ POST https://<public-host>/api/webhooks/aws/sns/ses
 
 Production AWS setup:
 
-1. Create a Standard SNS topic, e.g. `nusend-ses-feedback-prod`.
+1. Create a Standard SNS topic, e.g. `nusend-ses-events-prod`, and set SNS `SignatureVersion=2`.
 2. Create an SQS DLQ and attach it to the SNS HTTPS subscription; this is required because `404`/other non-2xx subscription failures can otherwise lose events after SNS handling.
 3. Allow SES to publish to the topic, constrained by account and configuration-set source ARN where possible.
 4. Create SES configuration sets such as `nusend-transactional-prod` and `nusend-marketing-prod`.
-5. Add SNS event destinations for `BOUNCE`, `COMPLAINT`, `REJECT`, and `DELIVERY_DELAY`; optionally `DELIVERY`; do not enable `OPEN`/`CLICK` initially.
+5. Add SNS event destinations for `BOUNCE`, `COMPLAINT`, `REJECT`, and `DELIVERY_DELAY`; optionally `DELIVERY`, `OPEN`, and `CLICK` when tracking is desired.
 6. Subscribe the webhook endpoint with default non-raw SNS delivery.
 7. Configure alarms on DLQ visible messages and ensure app egress can fetch SNS signing certs and confirmation URLs.
 8. Enable SES account-level suppression as defense in depth:
@@ -93,7 +95,7 @@ Production AWS setup:
 aws sesv2 put-account-suppression-attributes --suppressed-reasons BOUNCE COMPLAINT
 ```
 
-No SES feedback event is emitted unless the send uses an SES configuration set with an event destination. Transactional feedback therefore requires `NUSEND_SES_TRANSACTIONAL_CONFIGURATION_SET` in production even though the env var remains optional for compatibility. Validate with `bounce@simulator.amazonses.com` and `complaint@simulator.amazonses.com`; simulator events do not affect SES reputation metrics.
+No SES operations event is emitted unless the send uses an SES configuration set with an event destination. Transactional feedback therefore requires `NUSEND_SES_TRANSACTIONAL_CONFIGURATION_SET` in production even though the env var remains optional for compatibility. Validate with the SES mailbox simulator via `pnpm --filter @nusend/service ses:simulate ...`; end-to-end mode must run on the deployment receiving SNS callbacks. Simulator events do not affect SES reputation metrics.
 
 Alternative if HTTPS webhook delivery becomes painful: route `SES configuration set -> SNS topic -> SQS queue -> Nusend feedback worker`. That avoids public webhook confirmation/signature handling and SNS HTTP retry semantics, but requires a future SQS polling worker and AWS credentials in that worker.
 
@@ -222,7 +224,13 @@ Read-only inspection endpoints help validate SES sends without querying SQLite d
 GET /api/operations/summary
 GET /api/operations/deliveries
 GET /api/operations/deliveries/:id
-GET /api/operations/ses-feedback
+GET /api/operations/ses/summary
+GET /api/operations/ses/events
+GET /api/operations/ses/events/:id
+GET /api/operations/ses/readiness
+GET /api/operations/ses/setup-guide
+GET /api/operations/ses/simulator-runs
+GET /api/operations/ses/simulator-runs/:id
 ```
 
 A Better Auth session owner can access these endpoints. API keys need `operations:read`.
@@ -234,7 +242,9 @@ curl -H 'x-api-key: nusend_...' \
 curl -H 'x-api-key: nusend_...' \
   http://localhost:3000/api/operations/deliveries/<delivery-id>
 curl -H 'x-api-key: nusend_...' \
-  http://localhost:3000/api/operations/ses-feedback
+  http://localhost:3000/api/operations/ses/readiness
+curl -H 'x-api-key: nusend_...' \
+  http://localhost:3000/api/operations/ses/events
 ```
 
 Manual transactional SES validation flow:
@@ -268,7 +278,7 @@ jobs.state = queued | leased | succeeded | dead
 jobs.delivery_id -> deliveries.id
 ```
 
-`completed` means send processing is finished for all deliveries, not SES inbox delivery confirmation. SES feedback is stored separately in audit tables and does not add `delivered`, `bounced`, or `complained` delivery statuses; future pause/cancel/draft workflows may add their own states when implemented.
+`completed` means send processing is finished for all deliveries, not SES inbox delivery confirmation. SES operations is stored separately in audit tables and does not add `delivered`, `bounced`, or `complained` delivery statuses; future pause/cancel/draft workflows may add their own states when implemented.
 
 Supported placeholders for now:
 
@@ -280,4 +290,4 @@ HTML placeholder values are escaped. Missing/unsupported placeholders fail the d
 
 Marketing mailings require unsubscribe config and an HTML `{{ unsubscribe.url }}` placeholder at creation. At send time, marketing deliveries retry if unsubscribe config or `NUSEND_SES_MARKETING_CONFIGURATION_SET` is missing; otherwise they include RFC 8058 one-click unsubscribe headers and are suppressed if the recipient unsubscribed after queueing.
 
-Before real marketing volume, verify SES feedback ingestion in production with the simulator, verify in Gmail “Show original” that SES DKIM covers `List-Unsubscribe` and `List-Unsubscribe-Post`, and monitor operations for marketing dead jobs/config retries.
+Before real marketing volume, verify SES operations ingestion in production with the simulator, verify in Gmail “Show original” that SES DKIM covers `List-Unsubscribe` and `List-Unsubscribe-Post`, and monitor operations for marketing dead jobs/config retries.

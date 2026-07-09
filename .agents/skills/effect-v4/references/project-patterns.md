@@ -83,7 +83,7 @@ Grep-enforced (allow-lists live in the migration plan's gate table, `.plans/migr
 - `bun:sqlite` imports: `services/database-bun.ts`, `services/auth-live.ts`, `auth/auth.ts`, `testing/bun-fixtures.ts` only. `node:sqlite`: `testing/layers.ts` only.
 - No `new Date(`/`Date.now(` outside `lib/iso-time.ts`; `JSON.parse` only in the approved non-test sites listed in `.plans/migrate-to-effect-v4-bun.md` (use `Schema.fromJsonString` for future trust-boundary payload decoding); no `as any`/ts-suppressions; `Redacted.value` only in approved external-boundary sites (`services/auth-live.ts`, `unsubscribe/token.ts`) and tests.
 - `throw new` only for invariant defects and CLI usage errors (see gate table) — expected failures are tagged errors.
-- No `Logger` service yet: default logging + the sanitized `logCause` helper in `http/respond.ts` cover current needs; do not reintroduce one speculatively.
+- Logging uses Effect's logger layer (`observability/effect-logger.ts`) plus sanitized `logCause` in `http/respond.ts`; do not introduce a bespoke logger service speculatively. When adding request/operations logs, log route patterns or redacted paths (for example `/unsubscribe/:token`), never raw token-bearing URLs, request bodies, API keys, auth headers, cookies, raw SNS JSON, or email payloads.
 
 ## Commands
 

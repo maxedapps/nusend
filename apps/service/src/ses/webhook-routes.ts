@@ -2,21 +2,23 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 
 import { runWebhookRoute, type AppRuntime } from "../http/respond.ts";
-import { handleSesFeedbackSnsRequest } from "./process.ts";
+import { sesSnsWebhookPath } from "./constants.ts";
+import { handleSesSnsRequest } from "./process-event.ts";
 
-export const maxSesFeedbackWebhookBodyBytes = 512 * 1024;
+export const maxSesWebhookBodyBytes = 512 * 1024;
 
-type SesFeedbackRoutesOptions = {
+type SesWebhookRoutesOptions = {
   readonly runtime: AppRuntime;
 };
 
-export function createSesFeedbackRoutes(options: SesFeedbackRoutesOptions): Hono {
+export function createSesWebhookRoutes(options: SesWebhookRoutesOptions): Hono {
   const routes = new Hono();
+  const localPath = sesSnsWebhookPath.replace(/^\/api\/webhooks/, "");
 
   routes.post(
-    "/aws/sns/ses",
+    localPath,
     bodyLimit({
-      maxSize: maxSesFeedbackWebhookBodyBytes,
+      maxSize: maxSesWebhookBodyBytes,
       onError: () => new Response(null, { status: 413 }),
     }),
     async (context) => {
@@ -24,7 +26,7 @@ export function createSesFeedbackRoutes(options: SesFeedbackRoutesOptions): Hono
       return runWebhookRoute(
         context,
         options.runtime,
-        handleSesFeedbackSnsRequest(rawBody),
+        handleSesSnsRequest(rawBody),
         () => new Response(null, { status: 204 }),
       );
     },

@@ -5,19 +5,19 @@ import { Cause, Effect, Exit } from "effect";
 
 import type { DatabaseError } from "../errors.ts";
 import { refreshMailingStateForDelivery } from "../mailings/lifecycle.ts";
-import type { DatabaseService } from "../services/database.ts";
+import { Database, type DatabaseService } from "../services/database.ts";
 import type {
   EmailSendingConfigService,
   EmailTransportService,
 } from "../services/email-transport.ts";
-import type { IdGeneratorService } from "../services/ids.ts";
+import { IdGenerator, type IdGeneratorService } from "../services/ids.ts";
 import type { UnsubscribeConfigService } from "../unsubscribe/config.ts";
 import {
   markDeliveryFailedForDeadJob,
   markReleasedDeadJobDeliveryAmbiguous,
 } from "../sending/attempts.ts";
 import { processSendDeliveryJob } from "../sending/process-delivery.ts";
-import { currentIso } from "../lib/iso-time.ts";
+import { addMillisecondsIso, currentIso, subtractDaysIso } from "../lib/iso-time.ts";
 import {
   claimSendDeliveryJobsAt,
   completeSendDeliveryJob,
@@ -28,6 +28,7 @@ import {
 export type SendWorkerOnceOptions = {
   readonly batchSize?: number;
   readonly leaseSeconds?: number;
+  readonly mode?: "loop" | "once";
   readonly workerId: string;
 };
 
@@ -55,6 +56,7 @@ export function runSendWorkerOnce(
     // One time snapshot for release + claim; complete/fail read fresh time after
     // each job is processed.
     const now = yield* currentIso;
+    const startedAt = now;
     const releasedJobs = yield* releaseExpiredSendDeliveryLeasesAt(now, {});
     const claimedJobs = yield* claimSendDeliveryJobsAt(now, {
       leaseSeconds: options.leaseSeconds,
@@ -122,7 +124,123 @@ export function runSendWorkerOnce(
       }
     }
 
+    const finishedAt = yield* currentIso;
+    yield* Effect.logInfo("send worker cycle completed", {
+      claimed: result.claimed,
+      dead: result.dead,
+      failed: result.failed,
+      mode: options.mode ?? "once",
+      released: result.released,
+      skippedStale: result.skippedStale,
+      succeeded: result.succeeded,
+      workerId: options.workerId,
+    });
+    yield* recordWorkerRun({
+      finishedAt,
+      mode: options.mode ?? "once",
+      result,
+      startedAt,
+      workerId: options.workerId,
+    });
+
     return result;
+  });
+}
+
+const workerRunRetentionDays = 30;
+const idleHeartbeatMs = 5 * 60 * 1000;
+
+function recordWorkerRun(options: {
+  finishedAt: string;
+  mode: "loop" | "once";
+  result: SendWorkerOnceResult;
+  startedAt: string;
+  workerId: string;
+}): Effect.Effect<void, DatabaseError, DatabaseService | IdGeneratorService> {
+  return Effect.gen(function* () {
+    const db = yield* Database;
+    const shouldPersist = yield* shouldPersistWorkerRun(db, options);
+    if (!shouldPersist) return;
+
+    const ids = yield* IdGenerator;
+    yield* db.run(
+      "worker-runs:insert",
+      `INSERT INTO worker_runs (
+         id, worker_id, mode, released, claimed, succeeded, failed, dead, skipped_stale,
+         started_at, finished_at
+       ) VALUES (
+         $id, $workerId, $mode, $released, $claimed, $succeeded, $failed, $dead, $skippedStale,
+         $startedAt, $finishedAt
+       );`,
+      {
+        claimed: options.result.claimed,
+        dead: options.result.dead,
+        failed: options.result.failed,
+        finishedAt: options.finishedAt,
+        id: yield* ids.next,
+        mode: options.mode,
+        released: options.result.released,
+        skippedStale: options.result.skippedStale,
+        startedAt: options.startedAt,
+        succeeded: options.result.succeeded,
+        workerId: options.workerId,
+      },
+    );
+    yield* pruneWorkerRuns(db, options.finishedAt);
+  });
+}
+
+function shouldPersistWorkerRun(
+  db: DatabaseService,
+  options: {
+    finishedAt: string;
+    mode: "loop" | "once";
+    result: SendWorkerOnceResult;
+    workerId: string;
+  },
+): Effect.Effect<boolean, DatabaseError> {
+  if (options.mode === "once") return Effect.succeed(true);
+  if (!isIdle(options.result)) return Effect.succeed(true);
+
+  return Effect.gen(function* () {
+    const latest = yield* db.get<{ finishedAt: string }>(
+      "worker-runs:latest-idle-heartbeat",
+      `SELECT finished_at AS finishedAt
+       FROM worker_runs
+       WHERE worker_id = $workerId
+         AND mode = 'loop'
+         AND released = 0
+         AND claimed = 0
+         AND succeeded = 0
+         AND failed = 0
+         AND dead = 0
+         AND skipped_stale = 0
+       ORDER BY finished_at DESC, id DESC
+       LIMIT 1;`,
+      { workerId: options.workerId },
+    );
+    const heartbeatBefore = addMillisecondsIso(options.finishedAt, -idleHeartbeatMs);
+    return latest === null || latest.finishedAt <= heartbeatBefore;
+  });
+}
+
+function isIdle(result: SendWorkerOnceResult): boolean {
+  return (
+    result.released === 0 &&
+    result.claimed === 0 &&
+    result.succeeded === 0 &&
+    result.failed === 0 &&
+    result.dead === 0 &&
+    result.skippedStale === 0
+  );
+}
+
+function pruneWorkerRuns(
+  db: DatabaseService,
+  finishedAt: string,
+): Effect.Effect<void, DatabaseError> {
+  return db.run("worker-runs:prune-old", "DELETE FROM worker_runs WHERE finished_at < $cutoff;", {
+    cutoff: subtractDaysIso(finishedAt, workerRunRetentionDays),
   });
 }
 

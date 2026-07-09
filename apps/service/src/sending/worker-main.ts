@@ -2,6 +2,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { ConfigProvider, Effect, Layer, ManagedRuntime } from "effect";
 
 import { sendingConfig, serviceConfig, unsubscribeConfig } from "../config.ts";
+import { JsonLoggerLive } from "../observability/effect-logger.ts";
 import { Database } from "../services/database.ts";
 import { DatabaseBunLive } from "../services/database-bun.ts";
 import { EmailSendingConfigLive } from "../services/email-transport.ts";
@@ -36,6 +37,7 @@ const runtime = ManagedRuntime.make(
     sendingConfigLayer,
     UnsubscribeConfigLive(unsubscribe),
     EmailTransportSesLive.pipe(Layer.provide(sendingConfigLayer)),
+    JsonLoggerLive,
   ),
 );
 
@@ -64,6 +66,7 @@ try {
       runSendWorkerOnce({
         batchSize: sending.workerBatchSize,
         leaseSeconds: sending.workerLeaseSeconds,
+        mode: "once",
         workerId,
       }),
     );
@@ -86,6 +89,7 @@ async function runLoop(): Promise<void> {
     runSendWorkerOnce({
       batchSize: sending.workerBatchSize,
       leaseSeconds: sending.workerLeaseSeconds,
+      mode: "loop",
       workerId,
     }),
   );

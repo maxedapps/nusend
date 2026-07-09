@@ -19,23 +19,27 @@ import type {
 import type { AuthService } from "../services/auth.ts";
 import type { DatabaseService } from "../services/database.ts";
 import type { IdGeneratorService } from "../services/ids.ts";
-import type { SesFeedbackConfigService } from "../ses-feedback/config.ts";
+import type { SesAdminService } from "../aws/ses-admin.ts";
+import type { SnsAdminService } from "../aws/sns-admin.ts";
+import type { SesOperationsConfigService } from "../ses/config.ts";
 import type {
-  SesFeedbackDisabledError,
-  SesFeedbackForbiddenError,
-  SesFeedbackMalformedError,
+  SesOperationsDisabledError,
+  SesOperationsForbiddenError,
+  SesOperationsMalformedError,
   SnsConfirmationError,
   SnsVerificationError,
-} from "../ses-feedback/errors.ts";
-import type { SnsSubscriptionConfirmerService } from "../ses-feedback/sns-confirmer.ts";
-import type { SnsMessageVerifierService } from "../ses-feedback/sns-verifier.ts";
+} from "../ses/errors.ts";
+import type { SnsSubscriptionConfirmerService } from "../ses/sns-confirmer.ts";
+import type { SnsMessageVerifierService } from "../ses/sns-verifier.ts";
 import type { UnsubscribeConfigService } from "../unsubscribe/config.ts";
 
 export type AppServices =
   | AuthService
   | DatabaseService
   | IdGeneratorService
-  | SesFeedbackConfigService
+  | SesAdminService
+  | SesOperationsConfigService
+  | SnsAdminService
   | SnsMessageVerifierService
   | SnsSubscriptionConfirmerService
   | UnsubscribeConfigService;
@@ -59,9 +63,9 @@ export type RouteError =
 
 export type WebhookRouteError =
   | DatabaseError
-  | SesFeedbackDisabledError
-  | SesFeedbackForbiddenError
-  | SesFeedbackMalformedError
+  | SesOperationsDisabledError
+  | SesOperationsForbiddenError
+  | SesOperationsMalformedError
   | SnsConfirmationError
   | SnsVerificationError;
 
@@ -140,9 +144,9 @@ export async function runWebhookRoute<A>(
     Effect.map(onSuccess),
     Effect.catchTags({
       DatabaseError: (error) => emptyInternalError(context, error),
-      SesFeedbackDisabledError: () => Effect.succeed(new Response(null, { status: 404 })),
-      SesFeedbackForbiddenError: () => Effect.succeed(new Response(null, { status: 403 })),
-      SesFeedbackMalformedError: () => Effect.succeed(new Response(null, { status: 400 })),
+      SesOperationsDisabledError: () => Effect.succeed(new Response(null, { status: 404 })),
+      SesOperationsForbiddenError: () => Effect.succeed(new Response(null, { status: 403 })),
+      SesOperationsMalformedError: () => Effect.succeed(new Response(null, { status: 400 })),
       SnsConfirmationError: (error) => emptyInternalError(context, error),
       SnsVerificationError: () => Effect.succeed(new Response(null, { status: 403 })),
     }),

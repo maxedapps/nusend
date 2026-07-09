@@ -538,61 +538,204 @@ describe("operations routes", () => {
     });
   });
 
-  it("lists sanitized SES feedback rows newest first", async () => {
+  it("returns SES summary with recent issue events and latest worker run", async () => {
     await withTestApp({ auth: { session: { userId: "user_1" } } }, async (app, runtime) => {
       await seedOperationsData(runtime);
       await runtime.runPromise(
         Effect.gen(function* () {
           const db = yield* Database;
           yield* db.run(
-            "test:seed:feedback-notification",
-            `INSERT INTO ses_feedback_notifications (
-               sns_message_id, sns_topic_arn, sns_type, event_type, ses_message_id, raw_json, received_at
+            "test:seed:ses-summary-notification",
+            `INSERT INTO ses_notifications (
+               id, sns_message_id, sns_topic_arn, sns_type, event_type, ses_message_id, raw_json, received_at
              ) VALUES (
-               'sns_1', 'arn:aws:sns:us-east-1:123456789012:nusend-test', 'Notification',
-               'Bounce', 'ses_1', '{"raw":"secret"}', '2026-07-03T12:00:08.000Z'
+               'notification_summary', 'sns_summary', 'arn:aws:sns:us-east-1:123456789012:nusend-test',
+               'Notification', 'Bounce', 'ses_1', '{"raw":"secret"}', '2026-07-03T12:00:08.000Z'
              );`,
           );
           yield* db.run(
-            "test:seed:feedback-recipient",
-            `INSERT INTO ses_feedback_recipients (
-               id, sns_message_id, event_type, delivery_id, mailing_id, ses_message_id,
-               recipient_email, feedback_id, bounce_type, bounce_sub_type,
-               complaint_feedback_type, diagnostic_code, action_taken, created_at
+            "test:seed:ses-summary-event",
+            `INSERT INTO ses_events (
+               id, dedupe_key, notification_id, event_type, delivery_id, mailing_id, ses_message_id,
+               recipient_email, action_taken, occurred_at, bounce_type, bounce_sub_type,
+               diagnostic_code, created_at
              ) VALUES (
-               'feedback_1', 'sns_1', 'Bounce', 'delivery_1', 'mailing_1', 'ses_1',
-               'user1@example.com', 'feedback-id', 'Permanent', 'General', NULL,
-               '${"x".repeat(550)}', 'suppressed', '2026-07-03T12:00:09.000Z'
+               'event_summary', 'dedupe_summary', 'notification_summary', 'Bounce', 'delivery_1',
+               'mailing_1', 'ses_1', 'user1@example.com', 'suppressed',
+               '2026-07-03T12:00:08.000Z', 'Permanent', 'General', 'diagnostic',
+               '2026-07-03T12:00:09.000Z'
+             );`,
+          );
+          yield* db.run(
+            "test:seed:worker-run",
+            `INSERT INTO worker_runs (
+               id, worker_id, mode, released, claimed, succeeded, failed, dead, skipped_stale,
+               started_at, finished_at
+             ) VALUES (
+               'worker_run_1', 'worker_1', 'loop', 0, 1, 1, 0, 0, 0,
+               '2026-07-03T12:00:10.000Z', '2026-07-03T12:00:11.000Z'
              );`,
           );
         }),
       );
 
-      const response = await app.fetch(new Request("http://localhost/api/operations/ses-feedback"));
+      const response = await app.fetch(new Request("http://localhost/api/operations/ses/summary"));
 
       expect(response.status).toBe(200);
-      const body = await response.json();
-      expect(body).toEqual({
-        items: [
-          {
-            actionTaken: "suppressed",
-            bounceSubType: "General",
-            bounceType: "Permanent",
-            complaintFeedbackType: null,
-            createdAt: "2026-07-03T12:00:09.000Z",
-            deliveryId: "delivery_1",
-            diagnosticCode: `${"x".repeat(500)}…`,
-            eventType: "Bounce",
-            feedbackId: "feedback-id",
-            id: "feedback_1",
-            mailingId: "mailing_1",
-            recipientEmail: "user1@example.com",
-            sesMessageId: "ses_1",
-          },
-        ],
+      const body = (await response.json()) as {
+        counts: Record<string, number>;
+        latestEventAt: string | null;
+        latestNotificationAt: string | null;
+        recentIssues: Array<Record<string, unknown>>;
+        totals: { bounce: number };
+        worker: { latestRun: Record<string, unknown> | null };
+      };
+      expect(body.counts.Bounce).toBe(1);
+      expect(body.totals.bounce).toBe(1);
+      expect(body.latestNotificationAt).toBe("2026-07-03T12:00:08.000Z");
+      expect(body.latestEventAt).toBe("2026-07-03T12:00:09.000Z");
+      expect(body.recentIssues[0]).toMatchObject({
+        actionTaken: "suppressed",
+        bounceType: "Permanent",
+        deliveryId: "delivery_1",
+        eventType: "Bounce",
+        id: "event_summary",
+        notificationId: "notification_summary",
+      });
+      expect(body.worker.latestRun).toMatchObject({
+        claimed: 1,
+        finishedAt: "2026-07-03T12:00:11.000Z",
+        id: "worker_run_1",
+        workerId: "worker_1",
       });
       expect(JSON.stringify(body)).not.toContain("raw");
       expect(JSON.stringify(body)).not.toContain("secret");
+    });
+  });
+
+  it("lists sanitized SES event rows newest first", async () => {
+    await withTestApp({ auth: { session: { userId: "user_1" } } }, async (app, runtime) => {
+      await seedOperationsData(runtime);
+      await runtime.runPromise(
+        Effect.gen(function* () {
+          const db = yield* Database;
+          yield* db.run(
+            "test:seed:ses-notification",
+            `INSERT INTO ses_notifications (
+               id, sns_message_id, sns_topic_arn, sns_type, event_type, ses_message_id, raw_json, received_at
+             ) VALUES (
+               'notification_1', 'sns_1', 'arn:aws:sns:us-east-1:123456789012:nusend-test',
+               'Notification', 'Bounce', 'ses_1', '{"raw":"secret"}', '2026-07-03T12:00:08.000Z'
+             );`,
+          );
+          yield* db.run(
+            "test:seed:ses-event",
+            `INSERT INTO ses_events (
+               id, dedupe_key, notification_id, event_type, delivery_id, mailing_id, ses_message_id,
+               recipient_email, action_taken, occurred_at, bounce_type, bounce_sub_type,
+               complaint_feedback_type, feedback_id, diagnostic_code, created_at
+             ) VALUES (
+               'event_1', 'dedupe_1', 'notification_1', 'Bounce', 'delivery_1', 'mailing_1', 'ses_1',
+               'user1@example.com', 'suppressed', '2026-07-03T12:00:08.000Z', 'Permanent', 'General',
+               NULL, 'feedback-id', '${"x".repeat(550)}', '2026-07-03T12:00:09.000Z'
+             );`,
+          );
+        }),
+      );
+
+      const response = await app.fetch(new Request("http://localhost/api/operations/ses/events"));
+
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as { items: unknown[] };
+      expect(body.items[0]).toMatchObject({
+        actionTaken: "suppressed",
+        bounceSubType: "General",
+        bounceType: "Permanent",
+        complaintFeedbackType: null,
+        deliveryId: "delivery_1",
+        diagnosticCode: `${"x".repeat(500)}…`,
+        eventType: "Bounce",
+        feedbackId: "feedback-id",
+        id: "event_1",
+        mailingId: "mailing_1",
+        recipientEmail: "user1@example.com",
+        sesMessageId: "ses_1",
+      });
+      expect(JSON.stringify(body)).not.toContain("raw");
+      expect(JSON.stringify(body)).not.toContain("secret");
+    });
+  });
+
+  it("returns SES event detail, filters events, and maps missing SES resources", async () => {
+    await withTestApp({ auth: { session: { userId: "user_1" } } }, async (app, runtime) => {
+      await seedOperationsData(runtime);
+      await runtime.runPromise(
+        Effect.gen(function* () {
+          const db = yield* Database;
+          yield* db.run(
+            "test:seed:ses-filter-notification",
+            `INSERT INTO ses_notifications (
+               id, sns_message_id, sns_topic_arn, sns_type, event_type, ses_message_id, raw_json, received_at
+             ) VALUES (
+               'notification_filter', 'sns_filter', 'arn:aws:sns:us-east-1:123456789012:nusend-test',
+               'Notification', 'Click', 'ses_filter', '{}', '2026-07-03T12:00:08.000Z'
+             );`,
+          );
+          yield* db.run(
+            "test:seed:ses-filter-event",
+            `INSERT INTO ses_events (
+               id, dedupe_key, notification_id, event_type, delivery_id, mailing_id, ses_message_id,
+               recipient_email, action_taken, link_url, created_at
+             ) VALUES (
+               'event_filter', 'dedupe_filter', 'notification_filter', 'Click', 'delivery_1',
+               'mailing_1', 'ses_filter', 'user1@example.com', 'recorded', 'https://example.com',
+               '2026-07-03T12:00:09.000Z'
+             );`,
+          );
+          yield* db.run(
+            "test:seed:simulator-run",
+            `INSERT INTO ses_simulator_runs (
+               id, scenario, mode, purpose, recipient_email, status, started_at, finished_at
+             ) VALUES (
+               'sim_run_1', 'success', 'send_acceptance', 'transactional', 'success@simulator.amazonses.com',
+               'sent', '2026-07-03T12:00:00.000Z', '2026-07-03T12:00:01.000Z'
+             );`,
+          );
+        }),
+      );
+
+      const list = await app.fetch(
+        new Request(
+          "http://localhost/api/operations/ses/events?eventType=Click&mailingId=mailing_1",
+        ),
+      );
+      expect(list.status).toBe(200);
+      await expect(list.json()).resolves.toMatchObject({ items: [{ id: "event_filter" }] });
+
+      const detail = await app.fetch(
+        new Request("http://localhost/api/operations/ses/events/event_filter"),
+      );
+      expect(detail.status).toBe(200);
+      await expect(detail.json()).resolves.toMatchObject({
+        id: "event_filter",
+        eventType: "Click",
+      });
+
+      const missingEvent = await app.fetch(
+        new Request("http://localhost/api/operations/ses/events/missing"),
+      );
+      expect(missingEvent.status).toBe(404);
+
+      const simulatorList = await app.fetch(
+        new Request("http://localhost/api/operations/ses/simulator-runs"),
+      );
+      expect(simulatorList.status).toBe(200);
+      await expect(simulatorList.json()).resolves.toMatchObject({ items: [{ id: "sim_run_1" }] });
+
+      const missingSimulator = await app.fetch(
+        new Request("http://localhost/api/operations/ses/simulator-runs/missing"),
+      );
+      expect(missingSimulator.status).toBe(404);
     });
   });
 

@@ -22,16 +22,19 @@ describe("migration runner", () => {
     expect(initialStatus).toContain("pending  0001_initial_schema");
     expect(initialStatus).toContain("pending  0002_simplify_send_queue_and_states");
     expect(initialStatus).toContain("pending  0003_ses_feedback_ingestion");
+    expect(initialStatus).toContain("pending  0004_ses_operations_and_tracking");
 
     const migrateUp = runMigrationCommand("up", databasePath).stdout;
     expect(migrateUp).toContain("Applied migration 0001_initial_schema.");
     expect(migrateUp).toContain("Applied migration 0002_simplify_send_queue_and_states.");
     expect(migrateUp).toContain("Applied migration 0003_ses_feedback_ingestion.");
+    expect(migrateUp).toContain("Applied migration 0004_ses_operations_and_tracking.");
 
     const migratedStatus = runMigrationCommand("status", databasePath).stdout;
     expect(migratedStatus).toContain("applied  0001_initial_schema");
     expect(migratedStatus).toContain("applied  0002_simplify_send_queue_and_states");
     expect(migratedStatus).toContain("applied  0003_ses_feedback_ingestion");
+    expect(migratedStatus).toContain("applied  0004_ses_operations_and_tracking");
 
     expect(readTableNames(databasePath)).toEqual([
       "accounts",
@@ -45,12 +48,14 @@ describe("migration runner", () => {
       "mailings",
       "schema_migrations",
       "send_attempts",
-      "ses_feedback_notifications",
-      "ses_feedback_recipients",
+      "ses_events",
+      "ses_notifications",
+      "ses_simulator_runs",
       "sessions",
       "suppressions",
       "users",
       "verifications",
+      "worker_runs",
     ]);
     expect(readColumnNames(databasePath, "users")).toContain("email_verified");
     expect(readColumnNames(databasePath, "sessions")).not.toContain("active_organization_id");
@@ -67,21 +72,27 @@ describe("migration runner", () => {
     expect(readColumnNames(databasePath, "mailing_idempotency_keys")).toEqual(
       expect.arrayContaining(["key", "request_hash", "mailing_id", "response_json"]),
     );
-    expect(readColumnNames(databasePath, "ses_feedback_notifications")).toEqual(
-      expect.arrayContaining(["sns_message_id", "raw_json", "received_at"]),
+    expect(readColumnNames(databasePath, "ses_notifications")).toEqual(
+      expect.arrayContaining(["id", "sns_message_id", "raw_json", "received_at"]),
     );
-    expect(readColumnNames(databasePath, "ses_feedback_recipients")).toEqual(
-      expect.arrayContaining(["sns_message_id", "recipient_email", "action_taken"]),
+    expect(readColumnNames(databasePath, "ses_events")).toEqual(
+      expect.arrayContaining(["dedupe_key", "recipient_email", "action_taken", "link_url"]),
     );
-    expect(readIndexNames(databasePath, "ses_feedback_recipients")).toEqual(
+    expect(readColumnNames(databasePath, "ses_simulator_runs")).toEqual(
+      expect.arrayContaining(["scenario", "mode", "status", "expected_event_type"]),
+    );
+    expect(readColumnNames(databasePath, "worker_runs")).toEqual(
+      expect.arrayContaining(["worker_id", "claimed", "skipped_stale", "finished_at"]),
+    );
+    expect(readIndexNames(databasePath, "ses_events")).toEqual(
       expect.arrayContaining([
-        "ses_feedback_recipients_delivery_id_idx",
-        "ses_feedback_recipients_ses_message_id_idx",
-        "ses_feedback_recipients_email_idx",
-        "ses_feedback_recipients_event_created_idx",
+        "ses_events_delivery_id_idx",
+        "ses_events_ses_message_id_idx",
+        "ses_events_recipient_email_idx",
+        "ses_events_event_created_idx",
       ]),
     );
-    expect(readTableSql(databasePath, "ses_feedback_recipients")).toContain(
+    expect(readTableSql(databasePath, "ses_events")).toContain(
       "action_taken IN ('recorded', 'suppressed', 'ignored')",
     );
 
@@ -109,6 +120,12 @@ describe("migration runner", () => {
     expect(restore.status).toBe(0);
 
     expect(runMigrationCommand("down", databasePath).stdout).toContain(
+      "Rolled back migration 0004_ses_operations_and_tracking.",
+    );
+    expect(readTableNames(databasePath)).toEqual(
+      expect.arrayContaining(["ses_feedback_notifications", "ses_feedback_recipients"]),
+    );
+    expect(runMigrationCommand("down", databasePath).stdout).toContain(
       "Rolled back migration 0003_ses_feedback_ingestion.",
     );
     expect(runMigrationCommand("down", databasePath).stdout).toContain(
@@ -127,6 +144,7 @@ describe("migration runner", () => {
     expect(migrateUpAgain).toContain("Applied migration 0001_initial_schema.");
     expect(migrateUpAgain).toContain("Applied migration 0002_simplify_send_queue_and_states.");
     expect(migrateUpAgain).toContain("Applied migration 0003_ses_feedback_ingestion.");
+    expect(migrateUpAgain).toContain("Applied migration 0004_ses_operations_and_tracking.");
 
     const synthetic = runBun(
       [

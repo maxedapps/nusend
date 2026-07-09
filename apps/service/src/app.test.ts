@@ -1,12 +1,18 @@
 import { Effect, Layer, ManagedRuntime, Option } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { createApp } from "./app.ts";
+import { createApp, sanitizedLogPath } from "./app.ts";
+import { FakeSesAdminLive } from "./aws/ses-admin.ts";
+import { FakeSnsAdminLive } from "./aws/sns-admin.ts";
 import { Database, type DatabaseService } from "./services/database.ts";
-import { SesFeedbackConfigLive } from "./ses-feedback/config.ts";
-import { FakeSnsSubscriptionConfirmerLive } from "./ses-feedback/sns-confirmer.ts";
-import { FakeSnsMessageVerifierLive } from "./ses-feedback/sns-verifier.ts";
-import { FakeAuthLive, sequentialIdsLayer, withTestApp } from "./testing/layers.ts";
+import { FakeSnsSubscriptionConfirmerLive } from "./ses/sns-confirmer.ts";
+import { FakeSnsMessageVerifierLive } from "./ses/sns-verifier.ts";
+import {
+  FakeAuthLive,
+  fakeSesOperationsConfigLayer,
+  sequentialIdsLayer,
+  withTestApp,
+} from "./testing/layers.ts";
 import { UnsubscribeConfigLive } from "./unsubscribe/config.ts";
 
 describe("createApp", () => {
@@ -37,9 +43,19 @@ describe("createApp", () => {
         unavailableDatabaseLayer(),
         sequentialIdsLayer("id"),
         FakeAuthLive(),
-        SesFeedbackConfigLive(Option.none()),
+        fakeSesOperationsConfigLayer(),
         FakeSnsMessageVerifierLive(() => Effect.die(new Error("unused"))),
         FakeSnsSubscriptionConfirmerLive([]),
+        FakeSesAdminLive({
+          getAccount: () => Effect.die(new Error("unused")),
+          getConfigurationSet: () => Effect.die(new Error("unused")),
+          getConfigurationSetEventDestinations: () => Effect.die(new Error("unused")),
+          getEmailIdentity: () => Effect.die(new Error("unused")),
+        }),
+        FakeSnsAdminLive({
+          getTopicAttributes: () => Effect.die(new Error("unused")),
+          listSubscriptionsByTopic: () => Effect.die(new Error("unused")),
+        }),
         UnsubscribeConfigLive(Option.none()),
       ),
     );
@@ -75,6 +91,11 @@ describe("createApp", () => {
         { body: { handled: true }, status: 200 },
       ]);
     });
+  });
+
+  it("redacts sensitive path segments for request logging", () => {
+    expect(sanitizedLogPath("/unsubscribe/secret-token-value")).toBe("/unsubscribe/:token");
+    expect(sanitizedLogPath("/api/operations/ses/summary")).toBe("/api/operations/ses/summary");
   });
 
   it("returns JSON not found for unknown routes", async () => {

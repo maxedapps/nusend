@@ -4,14 +4,17 @@
 import { ConfigProvider, Effect, Layer, ManagedRuntime, Option } from "effect";
 
 import { createApp } from "./app.ts";
-import { serviceConfig, sesFeedbackConfig, unsubscribeConfig } from "./config.ts";
+import { serviceConfig, sesOperationsConfig, unsubscribeConfig } from "./config.ts";
+import { JsonLoggerLive } from "./observability/effect-logger.ts";
 import { AuthLive } from "./services/auth-live.ts";
 import { Database } from "./services/database.ts";
 import { DatabaseBunLive } from "./services/database-bun.ts";
 import { IdGeneratorLive } from "./services/ids.ts";
-import { SesFeedbackConfigLive } from "./ses-feedback/config.ts";
-import { SnsSubscriptionConfirmerLive } from "./ses-feedback/sns-confirmer.ts";
-import { SnsMessageVerifierLive } from "./ses-feedback/sns-verifier.ts";
+import { SesAdminLive } from "./aws/ses-admin.ts";
+import { SnsAdminLive } from "./aws/sns-admin.ts";
+import { SesOperationsConfigLive } from "./ses/config.ts";
+import { SnsSubscriptionConfirmerLive } from "./ses/sns-confirmer.ts";
+import { SnsMessageVerifierLive } from "./ses/sns-verifier.ts";
 import { UnsubscribeConfigLive } from "./unsubscribe/config.ts";
 
 const configProvider = ConfigProvider.fromEnv();
@@ -36,8 +39,8 @@ const unsubscribe = await Effect.runPromise(
   return process.exit(1);
 });
 
-const sesFeedback = await Effect.runPromise(
-  sesFeedbackConfig.pipe(Effect.provideService(ConfigProvider.ConfigProvider, configProvider)),
+const sesOperations = await Effect.runPromise(
+  sesOperationsConfig.pipe(Effect.provideService(ConfigProvider.ConfigProvider, configProvider)),
 ).catch((error: unknown) => {
   console.error(`Invalid configuration: ${error instanceof Error ? error.message : String(error)}`);
   return process.exit(1);
@@ -49,11 +52,14 @@ const dbLayer = DatabaseBunLive(config.databasePath);
 const appLayer = Layer.mergeAll(
   dbLayer,
   IdGeneratorLive,
-  SesFeedbackConfigLive(sesFeedback),
+  SesOperationsConfigLive(sesOperations),
   SnsMessageVerifierLive,
   SnsSubscriptionConfirmerLive,
+  SesAdminLive.pipe(Layer.provide(SesOperationsConfigLive(sesOperations))),
+  SnsAdminLive.pipe(Layer.provide(SesOperationsConfigLive(sesOperations))),
   UnsubscribeConfigLive(unsubscribe),
   AuthLive(config.auth.value).pipe(Layer.provide(dbLayer)),
+  JsonLoggerLive,
 );
 const runtime = ManagedRuntime.make(appLayer);
 

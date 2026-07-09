@@ -63,7 +63,7 @@ Implementation assumptions:
 - Keep contact personalization out of scope; `contacts` still only have `email`, timestamps, and memberships.
 - Use session-owner access plus new scoped API-key permissions.
 - Prefer idempotent behavior for repeated imports/subscriptions/suppressions where existing unique constraints make that natural.
-- Keep all route handlers thin and Effect-based, following existing `mailings`, `operations`, and `ses-feedback` patterns.
+- Keep all route handlers thin and Effect-based, following existing `mailings`, `operations`, and `ses` patterns.
 
 ## Confirmed Requirements
 
@@ -688,8 +688,8 @@ Wire it into both `RouteError` and `runRoute` catch tags in `apps/service/src/ht
 ### Phase 1 — Cleanup foundation
 
 1. Update `PROJECT.md`:
-   - include `GET /api/operations/ses-feedback` in all operations route lists
-   - update repository shape snippet to include `operations/`, `sending/`, `ses-feedback/`, `unsubscribe/`
+   - include SES operations routes such as `GET /api/operations/ses/summary` in all operations route lists
+   - update repository shape snippet to include `operations/`, `sending/`, `ses/`, `unsubscribe/`
    - clarify SES feedback roadmap wording: current feedback writes audit rows and suppressions, not delivery statuses
    - add this milestone as the next active phase before templates/assets/CLI
 2. Update `.env.example`:

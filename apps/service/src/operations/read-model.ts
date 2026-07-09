@@ -101,24 +101,6 @@ const SendAttemptRow = Schema.Struct({
   status: SendAttemptStatusSchema,
 });
 
-const SesFeedbackRow = Schema.Struct({
-  actionTaken: Schema.String,
-  bounceSubType: Schema.NullOr(Schema.String),
-  bounceType: Schema.NullOr(Schema.String),
-  complaintFeedbackType: Schema.NullOr(Schema.String),
-  createdAt: Schema.String,
-  deliveryId: Schema.NullOr(Schema.String),
-  diagnosticCode: Schema.NullOr(Schema.String),
-  eventType: Schema.String,
-  feedbackId: Schema.NullOr(Schema.String),
-  id: Schema.String,
-  mailingId: Schema.NullOr(Schema.String),
-  recipientEmail: Schema.String,
-  sesMessageId: Schema.NullOr(Schema.String),
-});
-
-type SesFeedbackRow = typeof SesFeedbackRow.Type;
-
 export type OperationsSummaryResponse = {
   readonly deliveries: Record<DeliveryStatus, number>;
   readonly jobs: Record<JobStateType, number>;
@@ -131,10 +113,6 @@ export type DeliveriesListResponse = {
 };
 
 export type DeliveryDetailResponse = ReturnType<typeof toDeliveryDetail>;
-
-export type SesFeedbackListResponse = {
-  readonly items: readonly ReturnType<typeof toSesFeedbackItem>[];
-};
 
 export function getOperationsSummary(): Effect.Effect<
   OperationsSummaryResponse,
@@ -260,38 +238,6 @@ export function listDeliveries(
 
     const decoded = yield* decodeRows(DeliveryListRow, rows);
     return { items: decoded.map(toDeliveryListItem) };
-  });
-}
-
-export function listSesFeedback(
-  limit = 50,
-): Effect.Effect<SesFeedbackListResponse, DatabaseError, DatabaseService> {
-  return Effect.gen(function* () {
-    const db = yield* Database;
-    const rows = yield* db.all(
-      "operations:ses-feedback:list",
-      `SELECT
-         id AS id,
-         event_type AS eventType,
-         action_taken AS actionTaken,
-         delivery_id AS deliveryId,
-         mailing_id AS mailingId,
-         ses_message_id AS sesMessageId,
-         recipient_email AS recipientEmail,
-         feedback_id AS feedbackId,
-         bounce_type AS bounceType,
-         bounce_sub_type AS bounceSubType,
-         complaint_feedback_type AS complaintFeedbackType,
-         diagnostic_code AS diagnosticCode,
-         created_at AS createdAt
-       FROM ses_feedback_recipients
-       ORDER BY created_at DESC, id DESC
-       LIMIT $limit;`,
-      { limit },
-    );
-
-    const decoded = yield* decodeRows(SesFeedbackRow, rows);
-    return { items: decoded.map(toSesFeedbackItem) };
   });
 }
 
@@ -453,29 +399,6 @@ function toDeliveryListItem(row: DeliveryListRow) {
     status: row.status,
     updatedAt: row.updatedAt,
   };
-}
-
-function toSesFeedbackItem(row: SesFeedbackRow) {
-  return {
-    actionTaken: row.actionTaken,
-    bounceSubType: row.bounceSubType,
-    bounceType: row.bounceType,
-    complaintFeedbackType: row.complaintFeedbackType,
-    createdAt: row.createdAt,
-    deliveryId: row.deliveryId,
-    diagnosticCode: truncateDiagnostic(row.diagnosticCode),
-    eventType: row.eventType,
-    feedbackId: row.feedbackId,
-    id: row.id,
-    mailingId: row.mailingId,
-    recipientEmail: row.recipientEmail,
-    sesMessageId: row.sesMessageId,
-  };
-}
-
-function truncateDiagnostic(value: string | null): string | null {
-  if (value === null) return null;
-  return value.length <= 500 ? value : `${value.slice(0, 500)}…`;
 }
 
 function toDeliveryDetail(
