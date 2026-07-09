@@ -124,6 +124,27 @@ describe("unsubscribe routes", () => {
     );
   });
 
+  it("POST returns 413 for oversized unsubscribe bodies without mutation", async () => {
+    await withTestApp(
+      { unsubscribe: Option.some(fakeUnsubscribeConfig()) },
+      async (app, runtime) => {
+        const token = await seedToken(runtime);
+
+        const response = await app.fetch(
+          new Request(`http://localhost/unsubscribe/${token}`, {
+            body: "x".repeat(8193),
+            headers: { "content-type": "application/x-www-form-urlencoded" },
+            method: "POST",
+          }),
+        );
+
+        expect(response.status).toBe(413);
+        await expect(response.text()).resolves.toContain("Request body is too large.");
+        await expect(countSuppressions(runtime)).resolves.toBe(0);
+      },
+    );
+  });
+
   it("POST rejects empty or garbage bodies without mutation and never redirects", async () => {
     await withTestApp(
       { unsubscribe: Option.some(fakeUnsubscribeConfig()) },

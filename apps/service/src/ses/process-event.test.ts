@@ -278,6 +278,164 @@ describe("handleSesSnsRequest", () => {
     expect(result).toEqual({ deliveryId: "delivery_fallback", mailingId: "mailing_fallback" });
   });
 
+  it("records row shapes for remaining SES event types without suppressions", async () => {
+    const envelopes = [
+      envelope("sns_delay", {
+        deliveryDelay: {
+          delayedRecipients: [
+            { diagnosticCode: "Mailbox busy", emailAddress: "delayed@example.com" },
+          ],
+          delayType: "MailboxFull",
+          timestamp: "2026-07-03T12:10:00.000Z",
+        },
+        eventType: "DeliveryDelay",
+        mail: mail("ses_delay", "delayed@example.com"),
+      }),
+      envelope("sns_delivery", {
+        delivery: {
+          recipients: ["one@example.com", "two@example.com"],
+          timestamp: "2026-07-03T12:11:00.000Z",
+        },
+        eventType: "Delivery",
+        mail: mail("ses_delivery", "one@example.com"),
+      }),
+      envelope("sns_reject", {
+        eventType: "Reject",
+        mail: mail("ses_reject", "reject@example.com"),
+        reject: { reason: "Bad content" },
+      }),
+      envelope("sns_send", {
+        eventType: "Send",
+        mail: mail("ses_send", "sent@example.com"),
+      }),
+      envelope("sns_rendering", {
+        eventType: "Rendering Failure",
+        mail: mail("ses_rendering", "render@example.com"),
+        renderingFailure: { errorMessage: "Template data missing", templateName: "welcome" },
+      }),
+      envelope("sns_subscription", {
+        eventType: "Subscription",
+        mail: mail("ses_subscription", "subscription@example.com"),
+        subscription: { contactList: "news" },
+      }),
+      envelope("sns_unknown", {
+        eventType: "Reputation",
+        mail: { ...mail("ses_unknown", "unused@example.com"), destination: [] },
+      }),
+    ];
+
+    const result = await runTest(
+      Effect.gen(function* () {
+        for (const item of envelopes) {
+          yield* handleSesSnsRequest(JSON.stringify(item));
+        }
+        const db = yield* Database;
+        return {
+          events: yield* db.all(
+            "test:row-shapes",
+            `SELECT ses_message_id AS sesMessageId, event_type AS eventType,
+                    recipient_email AS recipientEmail, action_taken AS actionTaken,
+                    diagnostic_code AS diagnosticCode,
+                    delivery_delay_type AS deliveryDelayType,
+                    reject_reason AS rejectReason,
+                    occurred_at AS occurredAt
+             FROM ses_events
+             ORDER BY ses_message_id ASC, recipient_email ASC;`,
+          ),
+          suppressions: yield* db.all("test:suppressions", "SELECT * FROM suppressions;"),
+        };
+      }),
+      {
+        snsVerifier: (message) =>
+          Effect.succeed(JSON.parse(String(message)) as VerifiedSnsEnvelope),
+      },
+    );
+
+    expect(result.suppressions).toEqual([]);
+    expect(result.events).toEqual([
+      {
+        actionTaken: "recorded",
+        deliveryDelayType: "MailboxFull",
+        diagnosticCode: "Mailbox busy",
+        eventType: "DeliveryDelay",
+        occurredAt: "2026-07-03T12:10:00.000Z",
+        recipientEmail: "delayed@example.com",
+        rejectReason: null,
+        sesMessageId: "ses_delay",
+      },
+      {
+        actionTaken: "recorded",
+        deliveryDelayType: null,
+        diagnosticCode: null,
+        eventType: "Delivery",
+        occurredAt: "2026-07-03T12:11:00.000Z",
+        recipientEmail: "one@example.com",
+        rejectReason: null,
+        sesMessageId: "ses_delivery",
+      },
+      {
+        actionTaken: "recorded",
+        deliveryDelayType: null,
+        diagnosticCode: null,
+        eventType: "Delivery",
+        occurredAt: "2026-07-03T12:11:00.000Z",
+        recipientEmail: "two@example.com",
+        rejectReason: null,
+        sesMessageId: "ses_delivery",
+      },
+      {
+        actionTaken: "recorded",
+        deliveryDelayType: null,
+        diagnosticCode: null,
+        eventType: "Reject",
+        occurredAt: "2026-07-03T12:00:00.000Z",
+        recipientEmail: "reject@example.com",
+        rejectReason: "Bad content",
+        sesMessageId: "ses_reject",
+      },
+      {
+        actionTaken: "recorded",
+        deliveryDelayType: null,
+        diagnosticCode: null,
+        eventType: "Rendering Failure",
+        occurredAt: "2026-07-03T12:00:00.000Z",
+        recipientEmail: "render@example.com",
+        rejectReason: null,
+        sesMessageId: "ses_rendering",
+      },
+      {
+        actionTaken: "recorded",
+        deliveryDelayType: null,
+        diagnosticCode: null,
+        eventType: "Send",
+        occurredAt: "2026-07-03T12:00:00.000Z",
+        recipientEmail: "sent@example.com",
+        rejectReason: null,
+        sesMessageId: "ses_send",
+      },
+      {
+        actionTaken: "recorded",
+        deliveryDelayType: null,
+        diagnosticCode: null,
+        eventType: "Subscription",
+        occurredAt: "2026-07-03T12:00:00.000Z",
+        recipientEmail: "subscription@example.com",
+        rejectReason: null,
+        sesMessageId: "ses_subscription",
+      },
+      {
+        actionTaken: "recorded",
+        deliveryDelayType: null,
+        diagnosticCode: null,
+        eventType: "Unknown",
+        occurredAt: "2026-07-03T12:00:00.000Z",
+        recipientEmail: null,
+        rejectReason: null,
+        sesMessageId: "ses_unknown",
+      },
+    ]);
+  });
+
   it("returns disabled when no feedback topics are configured", async () => {
     await expect(
       runTest(
@@ -299,8 +457,8 @@ function envelope(messageId: string, message: unknown): VerifiedSnsEnvelope {
     Message: JSON.stringify(message),
     MessageId: messageId,
     Signature: "signature",
-    SignatureVersion: "1",
-    SigningCertURL: "https://sns.us-east-1.amazonaws.com/cert.pem",
+    SignatureVersion: "2",
+    SigningCertURL: "https://sns.us-east-1.amazonaws.com/SimpleNotificationService-abc123.pem",
     Timestamp: "2026-07-03T12:00:00.000Z",
     TopicArn: topicArn,
     Type: "Notification",

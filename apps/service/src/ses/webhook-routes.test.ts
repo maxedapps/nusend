@@ -2,7 +2,7 @@ import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { Database } from "../services/database.ts";
-import { fakeSesOperationsConfig, withTestApp } from "../testing/layers.ts";
+import { fakeSesOperationsConfig, type TestRuntime, withTestApp } from "../testing/layers.ts";
 import { maxSesWebhookBodyBytes } from "./webhook-routes.ts";
 import type { VerifiedSnsEnvelope } from "./sns-schema.ts";
 
@@ -102,6 +102,62 @@ describe("SES webhook routes", () => {
     });
   });
 
+  it("returns empty 403 before verifier/cert work for non-allowlisted topics", async () => {
+    let verifierCalls = 0;
+    await withTestApp(
+      {
+        snsVerifier: (message) => {
+          verifierCalls += 1;
+          return Effect.succeed(JSON.parse(String(message)) as VerifiedSnsEnvelope);
+        },
+      },
+      async (app, runtime) => {
+        const response = await app.fetch(
+          new Request(webhookUrl, {
+            method: "POST",
+            body: JSON.stringify(
+              notification("sns_unallowed", {
+                TopicArn: "arn:aws:sns:us-east-1:123456789012:other-topic",
+              }),
+            ),
+          }),
+        );
+
+        expect(response.status).toBe(403);
+        expect(await response.text()).toBe("");
+        expect(verifierCalls).toBe(0);
+        await expect(countRows(runtime)).resolves.toEqual({ events: 0, notifications: 0 });
+      },
+    );
+  });
+
+  it("returns empty 500 for subscription confirmations without SubscribeURL", async () => {
+    const calls: string[] = [];
+    await withTestApp(
+      {
+        snsConfirmerCalls: calls,
+        snsVerifier: (message) =>
+          Effect.succeed(JSON.parse(String(message)) as VerifiedSnsEnvelope),
+      },
+      async (app, runtime) => {
+        const response = await app.fetch(
+          new Request(webhookUrl, {
+            method: "POST",
+            body: JSON.stringify({
+              ...subscriptionConfirmation("sns_missing_subscribe_url"),
+              SubscribeURL: undefined,
+            }),
+          }),
+        );
+
+        expect(response.status).toBe(500);
+        expect(await response.text()).toBe("");
+        expect(calls).toEqual([]);
+        await expect(countRows(runtime)).resolves.toEqual({ events: 0, notifications: 0 });
+      },
+    );
+  });
+
   it("confirms subscriptions and handles duplicate confirmation idempotently", async () => {
     const calls: string[] = [];
     const envelope = subscriptionConfirmation("sns_sub");
@@ -136,7 +192,10 @@ describe("SES webhook routes", () => {
   });
 });
 
-function notification(messageId: string): VerifiedSnsEnvelope {
+function notification(
+  messageId: string,
+  overrides: Partial<VerifiedSnsEnvelope> = {},
+): VerifiedSnsEnvelope {
   return {
     Message: JSON.stringify({
       eventType: "Delivery",
@@ -149,12 +208,38 @@ function notification(messageId: string): VerifiedSnsEnvelope {
     }),
     MessageId: messageId,
     Signature: "signature",
-    SignatureVersion: "1",
-    SigningCertURL: "https://sns.us-east-1.amazonaws.com/cert.pem",
+    SignatureVersion: "2",
+    SigningCertURL: "https://sns.us-east-1.amazonaws.com/SimpleNotificationService-abc123.pem",
     Timestamp: "2026-07-03T12:00:00.000Z",
     TopicArn: topicArn,
     Type: "Notification",
+    ...overrides,
   };
+}
+
+async function countRows(runtime: TestRuntime): Promise<{
+  readonly events: number;
+  readonly notifications: number;
+}> {
+  return runtime.runPromise(
+    Effect.flatMap(Database, (db) =>
+      Effect.all({
+        events: db.get<{ count: number }>(
+          "test:count-events",
+          "SELECT count(*) AS count FROM ses_events;",
+        ),
+        notifications: db.get<{ count: number }>(
+          "test:count-notifications",
+          "SELECT count(*) AS count FROM ses_notifications;",
+        ),
+      }),
+    ).pipe(
+      Effect.map(({ events, notifications }) => ({
+        events: events?.count ?? 0,
+        notifications: notifications?.count ?? 0,
+      })),
+    ),
+  );
 }
 
 function subscriptionConfirmation(messageId: string): VerifiedSnsEnvelope {
@@ -162,8 +247,8 @@ function subscriptionConfirmation(messageId: string): VerifiedSnsEnvelope {
     Message: "subscription",
     MessageId: messageId,
     Signature: "signature",
-    SignatureVersion: "1",
-    SigningCertURL: "https://sns.us-east-1.amazonaws.com/cert.pem",
+    SignatureVersion: "2",
+    SigningCertURL: "https://sns.us-east-1.amazonaws.com/SimpleNotificationService-abc123.pem",
     SubscribeURL: "https://sns.us-east-1.amazonaws.com/?Action=ConfirmSubscription",
     Timestamp: "2026-07-03T12:00:00.000Z",
     TopicArn: topicArn,

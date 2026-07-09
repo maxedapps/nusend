@@ -33,7 +33,12 @@ export function handleSesSnsRequest(
       return yield* Effect.fail(new SesOperationsDisabledError());
     }
 
-    yield* decodeUnverifiedSnsEnvelopeString(rawBody);
+    const unverified = yield* decodeUnverifiedSnsEnvelopeString(rawBody);
+    if (!settings.config.feedbackTopicArns.includes(unverified.TopicArn)) {
+      return yield* Effect.fail(
+        new SesOperationsForbiddenError({ reason: "SNS TopicArn is not allowlisted." }),
+      );
+    }
 
     const verifier = yield* SnsMessageVerifier;
     const verified = yield* verifier.verify(rawBody);

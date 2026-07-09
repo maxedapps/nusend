@@ -65,6 +65,44 @@ describe("SES email transport", () => {
     expect(sent[0].input.FromEmailAddress).toBe("sender@example.com");
   });
 
+  it("passes an abort signal to the SES sender", async () => {
+    let capturedOptions: { abortSignal?: AbortSignal } | undefined;
+    const transport = makeSesEmailTransport(
+      {
+        send: async (_command, options) => {
+          capturedOptions = options;
+          return { MessageId: "ses-message-1", $metadata: {} };
+        },
+      },
+      30_000,
+    );
+
+    await expect(Effect.runPromise(transport.send(prepared))).resolves.toEqual({
+      messageId: "ses-message-1",
+    });
+    expect(capturedOptions).toBeDefined();
+    if (typeof AbortSignal.timeout === "function") {
+      expect(capturedOptions?.abortSignal).toBeInstanceOf(AbortSignal);
+    }
+  });
+
+  it("maps timeout-shaped send rejection to ambiguous through transport.send", async () => {
+    const error = new Error("timed out");
+    error.name = "TimeoutError";
+    const transport = makeSesEmailTransport(
+      {
+        send: async () => Promise.reject(error),
+      },
+      30_000,
+    );
+
+    await expect(Effect.runPromise(transport.send(prepared))).rejects.toMatchObject({
+      _tag: "EmailTransportError",
+      kind: "ambiguous",
+      operation: "ses:send",
+    });
+  });
+
   it("classifies known SES errors conservatively", () => {
     expect(classifySesError(named("TooManyRequestsException")).kind).toBe("retryable");
     expect(classifySesError(coded("ENOTFOUND")).kind).toBe("retryable");
