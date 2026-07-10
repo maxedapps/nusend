@@ -15,7 +15,7 @@ const auth = {
   apiKeyPermissions: {
     contacts: ["read", "write"],
     lists: ["read", "write"],
-    mailings: ["create"],
+    mailings: ["write"],
     operations: ["read"],
     suppressions: ["read"],
   },

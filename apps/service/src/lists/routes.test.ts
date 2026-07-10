@@ -108,6 +108,22 @@ describe("lists routes", () => {
       expect(list.status).toBe(200);
       await expect(list.json()).resolves.toMatchObject({
         items: [{ id: "id_1", name: "Customers 2026" }],
+        pagination: { limit: 1, nextOffset: null, offset: 0 },
+      });
+
+      const createSecond = await app.fetch(
+        new Request("http://localhost/api/lists", {
+          body: JSON.stringify({ name: "Prospects" }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        }),
+      );
+      expect(createSecond.status).toBe(201);
+
+      const probe = await app.fetch(new Request("http://localhost/api/lists?limit=1&offset=0"));
+      expect(probe.status).toBe(200);
+      await expect(probe.json()).resolves.toMatchObject({
+        items: [{ id: "id_2", name: "Prospects" }],
         pagination: { limit: 1, nextOffset: 1, offset: 0 },
       });
 
@@ -256,6 +272,24 @@ describe("lists routes", () => {
       await expect(page.json()).resolves.toMatchObject({
         items: [{ contact: { id: "c2" }, status: "unsubscribed" }],
         pagination: { limit: 1, nextOffset: 2, offset: 1 },
+      });
+
+      const exactFinal = await app.fetch(
+        new Request("http://localhost/api/lists/list_1/contacts?status=all&limit=3&offset=0"),
+      );
+      expect(exactFinal.status).toBe(200);
+      await expect(exactFinal.json()).resolves.toMatchObject({
+        items: [{ contact: { id: "c1" } }, { contact: { id: "c2" } }, { contact: { id: "c3" } }],
+        pagination: { limit: 3, nextOffset: null, offset: 0 },
+      });
+
+      const probe = await app.fetch(
+        new Request("http://localhost/api/lists/list_1/contacts?status=all&limit=2&offset=0"),
+      );
+      expect(probe.status).toBe(200);
+      await expect(probe.json()).resolves.toMatchObject({
+        items: [{ contact: { id: "c1" } }, { contact: { id: "c2" } }],
+        pagination: { limit: 2, nextOffset: 2, offset: 0 },
       });
 
       const filtered = await app.fetch(

@@ -192,6 +192,24 @@ describe("suppressions routes", () => {
         pagination: { limit: 1, nextOffset: 2, offset: 1 },
       });
 
+      const exactFinal = await app.fetch(
+        new Request("http://localhost/api/suppressions?limit=3&offset=0"),
+      );
+      expect(exactFinal.status).toBe(200);
+      await expect(exactFinal.json()).resolves.toMatchObject({
+        items: [{ id: "s3" }, { id: "s2" }, { id: "s1" }],
+        pagination: { limit: 3, nextOffset: null, offset: 0 },
+      });
+
+      const probe = await app.fetch(
+        new Request("http://localhost/api/suppressions?limit=2&offset=0"),
+      );
+      expect(probe.status).toBe(200);
+      await expect(probe.json()).resolves.toMatchObject({
+        items: [{ id: "s3" }, { id: "s2" }],
+        pagination: { limit: 2, nextOffset: 2, offset: 0 },
+      });
+
       const filtered = await app.fetch(
         new Request(
           "http://localhost/api/suppressions?scope=list&listId=list_1&email=C%40Example.com&reason=manual",

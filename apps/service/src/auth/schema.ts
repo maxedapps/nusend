@@ -42,24 +42,3 @@ export const authSchema = {
     },
   },
 } as const;
-
-export const apiKeySchema = {
-  apikey: {
-    modelName: "api_keys",
-    fields: {
-      configId: "config_id",
-      referenceId: "reference_id",
-      refillInterval: "refill_interval",
-      refillAmount: "refill_amount",
-      lastRefillAt: "last_refill_at",
-      rateLimitEnabled: "rate_limit_enabled",
-      rateLimitTimeWindow: "rate_limit_time_window",
-      rateLimitMax: "rate_limit_max",
-      requestCount: "request_count",
-      lastRequest: "last_request",
-      expiresAt: "expires_at",
-      createdAt: "created_at",
-      updatedAt: "updated_at",
-    },
-  },
-} as const;

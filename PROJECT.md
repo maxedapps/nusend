@@ -2,9 +2,9 @@
 
 ## Purpose
 
-Nusend is a single-user, self-hostable, API-first email orchestration service for AWS SES.
+Nusend is a single-user, self-hostable email orchestration product for AWS SES with two first-class interfaces: an HTTP API and a CLI.
 
-It is not a Mailchimp clone and not a hosted multi-tenant SaaS. The goal is a lean service that developers and agents can run on their own VPS to create, queue, send, and track transactional and marketing email through SES.
+It is not a Mailchimp clone and not a hosted multi-tenant SaaS. The goal is a lean service that developers and agents can run on their own VPS to create, queue, send, track, and operate transactional and marketing email through SES.
 
 ## Current Status
 
@@ -18,8 +18,10 @@ Implemented today:
 - Google-only Better Auth setup with signup disabled
 - single-user/self-hosted auth model
 - owner bootstrap CLI
-- user-owned Better Auth API keys
-- protected `POST /api/mailings`
+- first-party, user-owned Nusend API keys with scoped permissions, rotation, expiry, and debounced usage tracking
+- device-code CLI login with authenticated browser activation and abuse controls
+- first-class CLI for auth, API keys, contacts, and read-only mailings
+- protected `POST /api/mailings` plus `GET /api/mailings` and `GET /api/mailings/:id`
 - protected read-only `/api/operations/*` inspection endpoints
 - contact/list management APIs
 - manual suppression management APIs
@@ -37,7 +39,7 @@ Implemented today:
 - marketing send-time compliance gates for unsubscribe config, SES marketing configuration set, and suppressions
 - RFC 8058 `List-Unsubscribe` / `List-Unsubscribe-Post` headers for marketing sends
 - SES configuration-set/SNS feedback ingestion with local bounce/complaint suppressions
-- sanitized SES operations operations endpoint
+- sanitized SES operations endpoints
 - request/body/content limits
 - sanitized internal error logging
 - production HTTPS validation for auth URLs/trusted origins
@@ -47,17 +49,29 @@ Not implemented yet:
 - production marketing volume (pending live SES simulator feedback validation, operations monitoring, and Gmail DKIM one-click verification)
 - templates
 - Cloudflare R2 assets
-- CLI/client tooling
+- remaining CLI domain families for lists, suppressions, operations, and SES administration
 
 ## Current Interface
 
-The current interface is the HTTP API in `apps/service`.
+Nusend has two product interfaces:
 
-Available routes:
+1. The authoritative HTTP API in `apps/service`.
+2. The first-class CLI in `apps/cli`, implemented as a thin HTTP client.
+
+Available HTTP routes:
 
 - `GET /health`
 - `GET /health/db`
 - `/api/auth/*` Better Auth passthrough for standard auth methods
+- `GET /api/me`
+- `GET /api/api-keys`
+- `POST /api/api-keys`
+- `DELETE /api/api-keys/:id`
+- `POST /api/api-keys/:id/rotate`
+- `POST /api/device-authorizations`
+- `POST /api/device-authorizations/token`
+- `GET /cli/activate`
+- `POST /cli/activate`
 - `POST /api/contacts`
 - `GET /api/contacts`
 - `GET /api/contacts/:id`
@@ -72,10 +86,18 @@ Available routes:
 - `POST /api/lists/:id/contacts`
 - `DELETE /api/lists/:id/contacts/:contactId`
 - `POST /api/mailings`
+- `GET /api/mailings`
+- `GET /api/mailings/:id`
 - `GET /api/operations/summary`
 - `GET /api/operations/deliveries`
 - `GET /api/operations/deliveries/:id`
 - `GET /api/operations/ses/events`
+- `GET /api/operations/ses/summary`
+- `GET /api/operations/ses/events/:id`
+- `GET /api/operations/ses/readiness`
+- `GET /api/operations/ses/setup-guide`
+- `GET /api/operations/ses/simulator-runs`
+- `GET /api/operations/ses/simulator-runs/:id`
 - `POST /api/suppressions`
 - `GET /api/suppressions`
 - `DELETE /api/suppressions/:id`
@@ -96,6 +118,14 @@ pnpm --filter @nusend/service worker:send:once
 pnpm --filter @nusend/service worker:send
 ```
 
+Current CLI scripts:
+
+```sh
+pnpm --filter @nusend/cli build
+pnpm --filter @nusend/cli typecheck
+./apps/cli/dist/main.js --help
+```
+
 ## Current Stack
 
 - TypeScript
@@ -104,7 +134,7 @@ pnpm --filter @nusend/service worker:send
 - Hono `4.12.x`
 - SQLite via Bun's SQLite client in production and Node SQLite in tests
 - Better Auth `1.6.23`
-- Better Auth API Key plugin `1.6.23`
+- first-party Nusend API keys for programmatic and CLI access
 - pnpm monorepo
 - MIT license
 
@@ -123,6 +153,7 @@ Nusend should focus on infrastructure and automation:
 - suppression/unsubscribe handling
 - SES integration and feedback processing
 - predictable machine-readable errors
+- first-class CLI workflows over the public HTTP API
 
 Avoid early scope:
 
@@ -132,7 +163,7 @@ Avoid early scope:
 - advanced segmentation
 - analytics dashboard
 - hosted SaaS multi-tenancy
-- premature CLI/SDK packages
+- broad SDK packages before the HTTP/CLI contract is stable
 
 ## Auth Model
 
@@ -159,7 +190,7 @@ Rules:
 - a valid session is the instance owner
 - session principals bypass per-route permissions intentionally
 - API keys are user-owned and permission-scoped
-- current API-key permission surface is `contacts:read/write`, `lists:read/write`, `mailings:create`, `operations:read`, and `suppressions:read/write`
+- current API-key permission surface is defined in the shared `@nusend/api-contract` catalog: `contacts:read/write`, `lists:read/write`, `mailings:read/write`, `operations:read`, `suppressions:read/write`, and `api_keys:read/write`
 - Better Auth organizations/workspaces are intentionally not used
 - no organization tables or active-organization fields exist in the live schema
 
@@ -177,15 +208,17 @@ jobs       = durable send-delivery queue records pointing at deliveries
 
 ### Auth Tables
 
-Current Better Auth tables:
+Better Auth owns only browser-auth tables:
 
 - `users`
 - `sessions`
 - `accounts`
 - `verifications`
-- `api_keys`
 
-API keys use `reference_id = userId`.
+Nusend owns first-party auth tables:
+
+- `api_keys`, keyed by `user_id` and storing only key hashes/previews
+- `device_authorizations`, for short-lived CLI login approval and polling
 
 ### Lists and Contacts
 
@@ -369,12 +402,13 @@ Attempts are created before the external SES call, then updated after success/fa
 
 ## Current Mailings API
 
-`POST /api/mailings` creates a mailing, snapshots recipients into deliveries, and queues one send-delivery job per unsuppressed delivery.
+`POST /api/mailings` creates a mailing, snapshots recipients into deliveries, and queues one send-delivery job per unsuppressed delivery. `GET /api/mailings` lists metadata and delivery-status counts without message bodies. `GET /api/mailings/:id` returns one mailing including subject/HTML/text; neither read endpoint exposes recipient variables.
 
 Auth:
 
-- Better Auth session, or
-- user-owned API key with `mailings:create`
+- Better Auth session owner, or
+- user-owned API key with `mailings:read` for GET routes
+- user-owned API key with `mailings:write` for POST
 
 Request must provide exactly one recipient source:
 
@@ -841,18 +875,19 @@ Recommendations:
 - resolve/upload assets before final HTML is stored on a mailing
 - expose asset management only after core sending is stable
 
-## Future Client Tooling
+## CLI and Client Tooling
 
-No CLI exists today.
+The CLI is now a core Nusend interface, not a future polish item.
 
-A CLI or typed SDK can be added later when there is a concrete need. Any future CLI should:
+The CLI must:
 
 - call the public HTTP API
-- avoid importing service internals
-- support JSON output
-- be installable independently if it becomes a real distributable
+- avoid importing service internals or touching the service SQLite database directly
+- import shared public API contracts from `@nusend/api-contract`
+- support stable JSON output for automation
+- store credentials through an explicit credential-store abstraction
 
-Do not add shared packages until there are at least two real consumers.
+Shared packages are now justified because `apps/service` and `apps/cli` are both real consumers of the public API contract.
 
 ## Repository Shape
 
@@ -889,68 +924,65 @@ nusend/
         suppressions/
         testing/
         unsubscribe/
+    cli/
+      package.json
+      tsconfig.json
+      src/
+        main.ts
+        client/
+        commands/
+        config/
+        credentials/
+        output/
+        testing/
+
+  e2e/
+    cli-service.e2e.test.ts
+
+  packages/
+    api-contract/
+      package.json
+      tsconfig.json
+      src/
+        api-keys/
+        auth/
+        contacts/
+        mailings/
+        index.ts
+        errors.ts
+        pagination.ts
+        permissions.ts
+        routes.ts
 ```
 
-No `apps/cli` and no `packages/*` exist today.
-
-Keep API and future worker entrypoints inside `apps/service` initially. They share DB access, queue logic, delivery state transitions, suppression logic, SES config, and rendering/preparation code.
+Keep API and worker entrypoints inside `apps/service`. They share DB access, queue logic, delivery state transitions, suppression logic, SES config, and rendering/preparation code. The CLI must remain outside those internals and communicate through HTTP.
 
 ## Roadmap Order
 
-Recommended next phases:
+Completed milestones:
 
-### 1. Sending foundation
+1. Sending foundation: idempotent mailing creation, send attempts, SES transport/pipeline, and worker run-once/loop.
+2. Marketing compliance: signed unsubscribe flow, list/suppression updates, RFC 8058 headers, and send-time policy gates.
+3. SES operations events: verified SNS webhook ingestion, audit/read models, readiness/simulator tooling, and bounce/complaint suppressions.
+4. Contact/list/suppression management HTTP APIs.
+5. First-class API contract, first-party API keys, device login, and CLI auth/API-key/contact/mailings-read commands.
 
-- add idempotency for `POST /api/mailings`
-- add `send_attempts`
-- add `deliveries.ses_message_id` and `deliveries.last_error`
-- add send pipeline modules
-- add purpose-agnostic `EmailTransport`
-- add transactional SES sending first
-- add worker `run once` and loop entrypoints
-- keep marketing sends blocked by policy until unsubscribe support exists
+Next milestones:
 
-### 2. Marketing compliance
-
-- public unsubscribe URL config
-- signed unsubscribe tokens
-- unsubscribe endpoint/page
-- suppression/list-membership update on unsubscribe
-- `List-Unsubscribe` headers
-- unblock marketing sending only after policy tests pass
-
-### 3. SES operations events
-
-- configuration-set docs/setup
-- SNS webhook
-- SNS signature verification
-- raw event storage
-- idempotent event processing
-- audit/read-model storage without mutating `deliveries.status`
-- bounce/complaint suppressions
-
-### 4. Contact/list/suppression management APIs
-
-- create/update/delete contacts and lists
-- add/import contacts
-- subscribe/unsubscribe/resubscribe memberships
-- list and manage manual suppressions
-- keep automated bounce/complaint/unsubscribe suppressions read-only through the API
-
-### 5. Templates and placeholder rendering
+### 6. Templates and placeholder rendering
 
 - template CRUD if needed
 - safe placeholder renderer
 - preview/dry-run endpoint
 - optional mdtoemail integration boundary
 
-### 6. Assets and polish
+### 7. Assets and polish
 
 - R2 asset upload/management
 - OpenAPI docs
 - deployment docs
 - Docker/systemd guidance
-- future CLI/SDK only if needed
+- future SDKs only after the HTTP API and CLI contract stabilizes
 
 ## Key Safety Principles
 
@@ -971,21 +1003,20 @@ Recommended next phases:
 
 ## Open Questions
 
-Questions to resolve after the initial sending foundation:
+Questions for future milestones:
 
 - whether `text` should become required before real sending
 - how to surface ambiguous send attempts in API/admin views
 - exact SES configuration-set names and operator setup docs
 - exact SES account/config-set suppression recommendation for transactional vs marketing
-- public unsubscribe URL configuration format
-- whether to add a minimal admin/API surface for queue and delivery inspection before SES events
+- whether to add queue mutation/admin controls beyond the existing read-only operations API
 
 Default lean choices:
 
 - single-user/self-hosted only
 - no org/workspace support
-- no CLI until a concrete need exists
-- no shared packages initially
+- CLI is a core interface
+- shared packages are allowed for public API contracts consumed by service and CLI
 - `mailings` + `deliveries` as the core model
 - one send-delivery job per unsuppressed delivery
 - Nusend-owned suppression/unsubscribe model

@@ -1,8 +1,7 @@
-import { apiKey } from "@better-auth/api-key";
 import { APIError, betterAuth } from "better-auth";
 import type { Database } from "bun:sqlite";
 
-import { apiKeySchema, authSchema } from "./schema.ts";
+import { authSchema } from "./schema.ts";
 
 // Raw (unredacted) options — Better Auth needs plain strings. Unwrapping the
 // Redacted config values happens at the Auth layer boundary.
@@ -16,22 +15,6 @@ export type AuthOptions = {
 
 export function createAuth(config: AuthOptions, db: Database) {
   return betterAuth({
-    appName: "Nusend",
-    baseURL: config.baseUrl,
-    secret: config.secret,
-    trustedOrigins: config.trustedOrigins,
-    database: db,
-    socialProviders: {
-      google: {
-        clientId: config.googleClientId,
-        clientSecret: config.googleClientSecret,
-        disableSignUp: true,
-        disableImplicitSignUp: true,
-        prompt: "select_account",
-      },
-    },
-    user: authSchema.user,
-    session: authSchema.session,
     account: {
       ...authSchema.account,
       accountLinking: {
@@ -39,7 +22,9 @@ export function createAuth(config: AuthOptions, db: Database) {
         trustedProviders: ["google"],
       },
     },
-    verification: authSchema.verification,
+    appName: "Nusend",
+    baseURL: config.baseUrl,
+    database: db,
     databaseHooks: {
       user: {
         create: {
@@ -49,17 +34,19 @@ export function createAuth(config: AuthOptions, db: Database) {
         },
       },
     },
-    plugins: [
-      apiKey({
-        defaultPrefix: "nusend_",
-        permissions: {
-          defaultPermissions: {},
-        },
-        rateLimit: {
-          enabled: false,
-        },
-        schema: apiKeySchema,
-      }),
-    ],
+    secret: config.secret,
+    session: authSchema.session,
+    socialProviders: {
+      google: {
+        clientId: config.googleClientId,
+        clientSecret: config.googleClientSecret,
+        disableImplicitSignUp: true,
+        disableSignUp: true,
+        prompt: "select_account",
+      },
+    },
+    trustedOrigins: config.trustedOrigins,
+    user: authSchema.user,
+    verification: authSchema.verification,
   });
 }

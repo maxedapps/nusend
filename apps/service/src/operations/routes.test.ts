@@ -242,7 +242,7 @@ describe("operations routes", () => {
 
     const missingPermission = await getOperations(
       "/summary",
-      { apiKeyPermissions: { mailings: ["create"] } },
+      { apiKeyPermissions: { mailings: ["write"] } },
       { headers: { "x-api-key": "valid" } },
     );
     expect(missingPermission.status).toBe(403);

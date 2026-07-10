@@ -1,4 +1,5 @@
-import { Effect, Result, Schema, SchemaGetter } from "effect";
+import { ContactEmailRequestSchema } from "@nusend/api-contract";
+import { Effect, Result, Schema } from "effect";
 
 import { RequestValidationError } from "../errors.ts";
 import {
@@ -19,24 +20,16 @@ export type ContactsListQuery = Pagination & {
   readonly email: string | null;
 };
 
-const Email = Schema.String.pipe(
-  Schema.decodeTo(Schema.String, {
-    decode: SchemaGetter.transform((value: string) => normalizeValidEmail(value) ?? ""),
-    encode: SchemaGetter.passthrough(),
-  }),
-).check(Schema.makeFilter<string>((value) => value.length > 0 || "must be a valid email address"));
-
-const ContactEmailBody = Schema.Struct({ email: Email });
-
 export function decodeContactEmailBody(
   value: unknown,
 ): Result.Result<ContactEmailInput, RequestValidationError> {
   if (!isPlainObject(value)) return fail("Request body must be a JSON object.");
 
-  const decoded = Schema.decodeUnknownResult(ContactEmailBody)(value, { errors: "all" });
+  const decoded = Schema.decodeUnknownResult(ContactEmailRequestSchema)(value, { errors: "all" });
   if (Result.isFailure(decoded)) return fail(decoded.failure.message);
 
-  return Result.succeed({ email: decoded.success.email });
+  const email = normalizeValidEmail(decoded.success.email);
+  return email === null ? fail("email must be a valid email address.") : Result.succeed({ email });
 }
 
 export function parseContactsListQuery(

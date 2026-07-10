@@ -22,6 +22,10 @@ export class RequestValidationError extends Data.TaggedError("RequestValidationE
   readonly message: string;
 }> {}
 
+export class RateLimitedError extends Data.TaggedError("RateLimitedError")<{
+  readonly message: string;
+}> {}
+
 export class ListNotFoundError extends Data.TaggedError("ListNotFoundError")<{
   readonly listId: string;
 }> {}

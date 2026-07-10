@@ -25,6 +25,7 @@ export type AuthConfig = {
 };
 
 export type ServiceConfig = {
+  apiKeyHashSecret: Option.Option<Redacted.Redacted<string>>;
   auth: Option.Option<AuthConfig>;
   databasePath: string;
   host: string;
@@ -182,8 +183,20 @@ export const serviceConfig: Effect.Effect<ServiceConfig, Config.ConfigError> = E
       Option.getOrElse(yield* trimmedOption("NUSEND_DB_PATH"), () => defaultDatabasePath),
     );
 
+    const auth = yield* authConfig;
+    const apiKeyHashSecret = yield* trimmedOption("NUSEND_API_KEY_HASH_SECRET");
+    if (Option.isSome(auth) && Option.isNone(apiKeyHashSecret)) {
+      return yield* configFailure(
+        "NUSEND_API_KEY_HASH_SECRET is required when auth is configured.",
+      );
+    }
+    if (Option.isSome(apiKeyHashSecret) && apiKeyHashSecret.value.length < 32) {
+      return yield* configFailure("NUSEND_API_KEY_HASH_SECRET must be at least 32 characters.");
+    }
+
     return {
-      auth: yield* authConfig,
+      apiKeyHashSecret: Option.map(apiKeyHashSecret, Redacted.make),
+      auth,
       databasePath,
       host,
       port,

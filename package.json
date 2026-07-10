@@ -5,8 +5,9 @@
   "scripts": {
     "format": "oxfmt --write --no-error-on-unmatched-pattern \"**/*.{js,jsx,ts,tsx,mjs,cjs,json,jsonc}\"",
     "format:check": "oxfmt --check --no-error-on-unmatched-pattern \"**/*.{js,jsx,ts,tsx,mjs,cjs,json,jsonc}\"",
+    "build": "pnpm --filter @nusend/api-contract build && pnpm --filter @nusend/cli build",
     "lint": "oxlint",
-    "typecheck": "pnpm -r --if-present typecheck",
+    "typecheck": "pnpm -r --if-present typecheck && tsc --noEmit -p e2e/tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test"

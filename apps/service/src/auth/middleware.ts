@@ -1,7 +1,8 @@
 import { Cause, Effect, Exit } from "effect";
 import type { MiddlewareHandler } from "hono";
 
-import { ForbiddenError, UnauthenticatedError, type AuthError } from "../errors.ts";
+import { ApiKeys, type ApiKeysService } from "../api-keys/service.ts";
+import { DatabaseError, ForbiddenError, UnauthenticatedError, type AuthError } from "../errors.ts";
 import { errorEnvelope, logCause, type AppRuntime } from "../http/respond.ts";
 import { Auth, type AuthService } from "../services/auth.ts";
 import { hasPermissions, type PermissionSet } from "./permissions.ts";
@@ -16,7 +17,11 @@ type AuthContext = {
 export function resolvePrincipal(
   headers: Headers,
   required?: PermissionSet,
-): Effect.Effect<Principal, AuthError | ForbiddenError | UnauthenticatedError, AuthService> {
+): Effect.Effect<
+  Principal,
+  AuthError | DatabaseError | ForbiddenError | UnauthenticatedError,
+  AuthService | ApiKeysService
+> {
   const apiKey = headers.get("x-api-key");
 
   if (apiKey) {
@@ -71,10 +76,10 @@ export function requirePrincipal(options: RequirePrincipalOptions): MiddlewareHa
 function resolveApiKeyPrincipal(
   key: string,
   required: PermissionSet | undefined,
-): Effect.Effect<Principal, AuthError | ForbiddenError | UnauthenticatedError, AuthService> {
+): Effect.Effect<Principal, DatabaseError | ForbiddenError | UnauthenticatedError, ApiKeysService> {
   return Effect.gen(function* () {
-    const auth = yield* Auth;
-    const result = yield* auth.verifyApiKey(key);
+    const apiKeys = yield* ApiKeys;
+    const result = yield* apiKeys.verify(key);
 
     if (!result.valid || !result.key) {
       return yield* Effect.fail(new UnauthenticatedError({ message: "Invalid API key." }));
@@ -90,7 +95,7 @@ function resolveApiKeyPrincipal(
       apiKeyId: result.key.id,
       kind: "api_key" as const,
       permissions: result.key.permissions ?? {},
-      userId: result.key.referenceId,
+      userId: result.key.userId,
     };
   });
 }

@@ -30,7 +30,7 @@ export function listSuppressions(
 ): Effect.Effect<SuppressionsListResponse, DatabaseError, DatabaseService> {
   return Effect.gen(function* () {
     const db = yield* Database;
-    const params: SqlParams = { limit: query.limit, offset: query.offset };
+    const params: SqlParams = { limit: query.limit + 1, offset: query.offset };
     const clauses: string[] = [];
 
     if (query.email !== null) {
@@ -65,8 +65,9 @@ export function listSuppressions(
       params,
     );
 
-    const items = yield* decodeRows(SuppressionRow, rows);
-    return { items, pagination: paginationMeta(items.length, query) };
+    const hasMore = rows.length > query.limit;
+    const items = yield* decodeRows(SuppressionRow, hasMore ? rows.slice(0, query.limit) : rows);
+    return { items, pagination: paginationMeta(query, hasMore) };
   });
 }
 

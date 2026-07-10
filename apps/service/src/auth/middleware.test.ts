@@ -16,7 +16,7 @@ async function runMiddlewareScenario(options: ScenarioOptions): Promise<Response
     const app = new Hono();
     app.get(
       "/protected",
-      requirePrincipal({ permissions: { mailings: ["create"] }, runtime }),
+      requirePrincipal({ permissions: { mailings: ["write"] }, runtime }),
       (context) => context.json({ ok: true }),
     );
 
@@ -64,7 +64,7 @@ describe("requirePrincipal", () => {
 
   it("allows API keys with required permissions", async () => {
     const response = await runMiddlewareScenario({
-      auth: { apiKeyPermissions: { mailings: ["create"] } },
+      auth: { apiKeyPermissions: { mailings: ["write"] } },
       headers: { "x-api-key": "valid" },
     });
 

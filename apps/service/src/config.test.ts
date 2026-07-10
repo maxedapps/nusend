@@ -52,6 +52,7 @@ const validAuthFixture = {
   BETTER_AUTH_URL: "http://localhost:3000/",
   GOOGLE_CLIENT_ID: "google-client-id",
   GOOGLE_CLIENT_SECRET: "google-client-secret",
+  NUSEND_API_KEY_HASH_SECRET: "a".repeat(32),
   NUSEND_AUTH_TRUSTED_ORIGINS: "http://localhost:3000, https://admin.example.com/path",
 };
 
@@ -59,6 +60,7 @@ describe("serviceConfig", () => {
   it("loads defaults", async () => {
     const config = await load({});
 
+    expect(Option.isNone(config.apiKeyHashSecret)).toBe(true);
     expect(Option.isNone(config.auth)).toBe(true);
     expect(config.host).toBe("0.0.0.0");
     expect(config.port).toBe(3000);
@@ -118,6 +120,7 @@ describe("serviceConfig", () => {
     expect(auth.googleClientId).toBe("google-client-id");
     expect(Redacted.value(auth.googleClientSecret)).toBe("google-client-secret");
     expect(Redacted.value(auth.secret)).toBe("x".repeat(32));
+    expect(Redacted.value(Option.getOrThrow(config.apiKeyHashSecret))).toBe("a".repeat(32));
     expect(auth.trustedOrigins).toEqual(["http://localhost:3000", "https://admin.example.com"]);
   });
 
@@ -127,6 +130,7 @@ describe("serviceConfig", () => {
 
     expect(String(auth.secret)).not.toContain("x".repeat(32));
     expect(String(auth.googleClientSecret)).not.toContain("google-client-secret");
+    expect(String(Option.getOrThrow(config.apiKeyHashSecret))).not.toContain("a".repeat(32));
   });
 
   it("falls back trusted origins to the base URL origin", async () => {
@@ -142,6 +146,7 @@ describe("serviceConfig", () => {
       BETTER_AUTH_URL: validAuthFixture.BETTER_AUTH_URL,
       GOOGLE_CLIENT_ID: validAuthFixture.GOOGLE_CLIENT_ID,
       GOOGLE_CLIENT_SECRET: validAuthFixture.GOOGLE_CLIENT_SECRET,
+      NUSEND_API_KEY_HASH_SECRET: validAuthFixture.NUSEND_API_KEY_HASH_SECRET,
     });
 
     expect(Option.getOrThrow(withoutVariable.auth).trustedOrigins).toEqual([
@@ -169,6 +174,16 @@ describe("serviceConfig", () => {
     await expect(load({ ...validAuthFixture, BETTER_AUTH_SECRET: "short" })).rejects.toThrow(
       /at least 32 characters/,
     );
+    await expect(
+      load({ ...validAuthFixture, NUSEND_API_KEY_HASH_SECRET: "short" }),
+    ).rejects.toThrow(/NUSEND_API_KEY_HASH_SECRET/);
+  });
+
+  it("requires an API-key hash secret when auth is configured", async () => {
+    const withoutApiKeySecret: Record<string, string> = { ...validAuthFixture };
+    delete withoutApiKeySecret.NUSEND_API_KEY_HASH_SECRET;
+
+    await expect(load(withoutApiKeySecret)).rejects.toThrow(/NUSEND_API_KEY_HASH_SECRET/);
   });
 
   it("rejects non-http(s) base URLs", async () => {

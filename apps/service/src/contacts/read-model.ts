@@ -41,7 +41,7 @@ export function listContacts(
 ): Effect.Effect<ContactsListResponse, DatabaseError, DatabaseService> {
   return Effect.gen(function* () {
     const db = yield* Database;
-    const params: SqlParams = { limit: query.limit, offset: query.offset };
+    const params: SqlParams = { limit: query.limit + 1, offset: query.offset };
     const where = query.email === null ? "" : "WHERE email = $email COLLATE NOCASE";
     if (query.email !== null) params.email = query.email;
 
@@ -55,8 +55,9 @@ export function listContacts(
       params,
     );
 
-    const items = yield* decodeRows(ContactRow, rows);
-    return { items, pagination: paginationMeta(items.length, query) };
+    const hasMore = rows.length > query.limit;
+    const items = yield* decodeRows(ContactRow, hasMore ? rows.slice(0, query.limit) : rows);
+    return { items, pagination: paginationMeta(query, hasMore) };
   });
 }
 

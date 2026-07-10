@@ -10,7 +10,7 @@ import { fakeUnsubscribeConfig, withTestApp } from "../testing/layers.ts";
 const fixedTime = Date.parse("2026-07-03T12:00:00.000Z");
 
 const auth = {
-  apiKeyPermissions: { mailings: ["create"], operations: ["read"] },
+  apiKeyPermissions: { mailings: ["write"], operations: ["read"] },
 };
 
 const jsonHeaders = {

@@ -1,8 +1,8 @@
 # Nusend
 
-Nusend is a single-user, self-hostable, API-first email orchestration service built on AWS SES.
+Nusend is a single-user, self-hostable email orchestration product built on AWS SES with two first-class interfaces: HTTP API + CLI.
 
-See [`PROJECT.md`](./PROJECT.md) for the product direction, architecture, and implementation phases.
+See [`PROJECT.md`](./PROJECT.md) for the product direction, architecture, and implementation phases. Additional docs: [`docs/product.md`](./docs/product.md), [`docs/cli.md`](./docs/cli.md), [`docs/auth-and-api-keys.md`](./docs/auth-and-api-keys.md), [`docs/api.md`](./docs/api.md), [`docs/deployment.md`](./docs/deployment.md), [`docs/operations.md`](./docs/operations.md), and [`docs/troubleshooting.md`](./docs/troubleshooting.md).
 
 ## Development
 
@@ -47,6 +47,7 @@ BETTER_AUTH_URL=http://localhost:3000
 GOOGLE_CLIENT_ID=replace-with-google-client-id
 GOOGLE_CLIENT_SECRET=replace-with-google-client-secret
 NUSEND_AUTH_TRUSTED_ORIGINS=http://localhost:3000
+NUSEND_API_KEY_HASH_SECRET=replace-with-at-least-32-random-characters
 ```
 
 Configuration is validated at startup (via Effect `Config`); invalid or partially configured auth environments fail fast with a message that may name several variables at once. Empty or whitespace-only values are treated as unset. In production, auth URLs and trusted origins must use HTTPS.
@@ -105,7 +106,30 @@ Google OAuth callback URL:
 http://localhost:3000/api/auth/callback/google
 ```
 
-Nusend uses Google-only Better Auth login with public signup disabled. Precreate the instance owner with `auth:bootstrap`; unknown Google accounts should be rejected. Programmatic clients should send user-owned API keys via `x-api-key`; API keys require scoped permissions such as `contacts:read/write`, `lists:read/write`, `mailings:create`, `operations:read`, and `suppressions:read/write`.
+Nusend uses Google-only Better Auth login with public signup disabled. Precreate the instance owner with `auth:bootstrap`; unknown Google accounts should be rejected. Programmatic clients should send first-party Nusend API keys via `x-api-key`; API keys require scoped permissions such as `contacts:read/write`, `lists:read/write`, `mailings:read/write`, `operations:read`, `suppressions:read/write`, and `api_keys:read/write`.
+
+## CLI
+
+Build the CLI locally:
+
+```sh
+pnpm --filter @nusend/cli build
+./apps/cli/dist/main.js --help
+```
+
+Implemented commands cover device login/logout, whoami, API-key management (list is paginated via `--limit`/`--offset`), contacts management, mailings reads, and `config repair-permissions`:
+
+```sh
+nusend login http://localhost:3000
+nusend whoami --json
+nusend api-keys list --limit 10
+nusend api-keys create --name ci --permission contacts:read
+nusend contacts create user@example.com
+nusend contacts list --json
+nusend mailings list
+nusend mailings get mailing_123
+nusend config repair-permissions
+```
 
 ## Contacts, lists, and suppressions
 
@@ -167,7 +191,7 @@ curl -i http://localhost:3000/api/mailings \
   }'
 ```
 
-`POST /api/mailings` requires a Better Auth session or a user-owned API key with `mailings:create`. An optional `Idempotency-Key` header replays the original creation response for safe retries; reusing the key with a different normalized request returns `409 idempotency_conflict`.
+`POST /api/mailings` requires a Better Auth session or a first-party Nusend API key with `mailings:write`. An optional `Idempotency-Key` header replays the original creation response for safe retries; reusing the key with a different normalized request returns `409 idempotency_conflict`.
 
 Request body:
 

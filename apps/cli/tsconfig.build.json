@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.json",
+  "exclude": ["src/**/*.test.ts", "src/testing/**"],
+  "compilerOptions": {
+    "allowImportingTsExtensions": false,
+    "declaration": true,
+    "declarationMap": true,
+    "noEmit": false,
+    "outDir": "dist",
+    "paths": {
+      "@nusend/api-contract": ["../../packages/api-contract/dist/index.d.ts"],
+      "@nusend/api-contract/*": ["../../packages/api-contract/dist/*"]
+    },
+    "rootDir": "src",
+    "sourceMap": true
+  }
+}

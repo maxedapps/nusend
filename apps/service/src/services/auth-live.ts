@@ -8,7 +8,7 @@ import { Effect, Layer, Redacted } from "effect";
 import { createAuth } from "../auth/auth.ts";
 import type { AuthConfig } from "../config.ts";
 import { AuthError } from "../errors.ts";
-import { decodeApiKeyVerification, decodeSessionData } from "./auth-decode.ts";
+import { decodeSessionData } from "./auth-decode.ts";
 import { Auth, type AuthService } from "./auth.ts";
 import { SqliteHandle } from "./database-bun.ts";
 
@@ -35,14 +35,6 @@ export function AuthLive(authConfig: AuthConfig): Layer.Layer<AuthService, never
             catch: (cause) => new AuthError({ cause, operation: "getSession" }),
           }).pipe(Effect.flatMap(decodeSessionData)),
         handler: (request) => instance.handler(request),
-        verifyApiKey: (key) =>
-          Effect.tryPromise({
-            try: async () =>
-              instance.api.verifyApiKey({
-                body: { key },
-              }),
-            catch: (cause) => new AuthError({ cause, operation: "verifyApiKey" }),
-          }).pipe(Effect.flatMap(decodeApiKeyVerification)),
       } satisfies AuthService;
     }),
   );

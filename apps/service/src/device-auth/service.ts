@@ -1,0 +1,336 @@
+import { Context, Effect, Layer, Redacted } from "effect";
+import { validatePermissionSet, type PermissionSet } from "@nusend/api-contract/permissions";
+import type {
+  DeviceAuthorizationStartResponse,
+  DeviceAuthorizationTokenResponse,
+} from "@nusend/api-contract";
+
+import { ApiKeys, type ApiKeysService } from "../api-keys/service.ts";
+import {
+  DatabaseError,
+  ForbiddenError,
+  RateLimitedError,
+  RequestValidationError,
+} from "../errors.ts";
+import { Database, type DatabaseService } from "../services/database.ts";
+import { IdGenerator, type IdGeneratorService } from "../services/ids.ts";
+import {
+  generateDeviceCode,
+  generateUserCode,
+  hashDeviceAuthCode,
+  normalizeUserCode,
+} from "./token.ts";
+
+const deviceAuthorizationTtlMs = 10 * 60 * 1000;
+const deviceApiKeyTtlMs = 365 * 24 * 60 * 60 * 1000;
+const pollIntervalSeconds = 5;
+const globalPendingLimit = 30;
+const fingerprintPendingLimit = 5;
+const staleAuthorizationRetentionMs = 24 * 60 * 60 * 1000;
+
+export type DeviceAuthorizationActivation = {
+  readonly clientName: string;
+  readonly expiresAt: string;
+  readonly permissions: PermissionSet;
+  readonly userCode: string;
+};
+
+export interface DeviceAuthorizationsService {
+  readonly approve: (input: {
+    readonly userCode: string;
+    readonly userId: string;
+  }) => Effect.Effect<void, DatabaseError | RequestValidationError>;
+  readonly deny: (input: {
+    readonly userCode: string;
+  }) => Effect.Effect<void, DatabaseError | RequestValidationError>;
+  readonly inspect: (
+    userCode: string,
+  ) => Effect.Effect<DeviceAuthorizationActivation | null, DatabaseError>;
+  readonly start: (input: {
+    readonly baseUrl: string;
+    readonly clientName: string;
+    readonly permissions: PermissionSet;
+    readonly requesterFingerprint?: string;
+  }) => Effect.Effect<
+    DeviceAuthorizationStartResponse,
+    DatabaseError | RateLimitedError | RequestValidationError
+  >;
+  readonly token: (
+    deviceCode: string,
+  ) => Effect.Effect<
+    DeviceAuthorizationTokenResponse,
+    DatabaseError | ForbiddenError | RequestValidationError
+  >;
+}
+
+export const DeviceAuthorizations = Context.Service<DeviceAuthorizationsService>(
+  "nusend/DeviceAuthorizations",
+);
+
+export function DeviceAuthorizationsLive(
+  hashSecret: Redacted.Redacted<string>,
+): Layer.Layer<
+  DeviceAuthorizationsService,
+  never,
+  ApiKeysService | DatabaseService | IdGeneratorService
+> {
+  return Layer.effect(
+    DeviceAuthorizations,
+    Effect.gen(function* () {
+      const apiKeys = yield* ApiKeys;
+      const db = yield* Database;
+      const ids = yield* IdGenerator;
+      return makeDeviceAuthorizationsService({ apiKeys, db, hashSecret, ids });
+    }),
+  );
+}
+
+export function makeDeviceAuthorizationsService(input: {
+  readonly apiKeys: ApiKeysService;
+  readonly db: DatabaseService;
+  readonly hashSecret: Redacted.Redacted<string>;
+  readonly ids: IdGeneratorService;
+}): DeviceAuthorizationsService {
+  return {
+    approve: ({ userCode, userId }) =>
+      Effect.gen(function* () {
+        const approvedAt = new Date().toISOString();
+        const updated = yield* input.db.get<{ id: string }>(
+          "deviceAuth:approve",
+          `UPDATE device_authorizations
+           SET approved_by_user_id = $userId, approved_at = $approvedAt
+           WHERE user_code_hash = $userCodeHash
+             AND expires_at > $approvedAt
+             AND approved_at IS NULL
+             AND denied_at IS NULL
+             AND consumed_at IS NULL
+           RETURNING id;`,
+          {
+            approvedAt,
+            userCodeHash: hashDeviceAuthCode(normalizeUserCode(userCode), input.hashSecret),
+            userId,
+          },
+        );
+        if (!updated) {
+          return yield* Effect.fail(
+            new RequestValidationError({
+              message: "Device authorization code is invalid or expired.",
+            }),
+          );
+        }
+      }),
+    deny: ({ userCode }) =>
+      Effect.gen(function* () {
+        const deniedAt = new Date().toISOString();
+        const updated = yield* input.db.get<{ id: string }>(
+          "deviceAuth:deny",
+          `UPDATE device_authorizations
+           SET denied_at = $deniedAt
+           WHERE user_code_hash = $userCodeHash
+             AND expires_at > $deniedAt
+             AND approved_at IS NULL
+             AND denied_at IS NULL
+             AND consumed_at IS NULL
+           RETURNING id;`,
+          {
+            deniedAt,
+            userCodeHash: hashDeviceAuthCode(normalizeUserCode(userCode), input.hashSecret),
+          },
+        );
+        if (!updated) {
+          return yield* Effect.fail(
+            new RequestValidationError({ message: "Device authorization code is invalid." }),
+          );
+        }
+      }),
+    inspect: (userCode) =>
+      Effect.gen(function* () {
+        const row = yield* input.db.get<DeviceAuthorizationRow & { user_code_preview: string }>(
+          "deviceAuth:inspectByUserCode",
+          `SELECT id, client_name, user_code_preview, requested_permissions_json, approved_by_user_id, approved_at, denied_at, consumed_at, expires_at, poll_count, last_poll_at
+           FROM device_authorizations
+           WHERE user_code_hash = $userCodeHash;`,
+          { userCodeHash: hashDeviceAuthCode(normalizeUserCode(userCode), input.hashSecret) },
+        );
+        const now = new Date().toISOString();
+        if (!row || isExpired(row, now) || row.denied_at || row.consumed_at) return null;
+        return {
+          clientName: row.client_name,
+          expiresAt: row.expires_at,
+          permissions: yield* parseStoredPermissions(row.requested_permissions_json),
+          userCode: row.user_code_preview,
+        };
+      }),
+    start: ({ baseUrl, clientName, permissions, requesterFingerprint }) =>
+      Effect.gen(function* () {
+        const name = clientName.trim();
+        if (name.length === 0) {
+          return yield* Effect.fail(
+            new RequestValidationError({ message: "clientName is required." }),
+          );
+        }
+        const permissionResult = validatePermissionSet(permissions);
+        if (!permissionResult.ok) {
+          return yield* Effect.fail(
+            new RequestValidationError({ message: permissionResult.message }),
+          );
+        }
+
+        const deviceCode = generateDeviceCode();
+        const userCode = generateUserCode();
+        const now = new Date();
+        const nowIso = now.toISOString();
+        const expiresAt = new Date(now.getTime() + deviceAuthorizationTtlMs).toISOString();
+        const staleBefore = new Date(now.getTime() - staleAuthorizationRetentionMs).toISOString();
+        const requesterFingerprintHash = hashDeviceAuthCode(
+          requesterFingerprint?.trim() || "direct",
+          input.hashSecret,
+        );
+        const verificationUri = `${baseUrl.replace(/\/$/, "")}/cli/activate`;
+        const verificationUriComplete = `${verificationUri}?code=${encodeURIComponent(userCode)}`;
+
+        yield* input.db.run(
+          "deviceAuth:cleanupExpired",
+          "DELETE FROM device_authorizations WHERE expires_at < $staleBefore;",
+          { staleBefore },
+        );
+
+        yield* input.db.transaction(
+          Effect.gen(function* () {
+            const globalPending = yield* input.db.get<{ count: number }>(
+              "deviceAuth:countPending",
+              "SELECT COUNT(*) AS count FROM device_authorizations WHERE expires_at > $now;",
+              { now: nowIso },
+            );
+            if ((globalPending?.count ?? 0) >= globalPendingLimit) {
+              return yield* Effect.fail(
+                new RateLimitedError({ message: "Too many pending device authorizations." }),
+              );
+            }
+
+            const fingerprintPending = yield* input.db.get<{ count: number }>(
+              "deviceAuth:countPendingByFingerprint",
+              `SELECT COUNT(*) AS count
+               FROM device_authorizations
+               WHERE expires_at > $now AND requester_fingerprint_hash = $requesterFingerprintHash;`,
+              { now: nowIso, requesterFingerprintHash },
+            );
+            if ((fingerprintPending?.count ?? 0) >= fingerprintPendingLimit) {
+              return yield* Effect.fail(
+                new RateLimitedError({ message: "Too many pending device authorizations." }),
+              );
+            }
+
+            yield* input.db.run(
+              "deviceAuth:start",
+              `INSERT INTO device_authorizations (id, device_code_hash, user_code_hash, user_code_preview, requested_permissions_json, client_name, expires_at, requester_fingerprint_hash, created_at)
+               VALUES ($id, $deviceCodeHash, $userCodeHash, $userCodePreview, $requestedPermissionsJson, $clientName, $expiresAt, $requesterFingerprintHash, $createdAt);`,
+              {
+                clientName: name,
+                createdAt: nowIso,
+                deviceCodeHash: hashDeviceAuthCode(deviceCode, input.hashSecret),
+                expiresAt,
+                id: yield* input.ids.next,
+                requestedPermissionsJson: JSON.stringify(permissions),
+                requesterFingerprintHash,
+                userCodeHash: hashDeviceAuthCode(normalizeUserCode(userCode), input.hashSecret),
+                userCodePreview: userCode,
+              },
+            );
+          }),
+        );
+
+        return {
+          deviceCode,
+          expiresAt,
+          intervalSeconds: pollIntervalSeconds,
+          userCode,
+          verificationUri,
+          verificationUriComplete,
+        };
+      }),
+    token: (deviceCode) =>
+      input.db.transaction(
+        Effect.gen(function* () {
+          const now = new Date().toISOString();
+          const row = yield* input.db.get<DeviceAuthorizationRow>(
+            "deviceAuth:findByDeviceCodeForToken",
+            `SELECT id, client_name, requested_permissions_json, approved_by_user_id, approved_at, denied_at, consumed_at, expires_at, poll_count, last_poll_at
+             FROM device_authorizations
+             WHERE device_code_hash = $deviceCodeHash;`,
+            { deviceCodeHash: hashDeviceAuthCode(deviceCode, input.hashSecret) },
+          );
+          if (!row) return { status: "invalid_grant" };
+          if (row.consumed_at || isExpired(row, now)) return { status: "expired_token" };
+          if (row.denied_at) return { status: "access_denied" };
+
+          const lastPollMs = row.last_poll_at ? Date.parse(row.last_poll_at) : 0;
+          const tooSoon =
+            lastPollMs > 0 && Date.parse(now) - lastPollMs < pollIntervalSeconds * 1000;
+          const nextIntervalSeconds = tooSoon ? pollIntervalSeconds + 5 : pollIntervalSeconds;
+          yield* input.db.run(
+            "deviceAuth:recordPoll",
+            `UPDATE device_authorizations SET poll_count = poll_count + 1, last_poll_at = $lastPollAt WHERE id = $id;`,
+            { id: row.id, lastPollAt: now },
+          );
+          if (tooSoon) return { intervalSeconds: nextIntervalSeconds, status: "slow_down" };
+          if (!row.approved_at || !row.approved_by_user_id) {
+            return { intervalSeconds: pollIntervalSeconds, status: "authorization_pending" };
+          }
+
+          const permissions = yield* parseStoredPermissions(row.requested_permissions_json);
+          const apiKey = yield* input.apiKeys.create({
+            actorPermissions: "owner",
+            expiresAt: new Date(Date.parse(now) + deviceApiKeyTtlMs).toISOString(),
+            name: `CLI: ${row.client_name}`,
+            permissions,
+            userId: row.approved_by_user_id,
+          });
+          yield* input.db.run(
+            "deviceAuth:consume",
+            `UPDATE device_authorizations SET consumed_at = $consumedAt WHERE id = $id;`,
+            { consumedAt: now, id: row.id },
+          );
+
+          return { apiKey, status: "approved" };
+        }),
+      ),
+  };
+}
+
+type DeviceAuthorizationRow = {
+  readonly approved_at: string | null;
+  readonly approved_by_user_id: string | null;
+  readonly client_name: string;
+  readonly consumed_at: string | null;
+  readonly denied_at: string | null;
+  readonly expires_at: string;
+  readonly id: string;
+  readonly last_poll_at: string | null;
+  readonly poll_count: number;
+  readonly requested_permissions_json: string;
+};
+
+function isExpired(row: DeviceAuthorizationRow, nowIso: string): boolean {
+  return Date.parse(row.expires_at) <= Date.parse(nowIso);
+}
+
+function parseStoredPermissions(value: string): Effect.Effect<PermissionSet, DatabaseError> {
+  return Effect.gen(function* () {
+    const parsed = yield* Effect.try({
+      try: () => JSON.parse(value) as PermissionSet,
+      catch: (cause) =>
+        new DatabaseError({ cause, operation: "deviceAuth:parseStoredPermissions" }),
+    });
+    const result = validatePermissionSet(parsed);
+    if (!result.ok) {
+      return yield* Effect.fail(
+        new DatabaseError({
+          cause: new Error(result.message),
+          operation: "deviceAuth:parseStoredPermissions",
+        }),
+      );
+    }
+    return parsed;
+  });
+}

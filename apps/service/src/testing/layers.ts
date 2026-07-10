@@ -8,6 +8,12 @@ import { TestClock } from "effect/testing";
 import type { Hono } from "hono";
 
 import { createApp } from "../app.ts";
+import { ApiKeys, ApiKeysLive, type ApiKeysService } from "../api-keys/service.ts";
+import {
+  DeviceAuthorizations,
+  DeviceAuthorizationsLive,
+  type DeviceAuthorizationsService,
+} from "../device-auth/service.ts";
 import { readMigrationFiles } from "../db/migration-files.ts";
 import { DatabaseError } from "../errors.ts";
 import { Auth, type AuthService } from "../services/auth.ts";
@@ -260,12 +266,23 @@ export type FakeAuthBehavior = {
   readonly apiKeyPermissions?: Record<string, string[]>;
 };
 
-// Mirrors the fake Better Auth instance used by earlier scenario tests.
-export function FakeAuthLive(behavior: FakeAuthBehavior = {}): Layer.Layer<AuthService> {
-  return Layer.succeed(Auth)({
-    getSession: () => Effect.succeed(behavior.session ? { session: behavior.session } : null),
-    handler: async () => Response.json({ handled: true }),
-    verifyApiKey: () =>
+export function FakeDeviceAuthorizationsLive(): Layer.Layer<DeviceAuthorizationsService> {
+  return Layer.succeed(DeviceAuthorizations)({
+    approve: () => Effect.die("FakeDeviceAuthorizationsLive does not implement approve."),
+    deny: () => Effect.die("FakeDeviceAuthorizationsLive does not implement deny."),
+    inspect: () => Effect.die("FakeDeviceAuthorizationsLive does not implement inspect."),
+    start: () => Effect.die("FakeDeviceAuthorizationsLive does not implement start."),
+    token: () => Effect.die("FakeDeviceAuthorizationsLive does not implement token."),
+  });
+}
+
+export function FakeApiKeysLive(behavior: FakeAuthBehavior = {}): Layer.Layer<ApiKeysService> {
+  return Layer.succeed(ApiKeys)({
+    create: () => Effect.die("FakeApiKeysLive does not implement create."),
+    list: () => Effect.die("FakeApiKeysLive does not implement list."),
+    revoke: () => Effect.die("FakeApiKeysLive does not implement revoke."),
+    rotate: () => Effect.die("FakeApiKeysLive does not implement rotate."),
+    verify: () =>
       Effect.succeed(
         behavior.apiKeyValid === false
           ? { key: null, valid: false }
@@ -273,11 +290,19 @@ export function FakeAuthLive(behavior: FakeAuthBehavior = {}): Layer.Layer<AuthS
               key: {
                 id: "key_1",
                 permissions: behavior.apiKeyPermissions ?? {},
-                referenceId: "user_1",
+                userId: "user_1",
               },
               valid: true,
             },
       ),
+  });
+}
+
+// Mirrors the fake Better Auth instance used by earlier scenario tests.
+export function FakeAuthLive(behavior: FakeAuthBehavior = {}): Layer.Layer<AuthService> {
+  return Layer.succeed(Auth)({
+    getSession: () => Effect.succeed(behavior.session ? { session: behavior.session } : null),
+    handler: async () => Response.json({ handled: true }),
   });
 }
 
@@ -302,6 +327,8 @@ export type TestAppOptions = {
   readonly idPrefix?: string;
   readonly ids?: readonly string[];
   readonly migrate?: boolean;
+  readonly realApiKeys?: boolean;
+  readonly realDeviceAuthorizations?: boolean;
   readonly sesOperations?: SesOperationsConfig;
   readonly sesAdmin?: SesAdminService;
   readonly snsAdmin?: SnsAdminService;
@@ -311,12 +338,29 @@ export type TestAppOptions = {
 };
 
 export function makeTestRuntime(options: TestAppOptions = {}) {
+  const databaseLayer = DatabaseNodeLive(":memory:", { migrate: options.migrate });
+  const idsLayer = options.ids
+    ? listIdsLayer(options.ids)
+    : sequentialIdsLayer(options.idPrefix ?? "id");
+  const apiKeysLayer = options.realApiKeys
+    ? ApiKeysLive(Redacted.make("test-api-key-hash-secret-32-value")).pipe(
+        Layer.provide(Layer.mergeAll(databaseLayer, idsLayer)),
+      )
+    : FakeApiKeysLive(options.auth);
+  const deviceAuthorizationsLayer = options.realDeviceAuthorizations
+    ? DeviceAuthorizationsLive(Redacted.make("test-device-auth-secret-32-value")).pipe(
+        Layer.provide(Layer.mergeAll(databaseLayer, idsLayer, apiKeysLayer)),
+      )
+    : FakeDeviceAuthorizationsLive();
+
   return ManagedRuntime.make(
     Layer.mergeAll(
-      DatabaseNodeLive(":memory:", { migrate: options.migrate }),
+      databaseLayer,
       TestClock.layer(),
-      options.ids ? listIdsLayer(options.ids) : sequentialIdsLayer(options.idPrefix ?? "id"),
+      idsLayer,
       FakeAuthLive(options.auth),
+      apiKeysLayer,
+      deviceAuthorizationsLayer,
       SesOperationsConfigLive(options.sesOperations ?? fakeSesOperationsConfig()),
       options.snsVerifier
         ? FakeSnsMessageVerifierLive(options.snsVerifier)
@@ -330,6 +374,47 @@ export function makeTestRuntime(options: TestAppOptions = {}) {
 }
 
 export type TestRuntime = ReturnType<typeof makeTestRuntime>;
+
+export async function runTestSql(
+  runtime: TestRuntime,
+  operation: string,
+  sql: string,
+  params?: Record<string, string | number | null>,
+): Promise<void> {
+  await runtime.runPromise(Effect.flatMap(Database, (db) => db.run(operation, sql, params)));
+}
+
+export async function queryTestDatabase<T>(
+  runtime: TestRuntime,
+  operation: string,
+  sql: string,
+  params?: Record<string, string | number | null>,
+): Promise<readonly T[]> {
+  return await runtime.runPromise(
+    Effect.flatMap(Database, (db) => db.all<T>(operation, sql, params)),
+  );
+}
+
+export async function seedTestUser(
+  runtime: TestRuntime,
+  input: { readonly email?: string; readonly id?: string; readonly name?: string } = {},
+): Promise<void> {
+  await runtime.runPromise(
+    Effect.gen(function* () {
+      const db = yield* Database;
+      yield* db.run(
+        "testing:seedUser",
+        `INSERT INTO users (id, name, email, email_verified, created_at, updated_at)
+         VALUES ($id, $name, $email, 1, '2026-07-09T00:00:00.000Z', '2026-07-09T00:00:00.000Z');`,
+        {
+          email: input.email ?? "max@example.com",
+          id: input.id ?? "user_1",
+          name: input.name ?? "Max",
+        },
+      );
+    }),
+  );
+}
 
 // The real Hono app wired to an in-process runtime (node:sqlite + fake auth).
 // The runtime is passed to `run` so tests can seed and assert database state.

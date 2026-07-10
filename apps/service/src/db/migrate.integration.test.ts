@@ -23,24 +23,34 @@ describe("migration runner", () => {
     expect(initialStatus).toContain("pending  0002_simplify_send_queue_and_states");
     expect(initialStatus).toContain("pending  0003_ses_feedback_ingestion");
     expect(initialStatus).toContain("pending  0004_ses_operations_and_tracking");
+    expect(initialStatus).toContain("pending  0005_first_party_api_keys_and_device_auth");
+    expect(initialStatus).toContain("pending  0006_device_auth_throttle_cleanup");
+    expect(initialStatus).toContain("pending  0007_mailings_created_id_index");
 
     const migrateUp = runMigrationCommand("up", databasePath).stdout;
     expect(migrateUp).toContain("Applied migration 0001_initial_schema.");
     expect(migrateUp).toContain("Applied migration 0002_simplify_send_queue_and_states.");
     expect(migrateUp).toContain("Applied migration 0003_ses_feedback_ingestion.");
     expect(migrateUp).toContain("Applied migration 0004_ses_operations_and_tracking.");
+    expect(migrateUp).toContain("Applied migration 0005_first_party_api_keys_and_device_auth.");
+    expect(migrateUp).toContain("Applied migration 0006_device_auth_throttle_cleanup.");
+    expect(migrateUp).toContain("Applied migration 0007_mailings_created_id_index.");
 
     const migratedStatus = runMigrationCommand("status", databasePath).stdout;
     expect(migratedStatus).toContain("applied  0001_initial_schema");
     expect(migratedStatus).toContain("applied  0002_simplify_send_queue_and_states");
     expect(migratedStatus).toContain("applied  0003_ses_feedback_ingestion");
     expect(migratedStatus).toContain("applied  0004_ses_operations_and_tracking");
+    expect(migratedStatus).toContain("applied  0005_first_party_api_keys_and_device_auth");
+    expect(migratedStatus).toContain("applied  0006_device_auth_throttle_cleanup");
+    expect(migratedStatus).toContain("applied  0007_mailings_created_id_index");
 
     expect(readTableNames(databasePath)).toEqual([
       "accounts",
       "api_keys",
       "contacts",
       "deliveries",
+      "device_authorizations",
       "jobs",
       "list_memberships",
       "lists",
@@ -60,7 +70,28 @@ describe("migration runner", () => {
     expect(readColumnNames(databasePath, "users")).toContain("email_verified");
     expect(readColumnNames(databasePath, "sessions")).not.toContain("active_organization_id");
     expect(readColumnNames(databasePath, "contacts")).not.toContain("attrs_json");
-    expect(readColumnNames(databasePath, "api_keys")).toContain("reference_id");
+    expect(readColumnNames(databasePath, "api_keys")).toEqual(
+      expect.arrayContaining([
+        "user_id",
+        "key_hash",
+        "key_preview",
+        "permissions_json",
+        "revoked_at",
+      ]),
+    );
+    expect(readColumnNames(databasePath, "api_keys")).not.toContain("reference_id");
+    expect(readColumnNames(databasePath, "device_authorizations")).toEqual(
+      expect.arrayContaining([
+        "device_code_hash",
+        "user_code_hash",
+        "requested_permissions_json",
+        "poll_count",
+        "requester_fingerprint_hash",
+      ]),
+    );
+    expect(readColumnNames(databasePath, "device_authorizations")).not.toEqual(
+      expect.arrayContaining(["user_code_attempts", "last_user_code_attempt_at"]),
+    );
     expect(readColumnNames(databasePath, "deliveries")).toEqual(
       expect.arrayContaining(["ses_message_id", "last_error"]),
     );
@@ -84,6 +115,20 @@ describe("migration runner", () => {
     expect(readColumnNames(databasePath, "worker_runs")).toEqual(
       expect.arrayContaining(["worker_id", "claimed", "skipped_stale", "finished_at"]),
     );
+    expect(readIndexNames(databasePath, "api_keys")).toEqual(
+      expect.arrayContaining([
+        "api_keys_user_id_idx",
+        "api_keys_revoked_at_idx",
+        "api_keys_last_used_at_idx",
+      ]),
+    );
+    expect(readIndexNames(databasePath, "device_authorizations")).toEqual(
+      expect.arrayContaining([
+        "device_authorizations_expires_at_idx",
+        "device_authorizations_approved_user_idx",
+      ]),
+    );
+    expect(readIndexNames(databasePath, "mailings")).toContain("mailings_created_id_idx");
     expect(readIndexNames(databasePath, "ses_events")).toEqual(
       expect.arrayContaining([
         "ses_events_delivery_id_idx",
@@ -120,6 +165,21 @@ describe("migration runner", () => {
     expect(restore.status).toBe(0);
 
     expect(runMigrationCommand("down", databasePath).stdout).toContain(
+      "Rolled back migration 0007_mailings_created_id_index.",
+    );
+    expect(readIndexNames(databasePath, "mailings")).not.toContain("mailings_created_id_idx");
+    expect(runMigrationCommand("down", databasePath).stdout).toContain(
+      "Rolled back migration 0006_device_auth_throttle_cleanup.",
+    );
+    expect(readColumnNames(databasePath, "device_authorizations")).toEqual(
+      expect.arrayContaining(["user_code_attempts", "last_user_code_attempt_at"]),
+    );
+    expect(runMigrationCommand("down", databasePath).stdout).toContain(
+      "Rolled back migration 0005_first_party_api_keys_and_device_auth.",
+    );
+    expect(readColumnNames(databasePath, "api_keys")).toContain("reference_id");
+    expect(readTableNames(databasePath)).not.toContain("device_authorizations");
+    expect(runMigrationCommand("down", databasePath).stdout).toContain(
       "Rolled back migration 0004_ses_operations_and_tracking.",
     );
     expect(readTableNames(databasePath)).toEqual(
@@ -145,6 +205,11 @@ describe("migration runner", () => {
     expect(migrateUpAgain).toContain("Applied migration 0002_simplify_send_queue_and_states.");
     expect(migrateUpAgain).toContain("Applied migration 0003_ses_feedback_ingestion.");
     expect(migrateUpAgain).toContain("Applied migration 0004_ses_operations_and_tracking.");
+    expect(migrateUpAgain).toContain(
+      "Applied migration 0005_first_party_api_keys_and_device_auth.",
+    );
+    expect(migrateUpAgain).toContain("Applied migration 0006_device_auth_throttle_cleanup.");
+    expect(migrateUpAgain).toContain("Applied migration 0007_mailings_created_id_index.");
 
     const synthetic = runBun(
       [

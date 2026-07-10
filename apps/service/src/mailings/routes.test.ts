@@ -1,7 +1,8 @@
 // Frozen envelopes (status codes, error.code values, auth messages) asserted
 // 1:1 from the pre-Effect scenarios. Validation message prose is Schema-derived
 // now, so those cases assert status + code only.
-import { Effect, Option } from "effect";
+import { MailingDetailResponseSchema, MailingsListResponseSchema } from "@nusend/api-contract";
+import { Effect, Option, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { Database } from "../services/database.ts";
@@ -85,7 +86,7 @@ describe("mailings routes", () => {
 
   it("creates a mailing with a valid API key", async () => {
     await withTestApp(
-      { auth: { apiKeyPermissions: { mailings: ["create"] } } },
+      { auth: { apiKeyPermissions: { mailings: ["write"] } } },
       async (app, runtime) => {
         const response = await app.fetch(
           new Request("http://localhost/api/mailings", {
@@ -117,7 +118,7 @@ describe("mailings routes", () => {
 
   it("rejects marketing mailings without unsubscribe configuration", async () => {
     await withTestApp(
-      { auth: { apiKeyPermissions: { mailings: ["create"] } } },
+      { auth: { apiKeyPermissions: { mailings: ["write"] } } },
       async (app, runtime) => {
         const response = await app.fetch(
           new Request("http://localhost/api/mailings", {
@@ -151,7 +152,7 @@ describe("mailings routes", () => {
   it("rejects marketing mailings missing the unsubscribe URL placeholder", async () => {
     await withTestApp(
       {
-        auth: { apiKeyPermissions: { mailings: ["create"] } },
+        auth: { apiKeyPermissions: { mailings: ["write"] } },
         unsubscribe: Option.some(fakeUnsubscribeConfig()),
       },
       async (app, runtime) => {
@@ -183,7 +184,7 @@ describe("mailings routes", () => {
   it("creates a marketing mailing when unsubscribe configuration and placeholder are present", async () => {
     await withTestApp(
       {
-        auth: { apiKeyPermissions: { mailings: ["create"] } },
+        auth: { apiKeyPermissions: { mailings: ["write"] } },
         unsubscribe: Option.some(fakeUnsubscribeConfig()),
       },
       async (app, runtime) => {
@@ -238,7 +239,7 @@ describe("mailings routes", () => {
 
   it("replays same-key idempotent creates without duplicate rows", async () => {
     await withTestApp(
-      { auth: { apiKeyPermissions: { mailings: ["create"] } } },
+      { auth: { apiKeyPermissions: { mailings: ["write"] } } },
       async (app, runtime) => {
         const request = () =>
           new Request("http://localhost/api/mailings", {
@@ -279,7 +280,7 @@ describe("mailings routes", () => {
 
   it("rejects same-key creates with a different normalized request", async () => {
     await withTestApp(
-      { auth: { apiKeyPermissions: { mailings: ["create"] } } },
+      { auth: { apiKeyPermissions: { mailings: ["write"] } } },
       async (app, runtime) => {
         const create = (body: unknown) =>
           app.fetch(
@@ -316,7 +317,7 @@ describe("mailings routes", () => {
 
   it("rejects oversized idempotency keys", async () => {
     const response = await postMailing(
-      { apiKeyPermissions: { mailings: ["create"] } },
+      { apiKeyPermissions: { mailings: ["write"] } },
       {
         headers: {
           "idempotency-key": "x".repeat(maxIdempotencyKeyLength + 1),
@@ -336,7 +337,7 @@ describe("mailings routes", () => {
 
   it("rejects oversized request bodies before parsing", async () => {
     const response = await postMailing(
-      { apiKeyPermissions: { mailings: ["create"] } },
+      { apiKeyPermissions: { mailings: ["write"] } },
       {
         body: JSON.stringify({ payload: "x".repeat(maxMailingRequestBodyBytes + 1) }),
         headers: { "x-api-key": "valid" },
@@ -350,7 +351,7 @@ describe("mailings routes", () => {
   });
 
   it("maps malformed JSON, invalid payloads, missing lists, and empty recipient sets", async () => {
-    const canCreate: FakeAuthBehavior = { apiKeyPermissions: { mailings: ["create"] } };
+    const canCreate: FakeAuthBehavior = { apiKeyPermissions: { mailings: ["write"] } };
     const keyHeaders = { headers: { "x-api-key": "valid" } };
 
     const malformed = await postMailing(canCreate, { body: "{", ...keyHeaders });
@@ -427,3 +428,139 @@ describe("mailings routes", () => {
     });
   });
 });
+
+describe("mailings read routes", () => {
+  it("enforces read auth for unauthenticated, scoped-key, and session principals", async () => {
+    await withTestApp({ auth: { session: null } }, async (app) => {
+      expect((await app.fetch(new Request("http://localhost/api/mailings"))).status).toBe(401);
+    });
+
+    await withTestApp({ auth: { apiKeyPermissions: { mailings: ["write"] } } }, async (app) => {
+      const response = await app.fetch(
+        new Request("http://localhost/api/mailings", {
+          headers: { "x-api-key": "valid" },
+        }),
+      );
+      expect(response.status).toBe(403);
+    });
+
+    await withTestApp({ auth: { session: { userId: "user_1" } } }, async (app) => {
+      expect((await app.fetch(new Request("http://localhost/api/mailings"))).status).toBe(200);
+    });
+  });
+
+  it("lists and reads mailings through a real read-scoped key", async () => {
+    await withTestApp(
+      {
+        auth: { session: { userId: "user_1" } },
+        ids: ["key_1"],
+        realApiKeys: true,
+      },
+      async (app, runtime) => {
+        await seedMailingsReadScenario(runtime);
+        const keyResponse = await app.fetch(
+          new Request("http://localhost/api/api-keys", {
+            body: JSON.stringify({
+              name: "mailings-reader",
+              permissions: { mailings: ["read"] },
+            }),
+            headers: { "content-type": "application/json" },
+            method: "POST",
+          }),
+        );
+        expect(keyResponse.status).toBe(201);
+        const key = ((await keyResponse.json()) as { apiKey: { key: string } }).apiKey.key;
+        const headers = { "x-api-key": key };
+
+        const list = await app.fetch(
+          new Request("http://localhost/api/mailings?limit=1&offset=0", { headers }),
+        );
+        expect(list.status).toBe(200);
+        const listBody = await list.json();
+        expect(() => Schema.decodeUnknownSync(MailingsListResponseSchema)(listBody)).not.toThrow();
+        expect(listBody).toMatchObject({
+          items: [
+            {
+              counts: { failed: 1, queued: 1, sending: 1, sent: 2, suppressed: 1 },
+              id: "mailing_1",
+              subject: "Newest",
+            },
+          ],
+          pagination: { limit: 1, nextOffset: 1, offset: 0 },
+        });
+        expect(JSON.stringify(listBody)).not.toContain("<p>private body</p>");
+        expect(JSON.stringify(listBody)).not.toContain("plain private body");
+        expect(JSON.stringify(listBody)).not.toContain("recipient-secret");
+
+        const finalPage = await app.fetch(
+          new Request("http://localhost/api/mailings?limit=1&offset=1", { headers }),
+        );
+        await expect(finalPage.json()).resolves.toMatchObject({
+          items: [{ id: "mailing_2" }],
+          pagination: { limit: 1, nextOffset: null, offset: 1 },
+        });
+
+        const detail = await app.fetch(
+          new Request("http://localhost/api/mailings/mailing_1", { headers }),
+        );
+        expect(detail.status).toBe(200);
+        const detailBody = await detail.json();
+        expect(() =>
+          Schema.decodeUnknownSync(MailingDetailResponseSchema)(detailBody),
+        ).not.toThrow();
+        expect(detailBody).toMatchObject({
+          mailing: {
+            counts: { failed: 1, queued: 1, sending: 1, sent: 2, suppressed: 1 },
+            html: "<p>private body</p>",
+            id: "mailing_1",
+            text: "plain private body",
+          },
+        });
+        expect(JSON.stringify(detailBody)).not.toContain("recipient-secret");
+
+        const missing = await app.fetch(
+          new Request("http://localhost/api/mailings/missing", { headers }),
+        );
+        expect(missing.status).toBe(404);
+      },
+    );
+  });
+});
+
+async function seedMailingsReadScenario(runtime: TestRuntime): Promise<void> {
+  await runtime.runPromise(
+    Effect.gen(function* () {
+      const db = yield* Database;
+      yield* db.run(
+        "mailingsReadTest:user",
+        `INSERT INTO users (id, name, email, email_verified, created_at, updated_at)
+         VALUES ('user_1', 'Max', 'max@example.com', 1, '2026-07-09T00:00:00.000Z', '2026-07-09T00:00:00.000Z');`,
+      );
+      yield* db.run(
+        "mailingsReadTest:mailing1",
+        `INSERT INTO mailings (id, purpose, state, name, subject, html, text, list_id, scheduled_at, created_at, updated_at)
+         VALUES ('mailing_1', 'transactional', 'completed', 'Newest mailing', 'Newest', '<p>private body</p>', 'plain private body', NULL, NULL, '2026-07-09T12:00:00.000Z', '2026-07-09T12:01:00.000Z');`,
+      );
+      yield* db.run(
+        "mailingsReadTest:mailing2",
+        `INSERT INTO mailings (id, purpose, state, name, subject, html, text, list_id, scheduled_at, created_at, updated_at)
+         VALUES ('mailing_2', 'marketing', 'scheduled', NULL, 'Older', '<p>older</p>', NULL, NULL, '2026-07-10T12:00:00.000Z', '2026-07-08T12:00:00.000Z', '2026-07-08T12:00:00.000Z');`,
+      );
+
+      const statuses = ["queued", "sending", "sent", "sent", "failed", "suppressed"];
+      yield* Effect.forEach(statuses, (status, index) =>
+        db.run(
+          `mailingsReadTest:delivery:${index}`,
+          `INSERT INTO deliveries (id, mailing_id, email, vars_json, status, created_at, updated_at)
+           VALUES ($id, 'mailing_1', $email, $varsJson, $status, '2026-07-09T12:00:00.000Z', '2026-07-09T12:00:00.000Z');`,
+          {
+            email: `user${index}@example.com`,
+            id: `delivery_${index}`,
+            status,
+            varsJson: index === 0 ? '{"secret":"recipient-secret"}' : null,
+          },
+        ),
+      );
+    }),
+  );
+}

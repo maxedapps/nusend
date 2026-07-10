@@ -19,7 +19,7 @@ describe("SES operations routes", () => {
 
     const missingPermission = await getSesOperations(
       endpoint,
-      { apiKeyPermissions: { mailings: ["create"] } },
+      { apiKeyPermissions: { mailings: ["write"] } },
       { "x-api-key": "valid" },
     );
     expect(missingPermission.status).toBe(403);

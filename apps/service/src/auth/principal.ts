@@ -1,3 +1,5 @@
+import type { PermissionSet } from "@nusend/api-contract/permissions";
+
 export type SessionPrincipal = {
   kind: "session";
   userId: string;
@@ -6,7 +8,7 @@ export type SessionPrincipal = {
 export type ApiKeyPrincipal = {
   apiKeyId: string;
   kind: "api_key";
-  permissions: Record<string, string[]>;
+  permissions: PermissionSet;
   userId: string;
 };
 

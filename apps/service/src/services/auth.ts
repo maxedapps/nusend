@@ -10,20 +10,10 @@ export type SessionData = {
   };
 };
 
-export type ApiKeyVerification = {
-  valid: boolean;
-  key: {
-    id: string;
-    permissions: Record<string, string[]> | null;
-    referenceId: string;
-  } | null;
-};
-
 export interface AuthService {
   // Raw passthrough for /api/auth/* — Better Auth owns those routes entirely.
   readonly handler: (request: Request) => Promise<Response>;
   readonly getSession: (headers: Headers) => Effect.Effect<SessionData | null, AuthError>;
-  readonly verifyApiKey: (key: string) => Effect.Effect<ApiKeyVerification, AuthError>;
 }
 
 export const Auth = Context.Service<AuthService>("nusend/Auth");

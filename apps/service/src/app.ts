@@ -1,7 +1,11 @@
 import { Effect } from "effect";
 import { Hono } from "hono";
 
+import { createApiKeyRoutes } from "./api-keys/routes.ts";
+import { createMeRoutes } from "./auth/me-routes.ts";
 import { createContactsRoutes } from "./contacts/routes.ts";
+import { createActivationRoutes } from "./device-auth/activate-routes.ts";
+import { createDeviceAuthorizationRoutes } from "./device-auth/routes.ts";
 import { errorEnvelope, runRoute, type AppRuntime } from "./http/respond.ts";
 import { createListsRoutes } from "./lists/routes.ts";
 import { createMailingsRoutes } from "./mailings/routes.ts";
@@ -65,12 +69,19 @@ export function createApp(options: AppOptions): Hono {
     ),
   );
 
+  app.route("/cli", createActivationRoutes({ runtime: options.runtime }));
   app.route("/unsubscribe", createUnsubscribeRoutes({ runtime: options.runtime }));
   app.route("/api/webhooks", createSesWebhookRoutes({ runtime: options.runtime }));
 
+  app.route("/api/api-keys", createApiKeyRoutes({ runtime: options.runtime }));
   app.route("/api/contacts", createContactsRoutes({ runtime: options.runtime }));
+  app.route(
+    "/api/device-authorizations",
+    createDeviceAuthorizationRoutes({ runtime: options.runtime }),
+  );
   app.route("/api/lists", createListsRoutes({ runtime: options.runtime }));
   app.route("/api/mailings", createMailingsRoutes({ runtime: options.runtime }));
+  app.route("/api/me", createMeRoutes({ runtime: options.runtime }));
   app.route("/api/operations", createOperationsRoutes({ runtime: options.runtime }));
   app.route("/api/operations/ses", createSesOperationsRoutes({ runtime: options.runtime }));
   app.route("/api/suppressions", createSuppressionsRoutes({ runtime: options.runtime }));

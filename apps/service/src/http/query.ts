@@ -1,9 +1,7 @@
+import { defaultPageLimit, maxPageLimit } from "@nusend/api-contract";
 import { Effect } from "effect";
 
 import { RequestValidationError } from "../errors.ts";
-
-export const defaultPageLimit = 50;
-export const maxPageLimit = 100;
 export const maxRouteIdLength = 200;
 
 export type Pagination = {
@@ -15,10 +13,10 @@ export type PaginationMeta = Pagination & {
   readonly nextOffset: number | null;
 };
 
-export function paginationMeta(itemsLength: number, pagination: Pagination): PaginationMeta {
+export function paginationMeta(pagination: Pagination, hasMore: boolean): PaginationMeta {
   return {
     limit: pagination.limit,
-    nextOffset: itemsLength === pagination.limit ? pagination.offset + pagination.limit : null,
+    nextOffset: hasMore ? pagination.offset + pagination.limit : null,
     offset: pagination.offset,
   };
 }

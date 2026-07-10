@@ -4,6 +4,7 @@ import { bodyLimit } from "hono/body-limit";
 
 import { requirePrincipal } from "../auth/middleware.ts";
 import { RequestValidationError } from "../errors.ts";
+import { parsePagination, parseRouteId } from "../http/query.ts";
 import { errorEnvelope, runRoute, type AppRuntime } from "../http/respond.ts";
 import { containsUnsubscribeUrlPlaceholder } from "../sending/render.ts";
 import { UnsubscribeConfig, type UnsubscribeConfigService } from "../unsubscribe/config.ts";
@@ -12,6 +13,7 @@ import {
   maxIdempotencyKeyLength,
   normalizeIdempotencyKey,
 } from "./idempotency.ts";
+import { getMailingDetail, listMailings } from "./read-model.ts";
 import {
   decodeCreateMailingRequest,
   maxMailingRequestBodyBytes,
@@ -24,6 +26,32 @@ type MailingsRoutesOptions = {
 
 export function createMailingsRoutes(options: MailingsRoutesOptions): Hono {
   const routes = new Hono();
+  const requireMailingsRead = requirePrincipal({
+    permissions: { mailings: ["read"] },
+    runtime: options.runtime,
+  });
+  const requireMailingsWrite = requirePrincipal({
+    permissions: { mailings: ["write"] },
+    runtime: options.runtime,
+  });
+
+  routes.get("/", requireMailingsRead, (context) => {
+    const program = Effect.gen(function* () {
+      const pagination = yield* parsePagination(new URL(context.req.url).searchParams);
+      return yield* listMailings(pagination);
+    });
+
+    return runRoute(context, options.runtime, program, (result) => context.json(result));
+  });
+
+  routes.get("/:id", requireMailingsRead, (context) => {
+    const program = Effect.gen(function* () {
+      const id = yield* parseRouteId(context.req.param("id"), "mailing id");
+      return yield* getMailingDetail(id);
+    });
+
+    return runRoute(context, options.runtime, program, (result) => context.json(result));
+  });
 
   routes.post(
     "/",
@@ -32,7 +60,7 @@ export function createMailingsRoutes(options: MailingsRoutesOptions): Hono {
       onError: (context) =>
         context.json(errorEnvelope("request_too_large", "Request body is too large."), 413),
     }),
-    requirePrincipal({ permissions: { mailings: ["create"] }, runtime: options.runtime }),
+    requireMailingsWrite,
     (context) => {
       const program = Effect.gen(function* () {
         const body = yield* Effect.tryPromise({

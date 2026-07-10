@@ -8,7 +8,9 @@ import { Database, type DatabaseService } from "./services/database.ts";
 import { FakeSnsSubscriptionConfirmerLive } from "./ses/sns-confirmer.ts";
 import { FakeSnsMessageVerifierLive } from "./ses/sns-verifier.ts";
 import {
+  FakeApiKeysLive,
   FakeAuthLive,
+  FakeDeviceAuthorizationsLive,
   fakeSesOperationsConfigLayer,
   sequentialIdsLayer,
   withTestApp,
@@ -43,6 +45,8 @@ describe("createApp", () => {
         unavailableDatabaseLayer(),
         sequentialIdsLayer("id"),
         FakeAuthLive(),
+        FakeApiKeysLive(),
+        FakeDeviceAuthorizationsLive(),
         fakeSesOperationsConfigLayer(),
         FakeSnsMessageVerifierLive(() => Effect.die(new Error("unused"))),
         FakeSnsSubscriptionConfirmerLive([]),

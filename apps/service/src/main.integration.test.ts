@@ -27,6 +27,7 @@ describe("main boot smoke", () => {
       BETTER_AUTH_URL: `http://localhost:${port}`,
       GOOGLE_CLIENT_ID: "smoke-client-id",
       GOOGLE_CLIENT_SECRET: "smoke-client-secret",
+      NUSEND_API_KEY_HASH_SECRET: "api-key-hash-secret-value-32-chars",
       NUSEND_DB_PATH: join(directory, "smoke.sqlite"),
       NUSEND_PORT: String(port),
     };

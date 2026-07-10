@@ -3,6 +3,8 @@
 import { Cause, Effect, Exit, Result, type ManagedRuntime } from "effect";
 import type { Context } from "hono";
 
+import type { ApiKeysService } from "../api-keys/service.ts";
+import type { DeviceAuthorizationsService } from "../device-auth/service.ts";
 import type {
   AuthError,
   ConflictError,
@@ -11,6 +13,7 @@ import type {
   ForbiddenError,
   IdempotencyConflictError,
   RecipientLimitExceededError,
+  RateLimitedError,
   ListNotFoundError,
   NotFoundError,
   RequestValidationError,
@@ -34,8 +37,10 @@ import type { SnsMessageVerifierService } from "../ses/sns-verifier.ts";
 import type { UnsubscribeConfigService } from "../unsubscribe/config.ts";
 
 export type AppServices =
+  | ApiKeysService
   | AuthService
   | DatabaseService
+  | DeviceAuthorizationsService
   | IdGeneratorService
   | SesAdminService
   | SesOperationsConfigService
@@ -56,6 +61,7 @@ export type RouteError =
   | ForbiddenError
   | IdempotencyConflictError
   | RecipientLimitExceededError
+  | RateLimitedError
   | ListNotFoundError
   | NotFoundError
   | RequestValidationError
@@ -201,6 +207,8 @@ export async function runRoute<A>(
         Effect.succeed(context.json(errorEnvelope("not_found", "List not found."), 404)),
       NotFoundError: (error) =>
         Effect.succeed(context.json(errorEnvelope("not_found", error.message), 404)),
+      RateLimitedError: (error) =>
+        Effect.succeed(context.json(errorEnvelope("rate_limited", error.message), 429)),
       RequestValidationError: (error) =>
         Effect.succeed(context.json(errorEnvelope("invalid_request", error.message), 400)),
       UnauthenticatedError: (error) =>

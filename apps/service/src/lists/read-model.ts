@@ -52,12 +52,13 @@ export function listLists(
       listSelectSql(`GROUP BY l.id
        ORDER BY l.created_at DESC, l.id DESC
        LIMIT $limit OFFSET $offset;`),
-      { limit: pagination.limit, offset: pagination.offset },
+      { limit: pagination.limit + 1, offset: pagination.offset },
     );
-    const decoded = yield* decodeRows(ListRow, rows);
+    const hasMore = rows.length > pagination.limit;
+    const decoded = yield* decodeRows(ListRow, hasMore ? rows.slice(0, pagination.limit) : rows);
     return {
       items: decoded.map(toListItem),
-      pagination: paginationMeta(decoded.length, pagination),
+      pagination: paginationMeta(pagination, hasMore),
     };
   });
 }
@@ -93,7 +94,7 @@ export function listListContacts(
     const list = yield* getListRow(listId);
     if (!list) return yield* Effect.fail(new ListNotFoundError({ listId }));
 
-    const params: SqlParams = { limit: query.limit, listId, offset: query.offset };
+    const params: SqlParams = { limit: query.limit + 1, listId, offset: query.offset };
     const clauses = ["lm.list_id = $listId"];
     if (query.status === "subscribed") clauses.push("lm.unsubscribed_at IS NULL");
     if (query.status === "unsubscribed") clauses.push("lm.unsubscribed_at IS NOT NULL");
@@ -118,10 +119,11 @@ export function listListContacts(
       params,
     );
 
-    const decoded = yield* decodeRows(ListContactRow, rows);
+    const hasMore = rows.length > query.limit;
+    const decoded = yield* decodeRows(ListContactRow, hasMore ? rows.slice(0, query.limit) : rows);
     return {
       items: decoded.map(toListContactItem),
-      pagination: paginationMeta(decoded.length, query),
+      pagination: paginationMeta(query, hasMore),
     };
   });
 }

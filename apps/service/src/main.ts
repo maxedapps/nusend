@@ -4,6 +4,8 @@
 import { ConfigProvider, Effect, Layer, ManagedRuntime, Option } from "effect";
 
 import { createApp } from "./app.ts";
+import { ApiKeysLive } from "./api-keys/service.ts";
+import { DeviceAuthorizationsLive } from "./device-auth/service.ts";
 import { serviceConfig, sesOperationsConfig, unsubscribeConfig } from "./config.ts";
 import { JsonLoggerLive } from "./observability/effect-logger.ts";
 import { AuthLive } from "./services/auth-live.ts";
@@ -49,15 +51,24 @@ const sesOperations = await Effect.runPromise(
 // Reusing the same dbLayer reference is memoized to ONE database acquisition;
 // AuthLive consumes the raw SqliteHandle it provides.
 const dbLayer = DatabaseBunLive(config.databasePath);
+const idLayer = IdGeneratorLive;
+const apiKeysLayer = ApiKeysLive(Option.getOrThrow(config.apiKeyHashSecret)).pipe(
+  Layer.provide(Layer.mergeAll(dbLayer, idLayer)),
+);
+const deviceAuthorizationsLayer = DeviceAuthorizationsLive(
+  Option.getOrThrow(config.apiKeyHashSecret),
+).pipe(Layer.provide(Layer.mergeAll(dbLayer, idLayer, apiKeysLayer)));
 const appLayer = Layer.mergeAll(
   dbLayer,
-  IdGeneratorLive,
+  idLayer,
   SesOperationsConfigLive(sesOperations),
   SnsMessageVerifierLive,
   SnsSubscriptionConfirmerLive,
   SesAdminLive.pipe(Layer.provide(SesOperationsConfigLive(sesOperations))),
   SnsAdminLive.pipe(Layer.provide(SesOperationsConfigLive(sesOperations))),
   UnsubscribeConfigLive(unsubscribe),
+  apiKeysLayer,
+  deviceAuthorizationsLayer,
   AuthLive(config.auth.value).pipe(Layer.provide(dbLayer)),
   JsonLoggerLive,
 );
