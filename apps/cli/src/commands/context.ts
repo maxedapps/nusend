@@ -1,3 +1,4 @@
+import { Result } from "effect";
 import {
   normalizePermissions,
   parsePermission,
@@ -5,9 +6,16 @@ import {
 } from "@nusend/api-contract/permissions";
 
 import { CliHttpError } from "../client/errors.js";
+import { parseHttpTimeoutMs } from "../client/http.js";
 import type { NusendApi } from "../client/nusend-api.js";
 import type { ConfigFile } from "../config/profiles.js";
 import type { FileCredentialStore } from "../credentials/file-store.js";
+
+export const globalOptionRegistry = {
+  "--base-url": { repeatable: false, takesValue: true },
+  "--json": { repeatable: false, takesValue: false },
+  "--profile": { repeatable: false, takesValue: true },
+} as const;
 
 export type GlobalOptions = {
   readonly baseUrl?: string;
@@ -42,17 +50,25 @@ export function parseGlobalOptions(args: string[]): {
   readonly rest: string[];
 } {
   const rest: string[] = [];
+  const counts = new Map<string, number>();
   let baseUrl: string | undefined;
   let profile: string | undefined;
   let json = false;
   for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index];
+    const arg = args[index]!;
+    const definition = globalOptionRegistry[arg as keyof typeof globalOptionRegistry];
+    if (!definition) {
+      rest.push(arg);
+      continue;
+    }
+    const count = (counts.get(arg) ?? 0) + 1;
+    counts.set(arg, count);
+    if (count > 1 && !definition.repeatable) {
+      throw new UsageError(`Duplicate option: ${arg}`, 2);
+    }
     if (arg === "--json") json = true;
-    else if (arg === "--base-url") {
-      baseUrl = globalOptionValue(args, ++index, "--base-url");
-    } else if (arg === "--profile") {
-      profile = globalOptionValue(args, ++index, "--profile");
-    } else rest.push(arg);
+    else if (arg === "--base-url") baseUrl = globalOptionValue(args, ++index, arg);
+    else if (arg === "--profile") profile = globalOptionValue(args, ++index, arg);
   }
   return { options: { baseUrl, json, profile }, rest };
 }
@@ -63,6 +79,12 @@ function globalOptionValue(args: string[], index: number, name: string): string 
     throw new UsageError(`${name} requires a value.`, 2);
   }
   return value;
+}
+
+export function httpTimeoutMsFromEnv(env: NodeJS.ProcessEnv): number {
+  const parsed = parseHttpTimeoutMs(env.NUSEND_HTTP_TIMEOUT_MS);
+  if (Result.isFailure(parsed)) throw new UsageError(parsed.failure, 2);
+  return parsed.success;
 }
 
 export function selectedProfile(context: CommandContext): string {

@@ -278,6 +278,54 @@ describe("mailings routes", () => {
     );
   });
 
+  it("normalizes equivalent wire scheduledAt values before idempotency hashing", async () => {
+    await withTestApp(
+      { auth: { apiKeyPermissions: { mailings: ["write"] } } },
+      async (app, runtime) => {
+        const create = (scheduledAt: string) =>
+          app.fetch(
+            new Request("http://localhost/api/mailings", {
+              body: JSON.stringify({ ...validBody, scheduledAt }),
+              headers: {
+                "content-type": "application/json",
+                "idempotency-key": "scheduled-at-normalization",
+                "x-api-key": "valid",
+              },
+              method: "POST",
+            }),
+          );
+
+        const first = await create("2030-01-01T00:00:00Z");
+        const firstJson = await first.json();
+        const replay = await create("2030-01-01T00:00:00.000Z");
+        expect(first.status).toBe(201);
+        expect(replay.status).toBe(201);
+        await expect(replay.json()).resolves.toEqual(firstJson);
+        await expect(countRows(runtime)).resolves.toEqual({
+          deliveries: 1,
+          idempotencyKeys: 1,
+          jobs: 1,
+          mailings: 1,
+        });
+        const stored = await runtime.runPromise(
+          Effect.flatMap(Database, (db) =>
+            db.get<{ scheduledAt: string }>(
+              "test:scheduled-at",
+              "SELECT scheduled_at AS scheduledAt FROM mailings;",
+            ),
+          ),
+        );
+        expect(stored).toEqual({ scheduledAt: "2030-01-01T00:00:00.000Z" });
+
+        const conflict = await create("2030-01-01T00:00:00.001Z");
+        expect(conflict.status).toBe(409);
+        await expect(conflict.json()).resolves.toMatchObject({
+          error: { code: "idempotency_conflict" },
+        });
+      },
+    );
+  });
+
   it("rejects same-key creates with a different normalized request", async () => {
     await withTestApp(
       { auth: { apiKeyPermissions: { mailings: ["write"] } } },

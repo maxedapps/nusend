@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+
+      # Node >= 22.5 for the stable node:sqlite used by the test database layer.
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      # Bun runs the production SQLite driver and the migration/driver-parity
+      # subprocess scenarios exercised by the test suite.
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check (format, lint, typecheck, test)
+        run: pnpm check
+
+      - name: Test audit tooling
+        run: pnpm audit:test
+
+      - name: Validate committed test audit
+        run: pnpm audit:validate
+
+      - name: Check generated test-audit view
+        run: pnpm audit:render:check
+
+      - name: Collect current test inventory
+        run: pnpm exec vitest run --reporter=json --outputFile="$RUNNER_TEMP/nusend-test-audit-current.json"
+
+      - name: Compare current test inventory
+        run: node scripts/test-quality-audit/cli.mjs compare-report --snapshot final --report "$RUNNER_TEMP/nusend-test-audit-current.json" --inventory docs/test-audit/final-inventory.json
+
+      - name: Remove temporary test inventory
+        if: always()
+        run: rm -f "$RUNNER_TEMP/nusend-test-audit-current.json"

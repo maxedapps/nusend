@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import { createMailing } from "../mailings/create-mailing.ts";
 import type { CreateMailingInput } from "../mailings/schema.ts";
+import { DatabaseError } from "../errors.ts";
 import { Database, type DatabaseService } from "../services/database.ts";
 import {
   EmailTransport,
@@ -12,7 +13,7 @@ import {
   type SendResult,
 } from "../services/email-transport.ts";
 import { fakeEmailTransportLayer, fakeSendingConfigLayer } from "../testing/email-transport.ts";
-import { runTest, type TestServices } from "../testing/layers.ts";
+import { runTest, type CapturedLog, type TestServices } from "../testing/layers.ts";
 import { seedJob } from "../testing/queue-fixtures.ts";
 import { runSendWorkerOnce, type SendWorkerOnceResult } from "./runner.ts";
 
@@ -32,13 +33,13 @@ function baseInput(overrides: Partial<CreateMailingInput> = {}): CreateMailingIn
   };
 }
 
-function runSendScenario<A, E, R>(effect: Effect.Effect<A, E, R>) {
+function runSendScenario<A, E, R>(effect: Effect.Effect<A, E, R>, logSink?: CapturedLog[]) {
   const fake = fakeEmailTransportLayer();
   const provided = effect.pipe(
     Effect.provide(Layer.mergeAll(fake.layer, fakeSendingConfigLayer())),
   ) as Effect.Effect<A, E, TestServices>;
 
-  return runTest(provided);
+  return runTest(provided, { logSink });
 }
 
 type StaleLeaseOutcome =
@@ -108,7 +109,8 @@ function runStaleLeaseScenario(outcome: StaleLeaseOutcome) {
 }
 
 describe("send queue runner", () => {
-  it("claims and completes due send-delivery jobs", async () => {
+  it("claims and completes due send-delivery jobs with safe cycle logs", async () => {
+    const logs: CapturedLog[] = [];
     const outcome = await runSendScenario(
       Effect.gen(function* () {
         yield* TestClock.setTime(fixedTime);
@@ -123,6 +125,7 @@ describe("send queue runner", () => {
           result,
         };
       }),
+      logs,
     );
 
     expect(outcome.result).toEqual({
@@ -135,6 +138,83 @@ describe("send queue runner", () => {
     });
     expect(outcome.job).toEqual({ lockedBy: null, state: "succeeded" });
     expect(outcome.mailing).toEqual({ state: "completed" });
+    const serialized = JSON.stringify(logs.map((entry) => entry.message));
+    expect(serialized).toContain("send worker cycle completed");
+    expect(serialized).toContain('"claimed":1');
+    expect(serialized).toContain('"succeeded":1');
+    for (const sensitive of [
+      "user@example.com",
+      "Hello",
+      "sender@example.com",
+      "unsubscribe-token",
+      "api-key",
+      "cookie",
+    ]) {
+      expect(serialized).not.toContain(sensitive);
+    }
+  });
+
+  it("finalizes the started attempt when the final outcome write dead-letters the job", async () => {
+    const fake = fakeEmailTransportLayer();
+    const outcome = await runTest(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(fixedTime);
+        yield* createMailing(baseInput());
+        const real = yield* Database;
+        yield* real.run("force:max-attempts", "UPDATE jobs SET max_attempts = 1;");
+
+        let failedOutcomeWrite = false;
+        const failingDb: DatabaseService = {
+          ...real,
+          get: <T>(
+            operation: string,
+            sql: string,
+            params?: Record<string, string | number | null>,
+          ) => {
+            if (operation === "sending:attempt:succeed" && !failedOutcomeWrite) {
+              failedOutcomeWrite = true;
+              return Effect.fail(
+                new DatabaseError({
+                  cause: new Error("one-shot outcome write failure"),
+                  operation,
+                }),
+              );
+            }
+            return real.get<T>(operation, sql, params);
+          },
+        };
+
+        const firstResult = yield* runSendWorkerOnce({ workerId: "worker_1" }).pipe(
+          Effect.provideService(Database, failingDb),
+        );
+        const secondResult = yield* runSendWorkerOnce({ workerId: "worker_2" });
+
+        return {
+          attempt: yield* real.get(
+            "assert:attempt",
+            `SELECT status, error_message AS errorMessage,
+                    CASE WHEN finished_at IS NULL THEN 0 ELSE 1 END AS finished
+             FROM send_attempts;`,
+          ),
+          delivery: yield* real.get(
+            "assert:delivery",
+            "SELECT status, last_error AS lastError FROM deliveries;",
+          ),
+          firstResult,
+          job: yield* real.get("assert:job", "SELECT state FROM jobs;"),
+          mailing: yield* real.get("assert:mailing", "SELECT state FROM mailings;"),
+          secondResult,
+        };
+      }).pipe(Effect.provide(Layer.mergeAll(fake.layer, fakeSendingConfigLayer()))),
+    );
+
+    expect(outcome.firstResult).toMatchObject({ claimed: 1, dead: 1 });
+    expect(outcome.job).toEqual({ state: "dead" });
+    expect(outcome.delivery).toMatchObject({ status: "failed" });
+    expect(outcome.attempt).toMatchObject({ finished: 1, status: "ambiguous" });
+    expect(outcome.mailing).toEqual({ state: "completed" });
+    expect(outcome.secondResult).toMatchObject({ claimed: 0, dead: 0, failed: 0, succeeded: 0 });
+    expect(fake.state.sent).toHaveLength(1);
   });
 
   it("counts skipped stale leases after processor success", async () => {
@@ -232,5 +312,113 @@ describe("send queue runner", () => {
       status: "ambiguous",
     });
     expect(outcome.mailing).toEqual({ state: "completed" });
+  });
+
+  it("repairs an orphaned dead job whose delivery is still queued", async () => {
+    const outcome = await runSendScenario(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(fixedTime);
+        // A dead job left behind by a crash before reconciliation ran; the
+        // delivery is still queued and the mailing still sending.
+        yield* seedJob({ id: "orphan", state: "dead" });
+        const db = yield* Database;
+        yield* db.run(
+          "seed:sending-mailing",
+          "UPDATE mailings SET state = 'sending' WHERE id = 'mailing_seed';",
+        );
+
+        yield* runSendWorkerOnce({ workerId: "worker_1" });
+
+        return {
+          delivery: yield* db.get("assert:delivery", "SELECT status FROM deliveries;"),
+          mailing: yield* db.get("assert:mailing", "SELECT state FROM mailings;"),
+        };
+      }),
+    );
+
+    expect(outcome.delivery).toEqual({ status: "failed" });
+    expect(outcome.mailing).toEqual({ state: "completed" });
+  });
+
+  it("repairs an orphaned dead job whose delivery is stuck sending with a started attempt", async () => {
+    const outcome = await runSendScenario(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(fixedTime);
+        yield* seedJob({ id: "orphan", state: "dead" });
+        const db = yield* Database;
+        yield* db.run(
+          "seed:sending-delivery",
+          "UPDATE deliveries SET status = 'sending' WHERE id = 'delivery_orphan';",
+        );
+        yield* db.run(
+          "seed:started-attempt",
+          `INSERT INTO send_attempts (id, delivery_id, job_id, attempt_no, status, started_at)
+           VALUES ('attempt_1', 'delivery_orphan', 'orphan', 1, 'started', '2026-07-03T11:58:00.000Z');`,
+        );
+
+        yield* runSendWorkerOnce({ workerId: "worker_1" });
+
+        return {
+          attempt: yield* db.get("assert:attempt", "SELECT status FROM send_attempts;"),
+          delivery: yield* db.get("assert:delivery", "SELECT status FROM deliveries;"),
+        };
+      }),
+    );
+
+    // The started attempt must be finalized to ambiguous, not left dangling.
+    expect(outcome.attempt).toEqual({ status: "ambiguous" });
+    expect(outcome.delivery).toEqual({ status: "failed" });
+  });
+
+  it("repairs a mailing stuck sending though all deliveries are terminal", async () => {
+    const outcome = await runSendScenario(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(fixedTime);
+        // A crash between the last delivery completing and the mailing refresh:
+        // delivery is terminal (sent) but the mailing is still sending, with no
+        // dead job to trigger the other sweep.
+        yield* seedJob({ id: "done", state: "succeeded" });
+        const db = yield* Database;
+        yield* db.run(
+          "seed:sent-delivery",
+          "UPDATE deliveries SET status = 'sent' WHERE id = 'delivery_done';",
+        );
+        yield* db.run(
+          "seed:sending-mailing",
+          "UPDATE mailings SET state = 'sending' WHERE id = 'mailing_seed';",
+        );
+
+        yield* runSendWorkerOnce({ workerId: "worker_1" });
+
+        return yield* db.get("assert:mailing", "SELECT state FROM mailings;");
+      }),
+    );
+
+    expect(outcome).toEqual({ state: "completed" });
+  });
+
+  it("still returns the cycle result when recording the worker run fails", async () => {
+    const result = await runSendScenario(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(fixedTime);
+        const real = yield* Database;
+        // Fail only the observability worker-runs insert.
+        const failingDb: DatabaseService = {
+          ...real,
+          run: (operation, sql, params) =>
+            operation === "worker-runs:insert"
+              ? Effect.fail(new DatabaseError({ cause: new Error("locked"), operation }))
+              : real.run(operation, sql, params),
+        };
+
+        return yield* runSendWorkerOnce({ mode: "loop", workerId: "worker_1" }).pipe(
+          Effect.provideService(Database, failingDb),
+        );
+      }),
+    );
+
+    // The cycle succeeds despite the failed worker-run insert (observability only).
+    expect(result.succeeded).toBe(0);
+    expect(result.claimed).toBe(0);
   });
 });

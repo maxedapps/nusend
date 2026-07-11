@@ -1,6 +1,6 @@
 // Driver-agnostic synchronous SQLite service. Interface + key only — driver
 // implementations live in database-bun.ts (production) and testing/layers.ts (node).
-import { Context, Effect, Exit } from "effect";
+import { Context, Effect, Exit, Option, type Semaphore } from "effect";
 
 import { DatabaseError } from "../errors.ts";
 
@@ -35,6 +35,55 @@ export interface DatabaseService {
 }
 
 export const Database = Context.Service<DatabaseService>("nusend/Database");
+
+// Fiber-scoped marker set only inside a transaction's `work` (see
+// serializeDatabaseService). It must be fiber-scoped, not shared closure state:
+// a shared flag set by a suspended permit-holder would be read by a concurrent
+// fiber, which would then wrongly bypass the semaphore and write inside the open
+// transaction. Do NOT fork long-lived fibers inside transaction `work` — a fork
+// inherits the marker and would keep bypassing serialization after the
+// transaction ends (`work` is documented DB-only above).
+export const InTransaction = Context.Service<true>("nusend/InTransaction");
+
+// Serializes all access to one SQLite connection through a single-permit
+// semaphore, so concurrent request fibers cannot interleave statements into an
+// open transaction (which SQLite runs on the shared connection). Statements
+// issued from inside a transaction's `work` carry the InTransaction marker and
+// bypass acquisition — the permit is already held, so re-acquiring would
+// deadlock. `ping` stays unserialized: it is read-only and must answer during
+// startup before anything else runs.
+export function serializeDatabaseService(
+  raw: DatabaseService,
+  semaphore: Semaphore.Semaphore,
+): DatabaseService {
+  const serialize = <A>(effect: Effect.Effect<A, DatabaseError>): Effect.Effect<A, DatabaseError> =>
+    Effect.serviceOption(InTransaction).pipe(
+      Effect.flatMap((marker) =>
+        Option.isSome(marker) ? effect : semaphore.withPermits(1)(effect),
+      ),
+    );
+
+  return {
+    all: <T>(operation: string, sql: string, params?: SqlParams) =>
+      serialize(raw.all<T>(operation, sql, params)),
+    exec: (operation, sql) => serialize(raw.exec(operation, sql)),
+    get: <T>(operation: string, sql: string, params?: SqlParams) =>
+      serialize(raw.get<T>(operation, sql, params)),
+    ping: raw.ping,
+    run: (operation, sql, params) => serialize(raw.run(operation, sql, params)),
+    // A nested transaction (marker already present) runs raw: its BEGIN fails at
+    // `transaction:begin` exactly as before, without acquiring the held permit
+    // (which would self-deadlock). A top-level transaction acquires the permit
+    // and provides the marker to `work` so nested statements bypass.
+    transaction: (work) =>
+      Effect.serviceOption(InTransaction).pipe(
+        Effect.flatMap((marker) => {
+          const inner = raw.transaction(Effect.provideService(work, InTransaction, true));
+          return Option.isSome(marker) ? inner : semaphore.withPermits(1)(inner);
+        }),
+      ),
+  };
+}
 
 // Shared BEGIN IMMEDIATE / COMMIT / ROLLBACK combinator so both drivers cannot
 // drift. `execRaw` runs one statement synchronously on the underlying connection.

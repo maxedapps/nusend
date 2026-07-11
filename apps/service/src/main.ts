@@ -1,9 +1,10 @@
 // Service entrypoint — the composition boundary: read config, build the layer
 // stack, create the ManagedRuntime, serve. Shutdown stops the server and then
 // disposes the runtime (which closes the database via the layer finalizer).
-import { ConfigProvider, Effect, Layer, ManagedRuntime, Option } from "effect";
+import { ConfigProvider, Effect, Exit, Layer, ManagedRuntime, Option } from "effect";
 
 import { createApp } from "./app.ts";
+import { assertMigrationsUpToDate, describeStartupMigrationFailure } from "./db/migration-check.ts";
 import { ApiKeysLive } from "./api-keys/service.ts";
 import { DeviceAuthorizationsLive } from "./device-auth/service.ts";
 import { serviceConfig, sesOperationsConfig, unsubscribeConfig } from "./config.ts";
@@ -89,11 +90,26 @@ try {
   process.exit(1);
 }
 
-const app = createApp({ runtime });
+// Fail fast on a stale/empty schema: refuse to serve if migrations are pending,
+// missing, or checksum-drifted rather than 500ing every route with "no such table".
+const migrationCheck = await runtime.runPromiseExit(assertMigrationsUpToDate());
+if (Exit.isFailure(migrationCheck)) {
+  console.error(`Failed to start: ${describeStartupMigrationFailure(migrationCheck.cause)}`);
+  await runtime.dispose();
+  process.exit(1);
+}
+
+// The canonical public origin from BETTER_AUTH_URL, so same-origin checks and
+// verification URLs are correct behind a TLS-terminating proxy.
+const publicOrigin = new URL(config.auth.value.baseUrl).origin;
+const app = createApp({ publicOrigin, runtime });
 
 const server = Bun.serve({
   fetch: app.fetch,
   hostname: config.host,
+  // Global backstop against unbounded pre-auth bodies (e.g. /api/auth/*,
+  // /cli/activate have no per-route bodyLimit). Above the 1 MB mailing limit.
+  maxRequestBodySize: 2 * 1024 * 1024,
   port: config.port,
 });
 
@@ -105,7 +121,14 @@ async function shutdown(): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
 
-  server.stop();
+  // Drain in-flight requests before disposing the runtime (which closes the
+  // database); otherwise SIGTERM on every deploy/restart can fail active
+  // requests with closed-database errors. Bound the wait so a stuck request
+  // cannot block shutdown forever.
+  await Promise.race([
+    server.stop(),
+    new Promise((resolve) => setTimeout(resolve, 10_000)).then(() => server.stop(true)),
+  ]);
   await runtime.dispose();
   process.exit(0);
 }

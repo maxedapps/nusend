@@ -113,6 +113,49 @@ describe("api key routes", () => {
     );
   });
 
+  it("forbids a scoped key from revoking a broader key but lets the owner revoke it", async () => {
+    await withTestApp(
+      { auth: { session: { userId: "user_1" } }, ids: ["broad", "narrow"], realApiKeys: true },
+      async (app, runtime) => {
+        await seedUser(runtime);
+
+        const broad = (await (
+          await app.fetch(
+            jsonRequest("http://localhost/api/api-keys", {
+              name: "broad",
+              permissions: { api_keys: ["read", "write"], contacts: ["read", "write"] },
+            }),
+          )
+        ).json()) as { apiKey: { id: string; key: string } };
+
+        // Narrow key can manage keys (api_keys:write) but lacks contacts:write.
+        const narrow = (await (
+          await app.fetch(
+            jsonRequest("http://localhost/api/api-keys", {
+              name: "narrow",
+              permissions: { api_keys: ["read", "write"], contacts: ["read"] },
+            }),
+          )
+        ).json()) as { apiKey: { id: string; key: string } };
+
+        // Narrow key revoking the broader key → 403 (would otherwise be a lockout vector).
+        const forbidden = await app.fetch(
+          new Request(`http://localhost/api/api-keys/${broad.apiKey.id}`, {
+            headers: { "x-api-key": narrow.apiKey.key },
+            method: "DELETE",
+          }),
+        );
+        expect(forbidden.status).toBe(403);
+
+        // The session owner can still revoke the broad key.
+        const ownerRevoke = await app.fetch(
+          new Request(`http://localhost/api/api-keys/${broad.apiKey.id}`, { method: "DELETE" }),
+        );
+        expect(ownerRevoke.status).toBe(204);
+      },
+    );
+  });
+
   it("rejects unknown permission resources", async () => {
     await withTestApp(
       {

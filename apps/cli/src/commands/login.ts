@@ -3,10 +3,11 @@ import type { PermissionSet } from "@nusend/api-contract/permissions";
 
 import { NusendHttpClient } from "../client/http.js";
 import { NusendApi } from "../client/nusend-api.js";
-import { normalizeBaseUrl, saveConfig } from "../config/profiles.js";
+import { loadConfig, normalizeBaseUrl, saveConfig } from "../config/profiles.js";
 import { printJson } from "../output/format.js";
 import {
   commandPositionals,
+  httpTimeoutMsFromEnv,
   permissionsFromArgs,
   readOption,
   selectedProfile,
@@ -21,7 +22,9 @@ export async function runLoginCommand(args: string[], context: CommandContext): 
   );
   const name = readOption(args, "--name") ?? `nusend-cli on ${hostname() || "local"}`;
   const permissions = permissionsFromArgs(args, defaultLoginPermissions());
-  const api = new NusendApi(new NusendHttpClient({ baseUrl }));
+  const api = new NusendApi(
+    new NusendHttpClient({ baseUrl, timeoutMs: httpTimeoutMsFromEnv(context.env) }),
+  );
   const started = await api.startDeviceAuthorization({ clientName: name, permissions });
 
   if (context.options.json) {
@@ -68,10 +71,14 @@ async function pollUntilApproved(
       createdAt: polled.apiKey.createdAt,
       preview: polled.apiKey.preview,
     });
+    // Re-read the config immediately before merging: the device approval wait can
+    // take minutes, during which another `login` for a different profile may have
+    // written the file. Merging into the process-start snapshot would drop it.
+    const current = await loadConfig(context.env);
     await saveConfig(
       {
-        activeProfile: context.config.activeProfile ?? profile,
-        profiles: { ...(context.config.profiles ?? {}), [profile]: { baseUrl } },
+        activeProfile: current.activeProfile ?? profile,
+        profiles: { ...(current.profiles ?? {}), [profile]: { baseUrl } },
       },
       context.env,
     );

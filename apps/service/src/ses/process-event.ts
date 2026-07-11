@@ -376,6 +376,10 @@ function insertEventRow(
 ): Effect.Effect<void, DatabaseError, IdGeneratorService> {
   return Effect.gen(function* () {
     const normalizedEmail = row.email?.trim().toLowerCase() || null;
+    // A suppression is only written when there is a normalized recipient email
+    // (see below), so an event that would suppress but carries no usable email is
+    // merely `recorded` — do not claim it was `suppressed`.
+    const actionTaken = row.shouldSuppressReason && !normalizedEmail ? "recorded" : row.actionTaken;
     const resolved = yield* resolveDelivery(db, event, normalizedEmail);
     const idGenerator = yield* IdGenerator;
     const eventId = yield* idGenerator.next;
@@ -395,7 +399,7 @@ function insertEventRow(
          $linkUrl, $linkTagsJson, $ipAddress, $userAgent, $createdAt
        ) ON CONFLICT(dedupe_key) DO NOTHING;`,
       {
-        actionTaken: row.actionTaken,
+        actionTaken,
         bounceSubType: row.bounceSubType,
         bounceType: row.bounceType,
         complaintFeedbackType: row.complaintFeedbackType,
@@ -421,7 +425,7 @@ function insertEventRow(
     );
 
     yield* Effect.logInfo("ses event row processed", {
-      actionTaken: row.actionTaken,
+      actionTaken,
       deliveryId: resolved?.deliveryId ?? null,
       eventType: event.eventType,
       mailingId: resolved?.mailingId ?? null,

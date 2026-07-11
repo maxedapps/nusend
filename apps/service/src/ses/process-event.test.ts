@@ -67,6 +67,41 @@ describe("handleSesSnsRequest", () => {
     expect(result.suppressions).toEqual([]);
   });
 
+  it("records (not suppresses) a permanent bounce that carries no recipient email", async () => {
+    const bounceEnvelope = envelope("sns_bounce_noemail", {
+      bounce: {
+        bounceType: "Permanent",
+        bouncedRecipients: [{ emailAddress: "" }],
+        feedbackId: "feedback-id",
+      },
+      eventType: "Bounce",
+      mail: mail("ses_bounce_noemail", ""),
+    });
+
+    const result = await runTest(
+      Effect.gen(function* () {
+        yield* handleSesSnsRequest(JSON.stringify(bounceEnvelope));
+        const db = yield* Database;
+        return {
+          events: yield* db.all<{ actionTaken: string }>(
+            "test:events",
+            "SELECT action_taken AS actionTaken FROM ses_events;",
+          ),
+          suppressions: yield* db.all("test:suppressions", "SELECT email FROM suppressions;"),
+        };
+      }),
+      {
+        snsVerifier: (message) =>
+          Effect.succeed(JSON.parse(String(message)) as VerifiedSnsEnvelope),
+      },
+    );
+
+    // No usable email → no suppression was written, so action must not claim "suppressed".
+    expect(result.suppressions).toEqual([]);
+    expect(result.events).toHaveLength(1);
+    expect(result.events[0]?.actionTaken).not.toBe("suppressed");
+  });
+
   it("dedupes SNS redelivery and suppresses permanent bounces once", async () => {
     const bounceEnvelope = envelope("sns_bounce", {
       bounce: {

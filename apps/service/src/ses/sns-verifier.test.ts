@@ -118,7 +118,7 @@ describe("SnsMessageVerifier", () => {
       "arn:aws-cn:sns:cn-north-1:123456789012:topic",
       "https://sns.cn-north-1.amazonaws.com.cn/SimpleNotificationService-abc123.pem",
     ],
-  ])("accepts expected SNS signing certificate URLs", async (arn, url) => {
+  ])("accepts SNS signing certificate for topic %s at URL %s", async (arn, url) => {
     await expect(Effect.runPromise(validateSigningCertUrl(url, arn))).resolves.toEqual(
       new URL(url),
     );
@@ -135,7 +135,7 @@ describe("SnsMessageVerifier", () => {
     ["https://sns.us-east-1.amazonaws.com/SimpleNotificationService-abc123.pem?x=1", topicArn],
     ["https://sns.us-east-1.amazonaws.com/SimpleNotificationService-abc123.pem#frag", topicArn],
     [signingCertUrl, "not-an-arn"],
-  ])("rejects unsafe SNS signing certificate URLs", async (url, arn) => {
+  ])("rejects unsafe SNS signing certificate URL %s for topic %s", async (url, arn) => {
     await expect(Effect.runPromise(validateSigningCertUrl(url, arn))).rejects.toMatchObject({
       _tag: "SnsVerificationError",
     });
@@ -194,6 +194,30 @@ describe("SnsMessageVerifier", () => {
     ).rejects.toMatchObject({ _tag: "SnsVerificationError" });
   });
 
+  it("caches the signing certificate per URL and refetches after the TTL", async () => {
+    const { envelope, publicKeyPem } = await signedEnvelope(
+      baseEnvelope,
+      notificationStringToSignFields(baseEnvelope),
+    );
+    const fetchCertificate = vi.fn(() => Effect.succeed(publicKeyPem));
+    let clock = 1_000;
+    const verifier = makeSnsMessageVerifier({
+      cacheTtlMs: 1_000,
+      fetchCertificate,
+      now: () => clock,
+    });
+
+    await Effect.runPromise(verifier.verify(JSON.stringify(envelope)));
+    await Effect.runPromise(verifier.verify(JSON.stringify(envelope)));
+    // Second verification within the TTL reuses the cached certificate.
+    expect(fetchCertificate).toHaveBeenCalledTimes(1);
+
+    // After the TTL elapses, it refetches.
+    clock += 2_000;
+    await Effect.runPromise(verifier.verify(JSON.stringify(envelope)));
+    expect(fetchCertificate).toHaveBeenCalledTimes(2);
+  });
+
   it.each(["1", "3"])("rejects unsupported SignatureVersion %s", async (version) => {
     const unsignedEnvelope = {
       ...baseEnvelope,
@@ -226,22 +250,24 @@ describe("SnsMessageVerifier", () => {
     expect(fetchCertificate).not.toHaveBeenCalled();
   });
 
-  it("maps certificate fetch failures and oversized bodies to SnsVerificationError", async () => {
+  it("maps certificate fetch rejection to SnsVerificationError", async () => {
     const fetchCalls: RequestInit[] = [];
     vi.stubGlobal("fetch", async (_url: URL | string, init?: RequestInit) => {
       if (init) fetchCalls.push(init);
       return new Response("nope", { status: 500 });
     });
-    await expect(
-      Effect.runPromise(fetchSigningCertificate(new URL(signingCertUrl))),
-    ).rejects.toMatchObject({ _tag: "SnsVerificationError" });
+
+    await expectCertificateFetchFailure();
     expect(fetchCalls[0]?.redirect).toBe("error");
+  });
 
+  it("maps a 204 certificate response to SnsVerificationError", async () => {
     vi.stubGlobal("fetch", async () => new Response(null, { status: 204 }));
-    await expect(
-      Effect.runPromise(fetchSigningCertificate(new URL(signingCertUrl))),
-    ).rejects.toMatchObject({ _tag: "SnsVerificationError" });
 
+    await expectCertificateFetchFailure();
+  });
+
+  it("rejects an oversized certificate content-length", async () => {
     vi.stubGlobal(
       "fetch",
       async () =>
@@ -249,10 +275,11 @@ describe("SnsMessageVerifier", () => {
           headers: { "content-length": String(64 * 1024 + 1) },
         }),
     );
-    await expect(
-      Effect.runPromise(fetchSigningCertificate(new URL(signingCertUrl))),
-    ).rejects.toMatchObject({ _tag: "SnsVerificationError" });
 
+    await expectCertificateFetchFailure();
+  });
+
+  it("cancels a certificate stream that exceeds the body cap", async () => {
     let streamCancelled = false;
     vi.stubGlobal(
       "fetch",
@@ -268,9 +295,8 @@ describe("SnsMessageVerifier", () => {
           }),
         ),
     );
-    await expect(
-      Effect.runPromise(fetchSigningCertificate(new URL(signingCertUrl))),
-    ).rejects.toMatchObject({ _tag: "SnsVerificationError" });
+
+    await expectCertificateFetchFailure();
     expect(streamCancelled).toBe(true);
   });
 
@@ -284,6 +310,12 @@ describe("SnsMessageVerifier", () => {
     ).rejects.toMatchObject({ _tag: "SnsVerificationError" });
   });
 });
+
+async function expectCertificateFetchFailure(): Promise<void> {
+  await expect(
+    Effect.runPromise(fetchSigningCertificate(new URL(signingCertUrl))),
+  ).rejects.toMatchObject({ _tag: "SnsVerificationError" });
+}
 
 async function signedEnvelope(
   envelope: SnsEnvelope,

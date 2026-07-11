@@ -10,6 +10,7 @@ import { runConfigCommand } from "./commands/config.js";
 import { runContactsCommand } from "./commands/contacts.js";
 import {
   exitCodeForError,
+  httpTimeoutMsFromEnv,
   parseGlobalOptions,
   printError,
   selectedProfile,
@@ -21,6 +22,7 @@ import { runLoginCommand } from "./commands/login.js";
 import { runLogoutCommand } from "./commands/logout.js";
 import { runMailingsCommand } from "./commands/mailings.js";
 import { runWhoamiCommand } from "./commands/whoami.js";
+import { validateCommandGrammar } from "./commands/options.js";
 import { loadConfig, resolveProfile } from "./config/profiles.js";
 import { FileCredentialStore } from "./credentials/file-store.js";
 
@@ -32,7 +34,16 @@ export { printError };
 
 export async function runCli(args: string[], env = process.env): Promise<CliResult> {
   const parsed = parseGlobalOptions(expandEqualsSyntax(args));
-  if (parsed.rest.length === 0 || parsed.rest.includes("--help") || parsed.rest.includes("-h")) {
+  const helpCount = parsed.rest.filter((token) => token === "--help" || token === "-h").length;
+  const versionCount = parsed.rest.filter(
+    (token) => token === "--version" || token === "-v",
+  ).length;
+  if (helpCount > 1) throw new UsageError("Duplicate option: --help", 2);
+  if (versionCount > 1) throw new UsageError("Duplicate option: --version", 2);
+  if (helpCount > 0 && versionCount > 0) {
+    throw new UsageError("--help and --version cannot be combined.", 2);
+  }
+  if (parsed.rest.length === 0 || helpCount === 1) {
     console.log(helpText);
     return { exitCode: 0 };
   }
@@ -41,10 +52,8 @@ export async function runCli(args: string[], env = process.env): Promise<CliResu
     return { exitCode: 0 };
   }
 
+  validateCommandGrammar(parsed.rest);
   const [command, ...rest] = parsed.rest;
-  if (!command || !knownCommands.has(command))
-    throw new UsageError(`Unknown command: ${command}`, 2);
-
   const store = new FileCredentialStore(env);
   const config = await loadConfig(env);
   const baseContext: CommandContext = { config, env, options: parsed.options, store };
@@ -59,10 +68,14 @@ export async function runCli(args: string[], env = process.env): Promise<CliResu
     let api: NusendApi | undefined;
     let revokeSetupError: unknown;
     if (rest.includes("--revoke") && credential) {
+      // Validate the shared HTTP timeout outside best-effort revoke setup so an
+      // invalid CLI environment remains a usage error instead of being swallowed.
+      httpTimeoutMsFromEnv(env);
       try {
         api = makeApi(
           resolveProfileForCli({ ...parsed.options, config, env }).baseUrl,
           credential.apiKey,
+          env,
         );
       } catch (error) {
         revokeSetupError = error;
@@ -70,16 +83,6 @@ export async function runCli(args: string[], env = process.env): Promise<CliResu
     }
     await runLogoutCommand(rest, { ...baseContext, api }, revokeSetupError);
   } else {
-    if (command === "whoami" && rest.length > 0) {
-      throw new UsageError(`whoami takes no arguments: ${rest[0]}`, 2);
-    }
-    const known = subcommands[command];
-    if (known && (!rest[0] || !known.has(rest[0]))) {
-      throw new UsageError(
-        rest[0] ? `Unknown ${command} command: ${rest[0]}` : `Unknown ${command} command.`,
-        2,
-      );
-    }
     const profileName = selectedProfile(baseContext);
     const credential = await store.read(profileName);
     if (!credential) {
@@ -89,7 +92,7 @@ export async function runCli(args: string[], env = process.env): Promise<CliResu
       );
     }
     const profile = resolveProfileForCli({ ...parsed.options, config, env });
-    const context = { ...baseContext, api: makeApi(profile.baseUrl, credential.apiKey) };
+    const context = { ...baseContext, api: makeApi(profile.baseUrl, credential.apiKey, env) };
     if (command === "whoami") await runWhoamiCommand(context);
     else if (command === "api-keys") await runApiKeysCommand(rest, context);
     else if (command === "contacts") await runContactsCommand(rest, context);
@@ -133,25 +136,11 @@ function resolveProfileForCli(
   }
 }
 
-function makeApi(baseUrl: string, apiKey: string): NusendApi {
-  return new NusendApi(new NusendHttpClient({ apiKey, baseUrl }));
+function makeApi(baseUrl: string, apiKey: string, env: NodeJS.ProcessEnv): NusendApi {
+  return new NusendApi(
+    new NusendHttpClient({ apiKey, baseUrl, timeoutMs: httpTimeoutMsFromEnv(env) }),
+  );
 }
-
-const knownCommands = new Set([
-  "api-keys",
-  "config",
-  "contacts",
-  "login",
-  "logout",
-  "mailings",
-  "whoami",
-]);
-
-const subcommands: Record<string, ReadonlySet<string>> = {
-  "api-keys": new Set(["create", "list", "revoke", "rotate"]),
-  contacts: new Set(["create", "delete", "get", "list", "update"]),
-  mailings: new Set(["get", "list"]),
-};
 
 const booleanOptions = new Set(["--help", "--json", "--no-expiry", "--revoke", "--version"]);
 
@@ -173,5 +162,9 @@ function expandEqualsSyntax(args: string[]): string[] {
 }
 
 if (isMainEntry(process.argv[1], import.meta.url)) {
-  runMain(process.argv.slice(2)).then(({ exitCode }) => process.exit(exitCode));
+  // Set exitCode and let the process exit naturally instead of process.exit(),
+  // which discards buffered stdout writes and truncates large piped --json output.
+  runMain(process.argv.slice(2)).then(({ exitCode }) => {
+    process.exitCode = exitCode;
+  });
 }

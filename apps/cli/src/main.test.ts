@@ -42,27 +42,26 @@ describe("runCli", () => {
     }
   });
 
-  it("formats every error class consistently in human and JSON modes", async () => {
+  it.each([
+    ["usage", new UsageError("Bad arguments.", 2), "usage"],
+    ["unauthenticated usage", new UsageError("Authentication required.", 3), "unauthenticated"],
+    ["HTTP conflict", new CliHttpError(409, "conflict", "Conflict."), "conflict"],
+    ["unexpected Error", new Error("Unexpected."), "internal_error"],
+  ] as const)("formats %s errors consistently in human and JSON modes", (_label, value, code) => {
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const cases = [
-      [new UsageError("Bad arguments.", 2), "usage"],
-      [new UsageError("Authentication required.", 3), "unauthenticated"],
-      [new CliHttpError(409, "conflict", "Conflict."), "conflict"],
-      [new Error("Unexpected."), "internal_error"],
-    ] as const;
 
-    for (const [value, code] of cases) {
-      error.mockClear();
-      printError(value, true);
-      expect(error).toHaveBeenCalledTimes(1);
-      expect(JSON.parse(String(error.mock.calls[0]?.[0]))).toMatchObject({ error: { code } });
-
-      error.mockClear();
-      printError(value, false);
-      expect(String(error.mock.calls[0]?.[0])).toMatch(/^Error: /);
-    }
+    printError(value, true);
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(error.mock.calls[0]?.[0]))).toMatchObject({ error: { code } });
 
     error.mockClear();
+    printError(value, false);
+    expect(String(error.mock.calls[0]?.[0])).toMatch(/^Error: /);
+  });
+
+  it("formats runMain usage errors as JSON", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
     await expect(runMain(["--json", "unknown"], {})).resolves.toEqual({ exitCode: 2 });
     expect(error).toHaveBeenCalledTimes(1);
     expect(JSON.parse(String(error.mock.calls[0]?.[0]))).toMatchObject({
@@ -130,34 +129,35 @@ describe("runCli", () => {
     expect(error.mock.calls.flat().join("\n")).toContain("Hint:");
   });
 
-  it("maps unexpected, authentication, and API failures to exits 1, 3, and 4", async () => {
-    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const runCase = async (response: Response, exitCode: number, code: string) => {
-      globalThis.fetch = vi.fn(async () => response) as unknown as typeof fetch;
-      error.mockClear();
-      await expect(
-        runMain(["--json", "whoami"], {
-          NUSEND_API_KEY: "nusend_test",
-          NUSEND_BASE_URL: "https://mail.example.com",
-        }),
-      ).resolves.toEqual({ exitCode });
-      expect(JSON.parse(String(error.mock.calls[0]?.[0]))).toMatchObject({ error: { code } });
-    };
-
-    await runCase(new Response("not-json", { status: 200 }), 1, "internal_error");
-    await runCase(
-      Response.json(
-        { error: { code: "unauthenticated", message: "Invalid API key." } },
-        { status: 401 },
-      ),
+  it.each([
+    ["unexpected response", () => new Response("not-json", { status: 200 }), 1, "internal_error"],
+    [
+      "authentication failure",
+      () =>
+        Response.json(
+          { error: { code: "unauthenticated", message: "Invalid API key." } },
+          { status: 401 },
+        ),
       3,
       "unauthenticated",
-    );
-    await runCase(
-      Response.json({ error: { code: "conflict", message: "Conflict." } }, { status: 409 }),
+    ],
+    [
+      "API conflict",
+      () => Response.json({ error: { code: "conflict", message: "Conflict." } }, { status: 409 }),
       4,
       "conflict",
-    );
+    ],
+  ] as const)("maps %s to its documented exit", async (_label, response, exitCode, code) => {
+    globalThis.fetch = vi.fn(async () => response()) as unknown as typeof fetch;
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await expect(
+      runMain(["--json", "whoami"], {
+        NUSEND_API_KEY: "nusend_test",
+        NUSEND_BASE_URL: "https://mail.example.com",
+      }),
+    ).resolves.toEqual({ exitCode });
+    expect(JSON.parse(String(error.mock.calls[0]?.[0]))).toMatchObject({ error: { code } });
   });
 
   it("maps non-JSON API failures to exit 4", async () => {
@@ -274,7 +274,7 @@ describe("runCli", () => {
         NUSEND_API_KEY: "nusend_test",
         NUSEND_BASE_URL: "https://mail.example.com",
       }),
-    ).rejects.toMatchObject({ exitCode: 2, message: "Missing value for --permission." });
+    ).rejects.toMatchObject({ exitCode: 2, message: "--permission requires a value." });
   });
 
   it("rejects arguments on whoami", async () => {
@@ -282,7 +282,7 @@ describe("runCli", () => {
 
     await expect(runCli(["whoami", "--version"], isolated)).rejects.toMatchObject({
       exitCode: 2,
-      message: "whoami takes no arguments: --version",
+      message: "Unknown option: --version",
     });
   });
 
@@ -310,13 +310,16 @@ describe("runCli", () => {
     }
   });
 
-  it("treats missing option values and invalid login URLs as usage errors", async () => {
+  it("treats missing option values as usage errors", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
     await expect(runMain(["--profile"], {})).resolves.toEqual({ exitCode: 2 });
     expect(error.mock.calls.flat().join("\n")).toContain("--profile requires a value");
+  });
 
-    error.mockClear();
+  it("treats invalid login URLs as usage errors", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
     await expect(
       runMain(["login", "not-a-url"], {
         XDG_CONFIG_HOME: `/tmp/nusend-invalid-url-${process.pid}-${Math.random()}`,
@@ -357,6 +360,155 @@ describe("runCli", () => {
     ).rejects.toThrow(/Device authorization/);
 
     expect(fetchMock).toHaveBeenCalled();
+  });
+
+  it.each([
+    ["unknown option", ["contacts", "list", "--emial", "x@example.com"]],
+    ["duplicate local option", ["contacts", "list", "--limit", "1", "--limit", "2"]],
+    ["wrong-subcommand option", ["contacts", "get", "contact_1", "--email", "x@example.com"]],
+    ["duplicate boolean", ["api-keys", "create", "--no-expiry", "--no-expiry"]],
+    ["duplicate global option", ["--json", "--json", "whoami"]],
+    ["mixed help aliases", ["contacts", "list", "--help", "-h"]],
+    ["unexpected whoami positional", ["whoami", "unexpected"]],
+    ["missing required positional", ["contacts", "get"]],
+    ["extra positional", ["contacts", "get", "contact_1", "unexpected"]],
+    ["positional on list", ["contacts", "list", "unexpected"]],
+    ["too many login positionals", ["login", "https://one.example", "https://two.example"]],
+  ] as const)("rejects %s in the centralized grammar before auth/network", async (_label, argv) => {
+    const fetchSpy = vi.fn();
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await expect(
+      runMain([...argv], {
+        NUSEND_API_KEY: "nusend_test",
+        NUSEND_BASE_URL: "https://mail.example.com",
+        XDG_CONFIG_HOME: `/tmp/nusend-grammar-${process.pid}-${Math.random()}`,
+      }),
+    ).resolves.toEqual({ exitCode: 2 });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("accepts repeated --permission while rejecting other duplicates", async () => {
+    const fetchMock = vi.fn(async (_input: Request | URL | string, _init?: RequestInit) =>
+      Response.json(
+        {
+          apiKey: {
+            createdAt: "2026-07-09T00:00:00.000Z",
+            expiresAt: null,
+            id: "key_1",
+            key: "nusend_raw",
+            lastUsedAt: null,
+            name: "ci",
+            permissions: { contacts: ["read", "write"] },
+            preview: "nusend…raw",
+            revokedAt: null,
+          },
+        },
+        { status: 201 },
+      ),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await expect(
+      runCli(
+        [
+          "api-keys",
+          "create",
+          "--name",
+          "ci",
+          "--permission",
+          "contacts:read",
+          "--permission",
+          "contacts:write",
+        ],
+        { NUSEND_API_KEY: "key", NUSEND_BASE_URL: "https://mail.example.com" },
+      ),
+    ).resolves.toEqual({ exitCode: 0 });
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      permissions: { contacts: ["read", "write"] },
+    });
+  });
+
+  it.each([
+    [
+      "authenticated",
+      ["whoami"],
+      { NUSEND_API_KEY: "key", NUSEND_BASE_URL: "https://mail.example.com" },
+    ],
+    ["login", ["login", "https://mail.example.com"], {}],
+  ] as const)(
+    "composes NUSEND_HTTP_TIMEOUT_MS into the %s client",
+    async (_label, argv, baseEnv) => {
+      const fetchMock = vi.fn(
+        (_input: Request | URL | string, init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+          }),
+      );
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+      vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+      await expect(
+        runMain([...argv], {
+          ...baseEnv,
+          NUSEND_HTTP_TIMEOUT_MS: "1",
+          XDG_CONFIG_HOME: `/tmp/nusend-timeout-${process.pid}-${Math.random()}`,
+        }),
+      ).resolves.toEqual({ exitCode: 4 });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
+    { label: "empty", value: "" },
+    { label: "space-only", value: " " },
+    { label: "space-padded 1", value: " 1 " },
+    { label: "tab/newline-padded 1", value: "\t1\n" },
+    { label: "zero", value: "0" },
+    { label: "fractional 1.5", value: "1.5" },
+    { label: "non-decimal abc", value: "abc" },
+    { label: "unsafe integer 9007199254740992", value: "9007199254740992" },
+  ])(
+    "rejects invalid HTTP timeout ($label) before fetch for authenticated, login, and revoke clients",
+    async ({ value }) => {
+      const fetchSpy = vi.fn();
+      globalThis.fetch = fetchSpy as unknown as typeof fetch;
+      vi.spyOn(console, "error").mockImplementation(() => undefined);
+      for (const [argv, env] of [
+        [["whoami"], { NUSEND_API_KEY: "key", NUSEND_BASE_URL: "https://mail.example.com" }],
+        [["login", "https://mail.example.com"], {}],
+        [
+          ["logout", "--revoke"],
+          { NUSEND_API_KEY: "key", NUSEND_BASE_URL: "https://mail.example.com" },
+        ],
+      ] as const) {
+        await expect(
+          runMain([...argv], {
+            ...env,
+            NUSEND_HTTP_TIMEOUT_MS: value,
+            XDG_CONFIG_HOME: `/tmp/nusend-timeout-invalid-${process.pid}-${Math.random()}`,
+          }),
+        ).resolves.toEqual({ exitCode: 2 });
+      }
+      expect(fetchSpy).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps local config repair independent of an invalid HTTP timeout", async () => {
+    const directory = await mkdtemp("/tmp/nusend-local-timeout-");
+    try {
+      await expect(
+        runCli(["config", "repair-permissions"], {
+          NUSEND_HTTP_TIMEOUT_MS: "invalid",
+          XDG_CONFIG_HOME: directory,
+        }),
+      ).resolves.toEqual({ exitCode: 0 });
+    } finally {
+      await rm(directory, { force: true, recursive: true });
+    }
   });
 
   it("creates contacts through the API", async () => {

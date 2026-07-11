@@ -25,9 +25,17 @@ export const EmailTransportSesLive: Layer.Layer<
 > = Layer.effect(
   EmailTransport,
   Effect.map(EmailSendingConfig, (config) =>
-    makeSesEmailTransport(new SESv2Client({ region: config.region }), config.requestTimeoutMs),
+    makeSesEmailTransport(makeSesClient(config.region), config.requestTimeoutMs),
   ),
 );
+
+// maxAttempts: 1 disables the SDK's built-in retries. SendEmail is not
+// idempotent, so an SDK retry after SES already accepted a message (lost
+// response) would silently double-send; the queue owns all retries, and
+// classifySesError maps connection resets to `ambiguous`.
+export function makeSesClient(region: string): SESv2Client {
+  return new SESv2Client({ maxAttempts: 1, region });
+}
 
 export function makeSesEmailTransport(
   sender: SesSender,
@@ -156,6 +164,10 @@ const retryableErrors = new Set([
   "EAI_AGAIN",
   "InternalFailure",
   "InternalServerError",
+  // Sending-quota exhaustion: the request was refused, so nothing was sent and it
+  // is safe to retry (not ambiguous). Terminal-failing it would drop every
+  // remaining recipient in a campaign that merely hit the daily quota.
+  "LimitExceededException",
   "ServiceUnavailable",
   "ServiceUnavailableException",
   "ThrottlingException",

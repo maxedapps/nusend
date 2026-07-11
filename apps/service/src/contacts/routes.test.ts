@@ -109,6 +109,20 @@ describe("contacts routes", () => {
     expect(session.status).toBe(200);
   });
 
+  it("returns 404 for get/patch/delete of an unknown contact", async () => {
+    const auth = { session: { userId: "user_1" } };
+    const get = await contactRequest("/missing_1", { auth });
+    expect(get.status).toBe(404);
+    const patch = await contactRequest("/missing_1", {
+      auth,
+      body: { email: "new@example.com" },
+      method: "PATCH",
+    });
+    expect(patch.status).toBe(404);
+    const del = await contactRequest("/missing_1", { auth, method: "DELETE" });
+    expect(del.status).toBe(404);
+  });
+
   it("creates normalized contacts and returns existing duplicates", async () => {
     await withTestApp({ auth: { apiKeyPermissions: { contacts: ["write"] } } }, async (app) => {
       const create = (email: string) =>

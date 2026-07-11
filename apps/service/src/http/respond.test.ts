@@ -1,9 +1,9 @@
 // Exhaustive error-mapping coverage for runRoute: every RouteError tag maps to
 // its frozen status/code, and infrastructure failures/defects map to 500
 // internal_error without leaking details.
-import { Effect } from "effect";
+import { Effect, Logger } from "effect";
 import { Hono } from "hono";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import {
   AuthError,
@@ -17,15 +17,18 @@ import {
   RequestValidationError,
   UnauthenticatedError,
 } from "../errors.ts";
-import { makeTestRuntime } from "../testing/layers.ts";
+import { makeTestRuntime, type CapturedLog } from "../testing/layers.ts";
 import { runRoute, type RouteError } from "./respond.ts";
 
-async function respondWith(failure: Effect.Effect<never, RouteError>): Promise<Response> {
-  const runtime = makeTestRuntime();
+async function respondWith(
+  failure: Effect.Effect<never, RouteError>,
+  logSink: CapturedLog[] = [],
+): Promise<Response> {
+  const runtime = makeTestRuntime({ logSink });
 
   try {
     const app = new Hono();
-    app.get("/probe", (context) =>
+    app.all("*", (context) =>
       runRoute(context, runtime, failure, () => context.json({ ok: true })),
     );
 
@@ -73,32 +76,84 @@ describe("runRoute error mapping", () => {
   });
 
   it.each([
-    [new DatabaseError({ cause: new Error("secret sql detail"), operation: "probe" })],
-    [new AuthError({ cause: new Error("secret auth detail"), operation: "probe" })],
-  ] as const)("maps infrastructure failure %o to a sanitized 500", async (error) => {
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    [
+      new DatabaseError({
+        cause: new Error("secret sql detail"),
+        operation: "sending:attempt:succeed",
+      }),
+      "sending",
+    ],
+    [
+      new DatabaseError({
+        cause: new Error("secret sql detail"),
+        operation: "sending:operation-sentinel",
+      }),
+      "sending",
+    ],
+    [
+      new AuthError({ cause: new Error("secret auth detail"), operation: "getSession" }),
+      "getSession",
+    ],
+  ] as const)(
+    "maps infrastructure failure %o to fixed formatted metadata",
+    async (error, expectedOperation) => {
+      const logs: CapturedLog[] = [];
+      const response = await respondWith(Effect.fail(error), logs);
 
-    const response = await respondWith(Effect.fail(error));
+      expect(response.status).toBe(500);
+      await expect(response.json()).resolves.toEqual({
+        error: { code: "internal_error", message: "Internal error." },
+      });
+      const errors = logs.filter((entry) => formattedLog(entry).includes("request failed"));
+      expect(errors).toHaveLength(1);
+      expect(formattedLog(errors[0]!)).toContain(`"operation":"${expectedOperation}"`);
+      expect(formattedLogs(logs)).not.toContain("secret");
+      expect(formattedLogs(logs)).not.toContain("operation-sentinel");
+    },
+  );
+
+  it("formats a fixed fallback for a known-class proxy whose operation getter throws", async () => {
+    const failure = new Proxy(
+      new DatabaseError({ cause: "proxy-cause-sentinel", operation: "sending:proxy-sentinel" }),
+      {
+        get: (target, property, receiver) => {
+          if (property === "operation") throw new Error("throwing-operation-sentinel");
+          return Reflect.get(target, property, receiver);
+        },
+      },
+    );
+    const logs: CapturedLog[] = [];
+
+    const response = await respondWith(Effect.fail(failure), logs);
 
     expect(response.status).toBe(500);
-    await expect(response.json()).resolves.toEqual({
-      error: { code: "internal_error", message: "Internal error." },
-    });
-    expect(errorSpy).toHaveBeenCalled();
-    expect(errorSpy.mock.calls.join("\n")).not.toContain("secret");
+    const formatted = formattedLogs(logs);
+    expect(formatted).toContain('"failureTag":"Unknown"');
+    for (const secret of [
+      "proxy-cause-sentinel",
+      "proxy-sentinel",
+      "throwing-operation-sentinel",
+    ]) {
+      expect(formatted).not.toContain(secret);
+    }
   });
 
-  it("maps defects to a sanitized 500", async () => {
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
-
-    const response = await respondWith(Effect.die(new Error("unexpected crash detail")));
+  it("maps defects to one structured sanitized 500 log", async () => {
+    const logs: CapturedLog[] = [];
+    const response = await respondWith(
+      Effect.die({ _tag: "defect-tag-sentinel", message: "unexpected crash detail" }),
+      logs,
+    );
 
     expect(response.status).toBe(500);
     await expect(response.json()).resolves.toEqual({
       error: { code: "internal_error", message: "Internal error." },
     });
-    expect(errorSpy).toHaveBeenCalled();
-    expect(errorSpy.mock.calls.join("\n")).not.toContain("unexpected crash detail");
+    const errors = logs.filter((entry) => formattedLog(entry).includes("request failed"));
+    expect(errors).toHaveLength(1);
+    expect(formattedLog(errors[0]!)).toContain('"defectType":"Unknown"');
+    expect(formattedLogs(logs)).not.toContain("defect-tag-sentinel");
+    expect(formattedLogs(logs)).not.toContain("unexpected crash detail");
   });
 
   it("runs onSuccess for successful programs", async () => {
@@ -120,3 +175,11 @@ describe("runRoute error mapping", () => {
     }
   });
 });
+
+function formattedLog(entry: CapturedLog): string {
+  return Logger.formatJson.log(entry);
+}
+
+function formattedLogs(entries: readonly CapturedLog[]): string {
+  return entries.map(formattedLog).join("\n");
+}

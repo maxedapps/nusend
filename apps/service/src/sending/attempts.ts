@@ -102,7 +102,32 @@ export function recordSendSuccess(options: {
             now,
           },
         );
-        if (!updatedAttempt) return;
+        if (!updatedAttempt) {
+          // The delivery was already resolved elsewhere (e.g. as stale-ambiguous)
+          // so the guarded status transitions above missed. The MessageId is still
+          // proof the email was sent: persist it on this attempt row and, if the
+          // delivery has none, on the delivery too — without touching statuses — so
+          // proof-of-send and the SES-event → delivery fallback mapping survive.
+          yield* db.run(
+            "sending:attempt:preserve-message-id",
+            `UPDATE send_attempts
+             SET ses_message_id = $messageId
+             WHERE id = $attemptId AND delivery_id = $deliveryId AND ses_message_id IS NULL;`,
+            {
+              attemptId: options.attemptId,
+              deliveryId: options.deliveryId,
+              messageId: options.messageId,
+            },
+          );
+          yield* db.run(
+            "sending:delivery:preserve-message-id",
+            `UPDATE deliveries
+             SET ses_message_id = $messageId
+             WHERE id = $deliveryId AND ses_message_id IS NULL;`,
+            { deliveryId: options.deliveryId, messageId: options.messageId },
+          );
+          return;
+        }
 
         yield* db.get<{ id: string }>(
           "sending:delivery:succeed",

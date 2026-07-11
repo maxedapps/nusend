@@ -7,7 +7,7 @@
   },
   "type": "module",
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && node scripts/make-bin-executable.mjs",
+    "build": "pnpm --filter @nusend/api-contract build && tsc -p tsconfig.build.json && node scripts/make-bin-executable.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run"
   },

@@ -1,15 +1,25 @@
-import { Effect, Layer, Option } from "effect";
+import { Cause, Effect, Layer, Logger, Option } from "effect";
 import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
 
 import { createMailing } from "../mailings/create-mailing.ts";
 import type { CreateMailingInput } from "../mailings/schema.ts";
 import { runSendWorkerOnce } from "../queue/runner.ts";
-import { Database } from "../services/database.ts";
-import { EmailTransportError } from "../services/email-transport.ts";
+import { DatabaseError } from "../errors.ts";
+import { Database, type DatabaseService } from "../services/database.ts";
+import {
+  EmailTransport,
+  EmailTransportError,
+  type PreparedEmail,
+} from "../services/email-transport.ts";
 import { seedSubscribedContact } from "../testing/contact-fixtures.ts";
 import { fakeEmailTransportLayer, fakeSendingConfigLayer } from "../testing/email-transport.ts";
-import { fakeUnsubscribeConfig, runTest, type TestServices } from "../testing/layers.ts";
+import {
+  fakeUnsubscribeConfig,
+  runTest,
+  type CapturedLog,
+  type TestServices,
+} from "../testing/layers.ts";
 
 const fixedTime = Date.parse("2026-07-03T12:00:00.000Z");
 
@@ -46,6 +56,72 @@ function runSendingScenario<A, E, R>(
   return runTest(provided, {
     unsubscribe: options.unsubscribe ? Option.some(fakeUnsubscribeConfig()) : Option.none(),
   }).then((result) => ({ result, sent: fake.state.sent }));
+}
+
+async function expectTerminalTransportAmbiguity(
+  sendFailure: (
+    email: PreparedEmail,
+    dispatched: PreparedEmail[],
+  ) => Effect.Effect<never, EmailTransportError>,
+  providerSentinels: readonly string[],
+): Promise<void> {
+  const dispatched: PreparedEmail[] = [];
+  const logs: CapturedLog[] = [];
+  const transport = Layer.succeed(EmailTransport)({
+    send: (email) => sendFailure(email, dispatched),
+  });
+
+  const outcome = await runTest(
+    Effect.gen(function* () {
+      yield* TestClock.setTime(fixedTime);
+      yield* createMailing(baseInput());
+      const db = yield* Database;
+
+      const firstResult = yield* runSendWorkerOnce({ workerId: "worker_1" });
+      yield* TestClock.setTime(Date.parse("2026-07-03T12:10:00.000Z"));
+      const secondResult = yield* runSendWorkerOnce({ workerId: "worker_2" });
+
+      return {
+        attempt: yield* db.get(
+          "assert:attempt",
+          `SELECT status, error_message AS errorMessage,
+                  CASE WHEN finished_at IS NULL THEN 0 ELSE 1 END AS finished
+           FROM send_attempts;`,
+        ),
+        delivery: yield* db.get(
+          "assert:delivery",
+          "SELECT status, last_error AS lastError FROM deliveries;",
+        ),
+        firstResult,
+        job: yield* db.get("assert:job", "SELECT state, last_error AS lastError FROM jobs;"),
+        mailing: yield* db.get("assert:mailing", "SELECT state FROM mailings;"),
+        secondResult,
+      };
+    }).pipe(Effect.provide(Layer.mergeAll(transport, fakeSendingConfigLayer()))),
+    { logSink: logs },
+  );
+
+  expect(outcome.firstResult).toMatchObject({ claimed: 1, succeeded: 1 });
+  expect(outcome.secondResult).toMatchObject({ claimed: 0, failed: 0, succeeded: 0 });
+  expect(outcome.job).toEqual({ lastError: null, state: "succeeded" });
+  expect(outcome.delivery).toEqual({
+    lastError: "Unexpected email transport failure after dispatch.",
+    status: "failed",
+  });
+  expect(outcome.attempt).toEqual({
+    errorMessage: "Unexpected email transport failure after dispatch.",
+    finished: 1,
+    status: "ambiguous",
+  });
+  expect(outcome.mailing).toEqual({ state: "completed" });
+  expect(dispatched).toHaveLength(1);
+
+  const persisted = JSON.stringify(outcome);
+  const formattedLogs = logs.map((entry) => Logger.formatJson.log(entry)).join("\n");
+  for (const sentinel of providerSentinels) {
+    expect(persisted).not.toContain(sentinel);
+    expect(formattedLogs).not.toContain(sentinel);
+  }
 }
 
 describe("processSendDeliveryJob", () => {
@@ -91,6 +167,53 @@ describe("processSendDeliveryJob", () => {
         to: "user@example.com",
       }),
     ]);
+  });
+
+  it("resets the delivery to queued (retryable) when a pre-transport DB read fails", async () => {
+    const outcome = await runSendingScenario(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(fixedTime);
+        yield* createMailing(baseInput());
+
+        const real = yield* Database;
+        // Fail only the policy suppression re-check (runs after the delivery is
+        // marked sending, before the SES call). Nothing was sent, so the delivery
+        // must go back to queued for retry, not terminally fail as ambiguous.
+        const failingDb: DatabaseService = {
+          ...real,
+          get: <T>(
+            operation: string,
+            sql: string,
+            params?: Record<string, string | number | null>,
+          ) =>
+            operation === "sending:policy:suppression"
+              ? Effect.fail(
+                  new DatabaseError({
+                    cause: new Error("database is locked"),
+                    operation: "sending:policy:suppression",
+                  }),
+                )
+              : real.get<T>(operation, sql, params),
+        };
+
+        const result = yield* runSendWorkerOnce({ workerId: "worker_1" }).pipe(
+          Effect.provideService(Database, failingDb),
+        );
+
+        return {
+          attempt: yield* real.get("assert:attempt", "SELECT status FROM send_attempts;"),
+          delivery: yield* real.get("assert:delivery", "SELECT status FROM deliveries;"),
+          job: yield* real.get("assert:job", "SELECT state FROM jobs;"),
+          result,
+        };
+      }),
+    );
+
+    // Retryable, not ambiguous: delivery back to queued, job requeued, nothing sent.
+    expect(outcome.result.delivery).toEqual({ status: "queued" });
+    expect(outcome.result.job).toEqual({ state: "queued" });
+    expect(outcome.result.attempt).toEqual({ status: "failed" });
+    expect(outcome.sent).toEqual([]);
   });
 
   it("keeps multi-recipient mailings sending until all delivery jobs are terminal", async () => {
@@ -165,55 +288,6 @@ describe("processSendDeliveryJob", () => {
     expect(outcome.sent.map((email) => email.to)).toEqual(["alice@example.com", "bob@example.com"]);
   });
 
-  it("records retryable transport failures and lets the queue runner requeue", async () => {
-    const fake = fakeEmailTransportLayer([
-      {
-        kind: "Fail",
-        error: new EmailTransportError({ kind: "retryable", operation: "send" }),
-      },
-    ]);
-
-    const outcome = await runTest(
-      Effect.gen(function* () {
-        yield* TestClock.setTime(fixedTime);
-        yield* createMailing(baseInput());
-
-        const result = yield* runSendWorkerOnce({ workerId: "worker_1" });
-
-        const db = yield* Database;
-        return {
-          attempt: yield* db.get(
-            "assert:attempt",
-            "SELECT status, error_message AS errorMessage FROM send_attempts;",
-          ),
-          delivery: yield* db.get(
-            "assert:delivery",
-            "SELECT status, last_error AS lastError FROM deliveries;",
-          ),
-          job: yield* db.get("assert:job", "SELECT state, last_error AS lastError FROM jobs;"),
-          mailing: yield* db.get("assert:mailing", "SELECT state FROM mailings;"),
-          result,
-        };
-      }).pipe(Effect.provide(Layer.mergeAll(fake.layer, fakeSendingConfigLayer()))),
-    );
-
-    expect(outcome.result.failed).toBe(1);
-    expect(outcome.job).toEqual({
-      lastError: "Email transport retryable failure.",
-      state: "queued",
-    });
-    expect(outcome.delivery).toEqual({
-      lastError: "Email transport retryable failure.",
-      status: "queued",
-    });
-    expect(outcome.mailing).toEqual({ state: "sending" });
-    expect(outcome.attempt).toEqual({
-      errorMessage: "Email transport retryable failure.",
-      status: "failed",
-    });
-    expect(fake.state.sent).toHaveLength(1);
-  });
-
   it("retries a retryable transport failure across worker runs", async () => {
     const fake = fakeEmailTransportLayer([
       {
@@ -245,6 +319,7 @@ describe("processSendDeliveryJob", () => {
           ),
           mailing: yield* db.get("assert:first-mailing", "SELECT state FROM mailings;"),
         };
+        const sentAfterFirst = fake.state.sent.length;
 
         yield* TestClock.setTime(Date.parse("2026-07-03T12:02:00.000Z"));
         const secondResult = yield* runSendWorkerOnce({ workerId: "worker_1" });
@@ -270,11 +345,13 @@ describe("processSendDeliveryJob", () => {
           },
           firstResult,
           secondResult,
+          sentAfterFirst,
         };
       }).pipe(Effect.provide(Layer.mergeAll(fake.layer, fakeSendingConfigLayer()))),
     );
 
     expect(outcome.firstResult.failed).toBe(1);
+    expect(outcome.sentAfterFirst).toBe(1);
     expect(outcome.afterFirst.job).toEqual({
       attempts: 1,
       lastError: "Email transport retryable failure.",
@@ -395,6 +472,71 @@ describe("processSendDeliveryJob", () => {
     });
     expect(fake.state.sent).toHaveLength(1);
   });
+
+  it.each([
+    {
+      label: "synchronous adapter throw",
+      sendFailure: (email: PreparedEmail, dispatched: PreparedEmail[]) => {
+        dispatched.push(email);
+        throw new Error("sync-provider-throw-sentinel");
+      },
+      sentinels: ["sync-provider-throw-sentinel"],
+    },
+    {
+      label: "plain Error defect",
+      sendFailure: (email: PreparedEmail, dispatched: PreparedEmail[]) =>
+        Effect.sync(() => dispatched.push(email)).pipe(
+          Effect.andThen(Effect.die(new Error("plain-provider-defect-sentinel"))),
+        ),
+      sentinels: ["plain-provider-defect-sentinel"],
+    },
+    {
+      label: "typed-looking defect",
+      sendFailure: (email: PreparedEmail, dispatched: PreparedEmail[]) =>
+        Effect.sync(() => dispatched.push(email)).pipe(
+          Effect.andThen(
+            Effect.die(
+              new EmailTransportError({
+                cause: new Error("typed-provider-cause-sentinel"),
+                kind: "retryable",
+                operation: "typed-provider-operation-sentinel",
+              }),
+            ),
+          ),
+        ),
+      sentinels: ["typed-provider-cause-sentinel", "typed-provider-operation-sentinel"],
+    },
+    {
+      label: "mixed retryable typed and untyped failure Cause",
+      sendFailure: (email: PreparedEmail, dispatched: PreparedEmail[]) =>
+        Effect.sync(() => dispatched.push(email)).pipe(
+          Effect.andThen(
+            Effect.failCause(
+              Cause.fromReasons<unknown>([
+                Cause.fail(
+                  new EmailTransportError({
+                    cause: new Error("mixed-provider-cause-sentinel"),
+                    kind: "retryable",
+                    operation: "mixed-provider-operation-sentinel",
+                  }),
+                ).reasons[0]!,
+                Cause.fail({ providerSecret: "mixed-untyped-provider-sentinel" }).reasons[0]!,
+              ]) as Cause.Cause<EmailTransportError>,
+            ),
+          ),
+        ),
+      sentinels: [
+        "mixed-provider-cause-sentinel",
+        "mixed-provider-operation-sentinel",
+        "mixed-untyped-provider-sentinel",
+      ],
+    },
+  ])(
+    "treats a $label as terminal ambiguity without resending",
+    async ({ sendFailure, sentinels }) => {
+      await expectTerminalTransportAmbiguity(sendFailure, sentinels);
+    },
+  );
 
   it("records permanent transport failures as terminal failed deliveries", async () => {
     const fake = fakeEmailTransportLayer([

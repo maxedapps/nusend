@@ -98,7 +98,7 @@ describe("logout command", () => {
 
     await expect(runCli(["logout", "--version"], env)).rejects.toMatchObject({
       exitCode: 2,
-      message: "Unknown logout option: --version",
+      message: "Unknown option: --version",
     });
 
     await expect(store.read("default")).resolves.toMatchObject({ apiKey: "nusend_test" });

@@ -36,6 +36,19 @@ const exerciseDatabaseContract: Effect.Effect<void, DatabaseError, DatabaseServi
       },
     );
 
+    // exec must not split on semicolons inside -- or /* */ comments.
+    yield* db.exec(
+      "contract:comment-setup",
+      `-- leading comment; with a semicolon
+       CREATE TABLE contract_comment (id TEXT PRIMARY KEY); /* block; comment */
+       INSERT INTO contract_comment (id) VALUES ('c1'); -- trailing; comment`,
+    );
+    const commentRow = yield* db.get<{ id: string }>(
+      "contract:comment-get",
+      "SELECT id FROM contract_comment WHERE id = 'c1';",
+    );
+    yield* check("exec handles comment-embedded semicolons", commentRow, { id: "c1" });
+
     const row = yield* db.get<{ id: string; label: string }>(
       "contract:get",
       "SELECT id, label FROM contract_probe WHERE id = $id;",
@@ -172,6 +185,78 @@ const exerciseDatabaseContract: Effect.Effect<void, DatabaseError, DatabaseServi
       afterNested.map((entry) => entry.id),
       ["nested_a", "nested_b"],
     );
+
+    // Concurrent access must be serialized: a plain write running while another
+    // fiber holds an open transaction must NOT execute inside that transaction
+    // (and be lost when it rolls back). Effect.yieldNow forces the transaction
+    // fiber to suspend mid-transaction — the exact preemption that reproduced the
+    // silent-rollback bug — so this does not rely on the auto-yield op budget.
+    yield* db.run("contract:race-seed", "DELETE FROM contract_probe WHERE id = $id;", {
+      id: "race_plain",
+    });
+    yield* Effect.all(
+      [
+        db
+          .transaction(
+            Effect.gen(function* () {
+              yield* db.run(
+                "contract:race-tx-insert",
+                "INSERT INTO contract_probe (id, label) VALUES ($id, $label);",
+                { id: "race_tx", label: "rolled back" },
+              );
+              yield* Effect.yieldNow;
+              return yield* Effect.fail(new ContractRollbackError());
+            }),
+          )
+          .pipe(Effect.catchTag("ContractRollbackError", () => Effect.void)),
+        db.run(
+          "contract:race-plain-insert",
+          "INSERT INTO contract_probe (id, label) VALUES ($id, $label);",
+          { id: "race_plain", label: "committed" },
+        ),
+      ],
+      { concurrency: "unbounded" },
+    );
+    const racePlain = yield* db.get<{ id: string }>(
+      "contract:race-plain-check",
+      "SELECT id FROM contract_probe WHERE id = $id;",
+      { id: "race_plain" },
+    );
+    yield* check("concurrent plain write survives a rolling-back transaction", racePlain, {
+      id: "race_plain",
+    });
+    const raceTx = yield* db.get(
+      "contract:race-tx-check",
+      "SELECT id FROM contract_probe WHERE id = $id;",
+      { id: "race_tx" },
+    );
+    yield* check("the rolled-back transaction's own row is gone", raceTx, null);
+
+    // Two concurrent transactions must serialize, not collide with
+    // "cannot start a transaction within a transaction".
+    const bothCommitted = yield* Effect.all(
+      [
+        db.transaction(
+          db.run(
+            "contract:race-tx-a",
+            "INSERT INTO contract_probe (id, label) VALUES ($id, $label);",
+            { id: "race_serial_a", label: "committed" },
+          ),
+        ),
+        db.transaction(
+          db.run(
+            "contract:race-tx-b",
+            "INSERT INTO contract_probe (id, label) VALUES ($id, $label);",
+            { id: "race_serial_b", label: "committed" },
+          ),
+        ),
+      ],
+      { concurrency: "unbounded" },
+    ).pipe(
+      Effect.map(() => "both committed"),
+      Effect.catchTag("DatabaseError", (error) => Effect.succeed(`collided: ${error.operation}`)),
+    );
+    yield* check("concurrent transactions serialize", bothCommitted, "both committed");
 
     const alive = yield* db.ping;
     yield* check("ping reports a healthy connection", alive, true);

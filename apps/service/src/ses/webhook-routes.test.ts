@@ -2,17 +2,25 @@ import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { Database } from "../services/database.ts";
-import { fakeSesOperationsConfig, type TestRuntime, withTestApp } from "../testing/layers.ts";
+import {
+  fakeSesOperationsConfig,
+  type CapturedLog,
+  type TestRuntime,
+  withTestApp,
+} from "../testing/layers.ts";
 import { maxSesWebhookBodyBytes } from "./webhook-routes.ts";
 import type { VerifiedSnsEnvelope } from "./sns-schema.ts";
 
 const topicArn = "arn:aws:sns:us-east-1:123456789012:nusend-test";
+const secondTopicArn = "arn:aws:sns:us-east-1:123456789012:nusend-second";
 const webhookUrl = "http://localhost/api/webhooks/aws/sns/ses";
 
 describe("SES webhook routes", () => {
-  it("returns 204 for valid verified notifications", async () => {
+  it("returns 204 for valid verified notifications with safe high-level logs", async () => {
+    const logs: CapturedLog[] = [];
     await withTestApp(
       {
+        logSink: logs,
         snsVerifier: (message) =>
           Effect.succeed(JSON.parse(String(message)) as VerifiedSnsEnvelope),
       },
@@ -32,30 +40,110 @@ describe("SES webhook routes", () => {
           ),
         );
         expect(stored).toEqual({ count: 1 });
+        const serialized = JSON.stringify(logs.map((entry) => entry.message));
+        expect(serialized).toContain("ses sns message verified");
+        expect(serialized).toContain("ses notification inserted");
+        expect(serialized).toContain('"snsType":"Notification"');
+        for (const sensitive of [
+          "user@example.com",
+          '"destination"',
+          '"delivery"',
+          '"Message"',
+          "unsubscribe-token",
+          "api-key",
+          "cookie",
+        ]) {
+          expect(serialized).not.toContain(sensitive);
+        }
       },
     );
   });
 
-  it("returns 400 for malformed SNS or malformed SES events", async () => {
+  it("ingests unique notifications from two independently allowlisted topics", async () => {
+    await withTestApp(
+      {
+        sesOperations: fakeSesOperationsConfig({
+          feedbackTopicArns: [topicArn, secondTopicArn],
+        }),
+        snsVerifier: (message) =>
+          Effect.succeed(JSON.parse(String(message)) as VerifiedSnsEnvelope),
+      },
+      async (app, runtime) => {
+        for (const [messageId, arn] of [
+          ["sns_topic_1", topicArn],
+          ["sns_topic_2", secondTopicArn],
+        ] as const) {
+          const response = await app.fetch(
+            new Request(webhookUrl, {
+              body: JSON.stringify(notification(messageId, { TopicArn: arn })),
+              method: "POST",
+            }),
+          );
+          expect(response.status).toBe(204);
+        }
+
+        const rows = await runtime.runPromise(
+          Effect.flatMap(Database, (db) =>
+            db.all<{ topicArn: string }>(
+              "test:topics",
+              "SELECT sns_topic_arn AS topicArn FROM ses_notifications ORDER BY sns_topic_arn ASC;",
+            ),
+          ),
+        );
+        expect(rows).toEqual([{ topicArn: secondTopicArn }, { topicArn }]);
+        await expect(countRows(runtime)).resolves.toEqual({ events: 2, notifications: 2 });
+      },
+    );
+  });
+
+  it("audits verified UnsubscribeConfirmation once without confirming or creating SES events", async () => {
+    const confirmerCalls: string[] = [];
+    await withTestApp(
+      {
+        snsConfirmerCalls: confirmerCalls,
+        snsVerifier: (message) =>
+          Effect.succeed(JSON.parse(String(message)) as VerifiedSnsEnvelope),
+      },
+      async (app, runtime) => {
+        const body = JSON.stringify(unsubscribeConfirmation("sns_unsubscribe_1"));
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          const response = await app.fetch(new Request(webhookUrl, { body, method: "POST" }));
+          expect(response.status).toBe(204);
+        }
+        await expect(countRows(runtime)).resolves.toEqual({ events: 0, notifications: 1 });
+        expect(confirmerCalls).toEqual([]);
+      },
+    );
+  });
+
+  it("returns an empty 400 for malformed outer SNS", async () => {
+    await withTestApp(
+      {
+        snsVerifier: (message) =>
+          Effect.succeed(JSON.parse(String(message)) as VerifiedSnsEnvelope),
+      },
+      async (app) => {
+        const response = await app.fetch(new Request(webhookUrl, { method: "POST", body: "{}" }));
+        expect(response.status).toBe(400);
+        expect(await response.text()).toBe("");
+      },
+    );
+  });
+
+  it("audits verified malformed SES before returning 400", async () => {
     await withTestApp(
       {
         snsVerifier: (message) =>
           Effect.succeed(JSON.parse(String(message)) as VerifiedSnsEnvelope),
       },
       async (app, runtime) => {
-        const malformedSns = await app.fetch(
-          new Request(webhookUrl, { method: "POST", body: "{}" }),
-        );
-        expect(malformedSns.status).toBe(400);
-        expect(await malformedSns.text()).toBe("");
-
-        const malformedSes = await app.fetch(
+        const response = await app.fetch(
           new Request(webhookUrl, {
             method: "POST",
             body: JSON.stringify({ ...notification("sns_bad"), Message: "{}" }),
           }),
         );
-        expect(malformedSes.status).toBe(400);
+        expect(response.status).toBe(400);
         const stored = await runtime.runPromise(
           Effect.flatMap(Database, (db) =>
             db.get<{ count: number }>(
@@ -69,15 +157,17 @@ describe("SES webhook routes", () => {
     );
   });
 
-  it("maps verification failure, disabled config, and body limit to empty status responses", async () => {
+  it("maps verifier failure to an empty 403", async () => {
     await withTestApp({}, async (app) => {
-      const forbidden = await app.fetch(
+      const response = await app.fetch(
         new Request(webhookUrl, { method: "POST", body: JSON.stringify(notification("sns_1")) }),
       );
-      expect(forbidden.status).toBe(403);
-      expect(await forbidden.text()).toBe("");
+      expect(response.status).toBe(403);
+      expect(await response.text()).toBe("");
     });
+  });
 
+  it("maps disabled SES webhook config to an empty 404", async () => {
     await withTestApp(
       {
         sesOperations: fakeSesOperationsConfig({ feedbackTopicArns: [] }),
@@ -85,20 +175,22 @@ describe("SES webhook routes", () => {
           Effect.succeed(JSON.parse(String(message)) as VerifiedSnsEnvelope),
       },
       async (app) => {
-        const disabled = await app.fetch(
+        const response = await app.fetch(
           new Request(webhookUrl, { method: "POST", body: JSON.stringify(notification("sns_1")) }),
         );
-        expect(disabled.status).toBe(404);
-        expect(await disabled.text()).toBe("");
+        expect(response.status).toBe(404);
+        expect(await response.text()).toBe("");
       },
     );
+  });
 
+  it("maps an oversized webhook body to an empty 413", async () => {
     await withTestApp({}, async (app) => {
-      const tooLarge = await app.fetch(
+      const response = await app.fetch(
         new Request(webhookUrl, { method: "POST", body: "x".repeat(maxSesWebhookBodyBytes + 1) }),
       );
-      expect(tooLarge.status).toBe(413);
-      expect(await tooLarge.text()).toBe("");
+      expect(response.status).toBe(413);
+      expect(await response.text()).toBe("");
     });
   });
 
@@ -240,6 +332,19 @@ async function countRows(runtime: TestRuntime): Promise<{
       })),
     ),
   );
+}
+
+function unsubscribeConfirmation(messageId: string): VerifiedSnsEnvelope {
+  return {
+    Message: "subscription removed",
+    MessageId: messageId,
+    Signature: "signature",
+    SignatureVersion: "2",
+    SigningCertURL: "https://sns.us-east-1.amazonaws.com/SimpleNotificationService-abc123.pem",
+    Timestamp: "2026-07-03T12:00:00.000Z",
+    TopicArn: topicArn,
+    Type: "UnsubscribeConfirmation",
+  };
 }
 
 function subscriptionConfirmation(messageId: string): VerifiedSnsEnvelope {

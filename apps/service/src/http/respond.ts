@@ -1,6 +1,7 @@
-// HTTP boundary: the error envelope, the exhaustive tagged-error → status/code
-// table, and runRoute — the only place route programs are executed.
-import { Cause, Effect, Exit, Result, type ManagedRuntime } from "effect";
+// HTTP boundary: frozen error envelopes, exhaustive tagged-error mapping, and
+// one structured/sanitized Effect logging path for every internal failure.
+import type { ErrorCode } from "@nusend/api-contract";
+import { Cause, Effect, Exit, type ManagedRuntime } from "effect";
 import type { Context } from "hono";
 
 import type { ApiKeysService } from "../api-keys/service.ts";
@@ -22,7 +23,15 @@ import type {
 import type { AuthService } from "../services/auth.ts";
 import type { DatabaseService } from "../services/database.ts";
 import type { IdGeneratorService } from "../services/ids.ts";
+import {
+  safeLogFields,
+  safeRequestMeta,
+  sanitizedLogPath,
+  type SafeRequestMeta,
+} from "../observability/safe-log-fields.ts";
 import type { SesAdminService } from "../aws/ses-admin.ts";
+
+export { safeLogFields, safeRequestMeta, sanitizedLogPath, type SafeRequestMeta };
 import type { SnsAdminService } from "../aws/sns-admin.ts";
 import type { SesOperationsConfigService } from "../ses/config.ts";
 import type {
@@ -51,8 +60,6 @@ export type AppServices =
 
 export type AppRuntime = ManagedRuntime.ManagedRuntime<AppServices, unknown>;
 
-// The full error vocabulary a route program may fail with. runRoute handles all
-// of it exhaustively, so the compiler proves every route's errors are mapped.
 export type RouteError =
   | AuthError
   | ConflictError
@@ -75,50 +82,26 @@ export type WebhookRouteError =
   | SnsConfirmationError
   | SnsVerificationError;
 
-export type ErrorBody = { error: { code: string; message: string } };
+export type ErrorBody = { error: { code: ErrorCode; message: string } };
 
-export function errorEnvelope(code: string, message: string): ErrorBody {
+export function errorEnvelope(code: ErrorCode, message: string): ErrorBody {
   return { error: { code, message } };
 }
 
-// Sanitized: never print raw third-party causes, request payloads, SQL params, or API keys.
-export function logCause(cause: Cause.Cause<unknown>): void {
-  const failure = Cause.findFail(cause);
-
-  if (Result.isSuccess(failure)) {
-    console.error(summarizeFailure(failure.success.error));
-    return;
-  }
-
-  console.error("Internal defect (details redacted).");
+export function logCause(
+  cause: Cause.Cause<unknown>,
+  requestMeta?: SafeRequestMeta,
+): Effect.Effect<void> {
+  return Effect.logError("request failed", safeLogFields(cause, requestMeta));
 }
 
-function summarizeFailure(error: unknown): string {
-  if (isTaggedOperation(error, "AuthError")) return `Auth error during ${error.operation}.`;
-  if (isTaggedOperation(error, "DatabaseError")) return `Database error during ${error.operation}.`;
-
-  if (isTaggedMessage(error)) return `${getTag(error)}: ${error.message}`;
-
-  return "Internal failure (details redacted).";
-}
-
-function isTaggedOperation(
+export async function respondUnexpectedError(
+  context: Context,
+  runtime: AppRuntime,
   error: unknown,
-  tag: "AuthError" | "DatabaseError",
-): error is { operation: string } {
-  return isObject(error) && getTag(error) === tag && typeof error.operation === "string";
-}
-
-function isTaggedMessage(error: unknown): error is { message: string } {
-  return isObject(error) && typeof getTag(error) === "string" && typeof error.message === "string";
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
-function getTag(value: Record<string, unknown>): unknown {
-  return Reflect.get(value, "_tag");
+): Promise<Response> {
+  await runtime.runPromise(logCause(Cause.die(error), safeRequestMeta(context.req.raw)));
+  return context.json(errorEnvelope("internal_error", "Internal error."), 500);
 }
 
 export async function runHtmlRoute<A>(
@@ -131,12 +114,9 @@ export async function runHtmlRoute<A>(
     Effect.map(onSuccess),
     Effect.catchTag("DatabaseError", (error) => internalHtmlError(context, error)),
   );
-
   const exit = await runtime.runPromiseExit(responded);
-
   if (Exit.isSuccess(exit)) return exit.value;
-
-  logCause(exit.cause);
+  await runtime.runPromise(logCause(exit.cause, safeRequestMeta(context.req.raw)));
   return context.html("Internal error.", 500);
 }
 
@@ -157,12 +137,9 @@ export async function runWebhookRoute<A>(
       SnsVerificationError: () => Effect.succeed(new Response(null, { status: 403 })),
     }),
   );
-
   const exit = await runtime.runPromiseExit(responded);
-
   if (Exit.isSuccess(exit)) return exit.value;
-
-  logCause(exit.cause);
+  await runtime.runPromise(logCause(exit.cause, safeRequestMeta(context.req.raw)));
   return new Response(null, { status: 500 });
 }
 
@@ -215,32 +192,26 @@ export async function runRoute<A>(
         Effect.succeed(context.json(errorEnvelope("unauthenticated", error.message), 401)),
     }),
   );
-
   const exit = await runtime.runPromiseExit(responded);
-
   if (Exit.isSuccess(exit)) return exit.value;
-
-  logCause(exit.cause);
+  await runtime.runPromise(logCause(exit.cause, safeRequestMeta(context.req.raw)));
   return context.json(errorEnvelope("internal_error", "Internal error."), 500);
 }
 
 function internalHtmlError(context: Context, error: DatabaseError) {
-  return Effect.sync(() => {
-    logCause(Cause.fail(error));
-    return context.html("Internal error.", 500);
-  });
+  return logCause(Cause.fail(error), safeRequestMeta(context.req.raw)).pipe(
+    Effect.as(context.html("Internal error.", 500)),
+  );
 }
 
-function emptyInternalError(_context: Context, error: DatabaseError | SnsConfirmationError) {
-  return Effect.sync(() => {
-    logCause(Cause.fail(error));
-    return new Response(null, { status: 500 });
-  });
+function emptyInternalError(context: Context, error: DatabaseError | SnsConfirmationError) {
+  return logCause(Cause.fail(error), safeRequestMeta(context.req.raw)).pipe(
+    Effect.as(new Response(null, { status: 500 })),
+  );
 }
 
 function internalError(context: Context, error: AuthError | DatabaseError) {
-  return Effect.sync(() => {
-    logCause(Cause.fail(error));
-    return context.json(errorEnvelope("internal_error", "Internal error."), 500);
-  });
+  return logCause(Cause.fail(error), safeRequestMeta(context.req.raw)).pipe(
+    Effect.as(context.json(errorEnvelope("internal_error", "Internal error."), 500)),
+  );
 }

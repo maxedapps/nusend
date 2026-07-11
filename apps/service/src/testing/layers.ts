@@ -2,7 +2,17 @@
 // same interface, same SQL text as the bun:sqlite production layer (parity is
 // guarded by the driver-parity bun-scenario smoke).
 import { DatabaseSync } from "node:sqlite";
-import { Clock, Effect, Layer, ManagedRuntime, Option, Redacted, Result } from "effect";
+import {
+  Clock,
+  Effect,
+  Layer,
+  Logger,
+  ManagedRuntime,
+  Option,
+  Redacted,
+  Result,
+  Semaphore,
+} from "effect";
 import { TestClock } from "effect/testing";
 
 import type { Hono } from "hono";
@@ -17,7 +27,12 @@ import {
 import { readMigrationFiles } from "../db/migration-files.ts";
 import { DatabaseError } from "../errors.ts";
 import { Auth, type AuthService } from "../services/auth.ts";
-import { Database, makeTransaction, type DatabaseService } from "../services/database.ts";
+import {
+  Database,
+  makeTransaction,
+  serializeDatabaseService,
+  type DatabaseService,
+} from "../services/database.ts";
 import { IdGenerator, type IdGeneratorService } from "../services/ids.ts";
 import { AwsAdminError } from "../aws/errors.ts";
 import { FakeSesAdminLive, type SesAdminService } from "../aws/ses-admin.ts";
@@ -55,7 +70,7 @@ export function DatabaseNodeLive(
       Effect.tap((db) =>
         Effect.sync(() => (options.migrate === false ? undefined : applyMigrations(db))),
       ),
-      Effect.map(makeService),
+      Effect.map((db) => serializeDatabaseService(makeService(db), Semaphore.makeUnsafe(1))),
     ),
   );
 }
@@ -147,6 +162,7 @@ export function steppingClockLayer(isoTimes: readonly string[]): Layer.Layer<nev
 
 export type TestLayerOptions = {
   readonly idPrefix?: string;
+  readonly logSink?: CapturedLog[];
   // Ids drawn from a fixed list instead of the sequential generator.
   readonly ids?: readonly string[];
   readonly migrate?: boolean;
@@ -174,6 +190,9 @@ export function testLayer(options: TestLayerOptions = {}) {
     FakeSesAdminLive(options.sesAdmin ?? defaultSesAdmin()),
     FakeSnsAdminLive(options.snsAdmin ?? defaultSnsAdmin()),
     UnsubscribeConfigLive(options.unsubscribe ?? Option.none()),
+    ...(options.logSink
+      ? [Logger.layer([Logger.make((entry) => options.logSink!.push(entry))])]
+      : []),
   );
 }
 
@@ -322,8 +341,11 @@ export function listIdsLayer(values: readonly string[]): Layer.Layer<IdGenerator
   });
 }
 
+export type CapturedLog = Logger.Options<unknown>;
+
 export type TestAppOptions = {
   readonly auth?: FakeAuthBehavior;
+  readonly logSink?: CapturedLog[];
   readonly idPrefix?: string;
   readonly ids?: readonly string[];
   readonly migrate?: boolean;
@@ -369,6 +391,9 @@ export function makeTestRuntime(options: TestAppOptions = {}) {
       FakeSesAdminLive(options.sesAdmin ?? defaultSesAdmin()),
       FakeSnsAdminLive(options.snsAdmin ?? defaultSnsAdmin()),
       UnsubscribeConfigLive(options.unsubscribe ?? Option.none()),
+      ...(options.logSink
+        ? [Logger.layer([Logger.make((entry) => options.logSink!.push(entry))])]
+        : []),
     ),
   );
 }

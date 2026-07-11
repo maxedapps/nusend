@@ -3,7 +3,8 @@ import { Cause, Effect, Exit } from "effect";
 import { Hono } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 
-import { logCause, type AppRuntime, type AppServices } from "../http/respond.ts";
+import { logCause, safeRequestMeta, type AppRuntime, type AppServices } from "../http/respond.ts";
+import { escapeHtml } from "../lib/html.ts";
 import { Auth } from "../services/auth.ts";
 import { makeAttemptLimiter, type AttemptLimiter } from "./attempt-limiter.ts";
 import { DeviceAuthorizations, type DeviceAuthorizationActivation } from "./service.ts";
@@ -12,6 +13,10 @@ import { normalizeUserCode } from "./token.ts";
 type ActivationRoutesOptions = {
   readonly attemptLimiter?: AttemptLimiter;
   readonly runtime: AppRuntime;
+  // Canonical public origin (from BETTER_AUTH_URL). Behind a TLS-terminating
+  // proxy the raw request URL is http://internal, so the same-origin check must
+  // compare against this instead. Falls back to the request origin when unset.
+  readonly publicOrigin?: string;
 };
 
 type ActivationResult = {
@@ -30,6 +35,7 @@ export function createActivationRoutes(options: ActivationRoutesOptions): Hono {
     const code = context.req.query("code") ?? "";
     const result = await runActivation(
       options.runtime,
+      context.req.raw,
       Effect.gen(function* () {
         const auth = yield* Auth;
         const session = yield* auth.getSession(context.req.raw.headers);
@@ -43,7 +49,11 @@ export function createActivationRoutes(options: ActivationRoutesOptions): Hono {
         const activation = code ? yield* (yield* DeviceAuthorizations).inspect(code) : null;
         if (code && !activation) attemptLimiter.recordFailure(userId);
         return activationResult(
-          renderActivationForm({ activation, code, requestUrl: context.req.url }),
+          renderActivationForm({
+            activation,
+            code,
+            effectiveOrigin: effectiveOrigin(context.req.raw, options.publicOrigin),
+          }),
         );
       }),
     );
@@ -52,20 +62,30 @@ export function createActivationRoutes(options: ActivationRoutesOptions): Hono {
   });
 
   routes.post("/activate", async (context) => {
-    if (!isSameOriginPost(context.req.raw)) {
+    if (!isSameOriginPost(context.req.raw, options.publicOrigin)) {
       return html(context, context.req.raw, renderMessage("Invalid activation request."), 403);
     }
 
-    const form = await context.req.raw.formData();
-    const code = String(form.get("code") ?? "");
-    const csrf = String(form.get("csrf") ?? "");
-    const action = String(form.get("action") ?? "");
+    // formData() throws on a non-form body (e.g. a JSON content-type); handle it
+    // as a bad request rather than letting it become an unhandled 500.
+    let code: string;
+    let csrf: string;
+    let action: string;
+    try {
+      const form = await context.req.raw.formData();
+      code = String(form.get("code") ?? "");
+      csrf = String(form.get("csrf") ?? "");
+      action = String(form.get("action") ?? "");
+    } catch {
+      return html(context, context.req.raw, renderMessage("Invalid activation request."), 400);
+    }
     if (!validCsrf(csrf, context.req.header("cookie") ?? "")) {
       return html(context, context.req.raw, renderMessage("Invalid activation token."), 403);
     }
 
     const result = await runActivation(
       options.runtime,
+      context.req.raw,
       Effect.gen(function* () {
         const auth = yield* Auth;
         const session = yield* auth.getSession(context.req.raw.headers);
@@ -119,11 +139,12 @@ export function createActivationRoutes(options: ActivationRoutesOptions): Hono {
 
 async function runActivation(
   runtime: AppRuntime,
+  request: Request,
   program: Effect.Effect<ActivationResult, unknown, AppServices>,
 ): Promise<ActivationResult> {
   const exit = await runtime.runPromiseExit(program);
   if (Exit.isSuccess(exit)) return exit.value;
-  logCause(exit.cause as Cause.Cause<unknown>);
+  await runtime.runPromise(logCause(exit.cause as Cause.Cause<unknown>, safeRequestMeta(request)));
   return activationResult(renderMessage("Activation failed."));
 }
 
@@ -147,6 +168,12 @@ function html(
   context.header("cache-control", "no-store");
   context.header("pragma", "no-cache");
   context.header("x-robots-tag", "noindex, nofollow");
+  // Defense-in-depth against clickjacking of the Approve button and inline script.
+  context.header("x-frame-options", "DENY");
+  context.header(
+    "content-security-policy",
+    "default-src 'none'; frame-ancestors 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; form-action 'self'",
+  );
   context.header(
     "set-cookie",
     `nusend_cli_activation_csrf=${csrf}; HttpOnly; SameSite=Lax; Path=/cli/activate${secure ? "; Secure" : ""}`,
@@ -191,7 +218,7 @@ function renderSignIn(code: string): string {
 function renderActivationForm(input: {
   readonly activation: DeviceAuthorizationActivation | null;
   readonly code: string;
-  readonly requestUrl: string;
+  readonly effectiveOrigin: string;
 }): string {
   if (!input.code) {
     return page(
@@ -201,7 +228,6 @@ function renderActivationForm(input: {
   }
   if (!input.activation) return renderMessage("Device authorization code is invalid or expired.");
 
-  const origin = new URL(input.requestUrl).origin;
   const permissions = Object.entries(input.activation.permissions)
     .flatMap(([resource, actions]) => (actions ?? []).map((action) => `${resource}:${action}`))
     .map((permission) => `<li>${escapeHtml(permission)}</li>`)
@@ -209,9 +235,9 @@ function renderActivationForm(input: {
 
   return page(
     "Approve Nusend CLI",
-    `<p>Instance: <strong>${escapeHtml(origin)}</strong></p>
+    `<p>Instance: <strong>${escapeHtml(input.effectiveOrigin)}</strong></p>
 <p>Client: <strong>${escapeHtml(input.activation.clientName)}</strong></p>
-<p>User code: <code>${escapeHtml(input.activation.userCode)}</code></p>
+<p>User code: <code>${escapeHtml(input.activation.userCodePreview)}</code></p>
 <p>Expires: ${escapeHtml(input.activation.expiresAt)}</p>
 <p>Only approve this code if you requested it from your CLI.</p>
 <ul>${permissions}</ul>
@@ -244,8 +270,12 @@ function validCsrf(value: string, cookie: string): boolean {
   return left.length === right.length && timingSafeEqual(left, right);
 }
 
-function isSameOriginPost(request: Request): boolean {
-  const expected = new URL(request.url).origin;
+function effectiveOrigin(request: Request, publicOrigin?: string): string {
+  return new URL(publicOrigin ?? request.url).origin;
+}
+
+function isSameOriginPost(request: Request, publicOrigin?: string): boolean {
+  const expected = effectiveOrigin(request, publicOrigin);
   const origin = request.headers.get("origin");
   const referer = request.headers.get("referer");
   if (!origin && !referer) return false;
@@ -257,13 +287,4 @@ function isSameOriginPost(request: Request): boolean {
   } catch {
     return false;
   }
-}
-
-function escapeHtml(value: string): string {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
 }

@@ -156,6 +156,32 @@ describe("lists routes", () => {
     });
   });
 
+  it("rejects a contact import that exceeds the cap", async () => {
+    await withTestApp({ auth: { session: { userId: "user_1" } } }, async (app, runtime) => {
+      await runtime.runPromise(
+        Effect.flatMap(Database, (db) =>
+          db.run(
+            "test:list",
+            "INSERT INTO lists (id, name, created_at) VALUES ('list_1', 'Customers', '2026-07-03T12:00:00.000Z');",
+          ),
+        ),
+      );
+
+      const contacts = Array.from({ length: 1001 }, (_, index) => ({
+        email: `user${index}@example.com`,
+      }));
+      const response = await app.fetch(
+        new Request("http://localhost/api/lists/list_1/contacts", {
+          body: JSON.stringify({ contacts }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        }),
+      );
+
+      expect(response.status).toBe(400);
+    });
+  });
+
   it("imports contacts idempotently, resubscribes, and does not remove marketing suppressions", async () => {
     await withTestApp({ auth: { session: { userId: "user_1" } } }, async (app, runtime) => {
       await runtime.runPromise(

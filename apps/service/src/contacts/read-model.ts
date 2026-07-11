@@ -1,3 +1,7 @@
+import type {
+  ContactDetailResponse as ContactDetailResponseContract,
+  ContactsListResponse as ContactsListResponseContract,
+} from "@nusend/api-contract";
 import { Effect, Schema } from "effect";
 
 import { DatabaseError, NotFoundError } from "../errors.ts";
@@ -38,7 +42,7 @@ export type ContactDetailResponse = ContactResponse & {
 
 export function listContacts(
   query: ContactsListQuery,
-): Effect.Effect<ContactsListResponse, DatabaseError, DatabaseService> {
+): Effect.Effect<ContactsListResponseContract, DatabaseError, DatabaseService> {
   return Effect.gen(function* () {
     const db = yield* Database;
     const params: SqlParams = { limit: query.limit + 1, offset: query.offset };
@@ -63,7 +67,7 @@ export function listContacts(
 
 export function getContactDetail(
   contactId: string,
-): Effect.Effect<ContactDetailResponse, DatabaseError | NotFoundError, DatabaseService> {
+): Effect.Effect<ContactDetailResponseContract, DatabaseError | NotFoundError, DatabaseService> {
   return Effect.gen(function* () {
     const db = yield* Database;
     const contact = yield* getContactRow(contactId);

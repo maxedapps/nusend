@@ -33,6 +33,7 @@ export type DeviceAuthorizationActivation = {
   readonly expiresAt: string;
   readonly permissions: PermissionSet;
   readonly userCode: string;
+  readonly userCodePreview: string;
 };
 
 export interface DeviceAuthorizationsService {
@@ -145,12 +146,13 @@ export function makeDeviceAuthorizationsService(input: {
       }),
     inspect: (userCode) =>
       Effect.gen(function* () {
+        const normalizedUserCode = normalizeUserCode(userCode);
         const row = yield* input.db.get<DeviceAuthorizationRow & { user_code_preview: string }>(
           "deviceAuth:inspectByUserCode",
           `SELECT id, client_name, user_code_preview, requested_permissions_json, approved_by_user_id, approved_at, denied_at, consumed_at, expires_at, poll_count, last_poll_at
            FROM device_authorizations
            WHERE user_code_hash = $userCodeHash;`,
-          { userCodeHash: hashDeviceAuthCode(normalizeUserCode(userCode), input.hashSecret) },
+          { userCodeHash: hashDeviceAuthCode(normalizedUserCode, input.hashSecret) },
         );
         const now = new Date().toISOString();
         if (!row || isExpired(row, now) || row.denied_at || row.consumed_at) return null;
@@ -158,7 +160,8 @@ export function makeDeviceAuthorizationsService(input: {
           clientName: row.client_name,
           expiresAt: row.expires_at,
           permissions: yield* parseStoredPermissions(row.requested_permissions_json),
-          userCode: row.user_code_preview,
+          userCode: normalizedUserCode,
+          userCodePreview: row.user_code_preview,
         };
       }),
     start: ({ baseUrl, clientName, permissions, requesterFingerprint }) =>
@@ -234,7 +237,7 @@ export function makeDeviceAuthorizationsService(input: {
                 requestedPermissionsJson: JSON.stringify(permissions),
                 requesterFingerprintHash,
                 userCodeHash: hashDeviceAuthCode(normalizeUserCode(userCode), input.hashSecret),
-                userCodePreview: userCode,
+                userCodePreview: maskUserCode(userCode),
               },
             );
           }),
@@ -264,18 +267,22 @@ export function makeDeviceAuthorizationsService(input: {
           if (row.consumed_at || isExpired(row, now)) return { status: "expired_token" };
           if (row.denied_at) return { status: "access_denied" };
 
-          const lastPollMs = row.last_poll_at ? Date.parse(row.last_poll_at) : 0;
-          const tooSoon =
-            lastPollMs > 0 && Date.parse(now) - lastPollMs < pollIntervalSeconds * 1000;
-          const nextIntervalSeconds = tooSoon ? pollIntervalSeconds + 5 : pollIntervalSeconds;
-          yield* input.db.run(
-            "deviceAuth:recordPoll",
-            `UPDATE device_authorizations SET poll_count = poll_count + 1, last_poll_at = $lastPollAt WHERE id = $id;`,
-            { id: row.id, lastPollAt: now },
-          );
-          if (tooSoon) return { intervalSeconds: nextIntervalSeconds, status: "slow_down" };
+          // Deliver an approved grant regardless of poll timing — the slow-down
+          // debounce only paces still-pending polling, and must not mask a key that
+          // is already available (which would strand a client that polled slightly
+          // too soon after approval).
           if (!row.approved_at || !row.approved_by_user_id) {
-            return { intervalSeconds: pollIntervalSeconds, status: "authorization_pending" };
+            const lastPollMs = row.last_poll_at ? Date.parse(row.last_poll_at) : 0;
+            const tooSoon =
+              lastPollMs > 0 && Date.parse(now) - lastPollMs < pollIntervalSeconds * 1000;
+            yield* input.db.run(
+              "deviceAuth:recordPoll",
+              `UPDATE device_authorizations SET poll_count = poll_count + 1, last_poll_at = $lastPollAt WHERE id = $id;`,
+              { id: row.id, lastPollAt: now },
+            );
+            return tooSoon
+              ? { intervalSeconds: pollIntervalSeconds + 5, status: "slow_down" }
+              : { intervalSeconds: pollIntervalSeconds, status: "authorization_pending" };
           }
 
           const permissions = yield* parseStoredPermissions(row.requested_permissions_json);
@@ -313,6 +320,14 @@ type DeviceAuthorizationRow = {
 
 function isExpired(row: DeviceAuthorizationRow, nowIso: string): boolean {
   return Date.parse(row.expires_at) <= Date.parse(nowIso);
+}
+
+// Stores only a masked display preview (e.g. AB••-••45) rather than the live user
+// code, so a database-read adversary cannot see actionable approval codes.
+function maskUserCode(code: string): string {
+  const chars = [...code];
+  const revealed = new Set([0, 1, chars.length - 2, chars.length - 1]);
+  return chars.map((char, index) => (char === "-" || revealed.has(index) ? char : "•")).join("");
 }
 
 function parseStoredPermissions(value: string): Effect.Effect<PermissionSet, DatabaseError> {

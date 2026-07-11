@@ -220,6 +220,51 @@ async function fetchWithSeededData(
   });
 }
 
+async function withSeededSesOperations(
+  run: (app: { fetch(request: Request): Response | Promise<Response> }) => Promise<void>,
+): Promise<void> {
+  await withTestApp({ auth: { session: { userId: "user_1" } } }, async (app, runtime) => {
+    await seedOperationsData(runtime);
+    await runtime.runPromise(
+      Effect.gen(function* () {
+        const db = yield* Database;
+        yield* db.run(
+          "test:seed:ses-filter-notification",
+          `INSERT INTO ses_notifications (
+             id, sns_message_id, sns_topic_arn, sns_type, event_type, ses_message_id, raw_json, received_at
+           ) VALUES (
+             'notification_filter', 'sns_filter', 'arn:aws:sns:us-east-1:123456789012:nusend-test',
+             'Notification', 'Click', 'ses_filter', '{"private":"ses-private-sentinel"}',
+             '2026-07-03T12:00:08.000Z'
+           );`,
+        );
+        yield* db.run(
+          "test:seed:ses-filter-event",
+          `INSERT INTO ses_events (
+             id, dedupe_key, notification_id, event_type, delivery_id, mailing_id, ses_message_id,
+             recipient_email, action_taken, link_url, created_at
+           ) VALUES (
+             'event_filter', 'dedupe_filter', 'notification_filter', 'Click', 'delivery_1',
+             'mailing_1', 'ses_filter', 'user1@example.com', 'recorded', 'https://example.com',
+             '2026-07-03T12:00:09.000Z'
+           );`,
+        );
+        yield* db.run(
+          "test:seed:simulator-run",
+          `INSERT INTO ses_simulator_runs (
+             id, scenario, mode, purpose, recipient_email, status, started_at, finished_at
+           ) VALUES (
+             'sim_run_1', 'success', 'send_acceptance', 'transactional',
+             'success@simulator.amazonses.com', 'sent', '2026-07-03T12:00:00.000Z',
+             '2026-07-03T12:00:01.000Z'
+           );`,
+        );
+      }),
+    );
+    await run(app);
+  });
+}
+
 describe("operations routes", () => {
   it("enforces auth and operations:read API-key permission", async () => {
     const noAuth = await getOperations("/summary", { session: null });
@@ -666,44 +711,20 @@ describe("operations routes", () => {
     });
   });
 
-  it("returns SES event detail, filters events, and maps missing SES resources", async () => {
-    await withTestApp({ auth: { session: { userId: "user_1" } } }, async (app, runtime) => {
-      await seedOperationsData(runtime);
-      await runtime.runPromise(
-        Effect.gen(function* () {
-          const db = yield* Database;
-          yield* db.run(
-            "test:seed:ses-filter-notification",
-            `INSERT INTO ses_notifications (
-               id, sns_message_id, sns_topic_arn, sns_type, event_type, ses_message_id, raw_json, received_at
-             ) VALUES (
-               'notification_filter', 'sns_filter', 'arn:aws:sns:us-east-1:123456789012:nusend-test',
-               'Notification', 'Click', 'ses_filter', '{}', '2026-07-03T12:00:08.000Z'
-             );`,
-          );
-          yield* db.run(
-            "test:seed:ses-filter-event",
-            `INSERT INTO ses_events (
-               id, dedupe_key, notification_id, event_type, delivery_id, mailing_id, ses_message_id,
-               recipient_email, action_taken, link_url, created_at
-             ) VALUES (
-               'event_filter', 'dedupe_filter', 'notification_filter', 'Click', 'delivery_1',
-               'mailing_1', 'ses_filter', 'user1@example.com', 'recorded', 'https://example.com',
-               '2026-07-03T12:00:09.000Z'
-             );`,
-          );
-          yield* db.run(
-            "test:seed:simulator-run",
-            `INSERT INTO ses_simulator_runs (
-               id, scenario, mode, purpose, recipient_email, status, started_at, finished_at
-             ) VALUES (
-               'sim_run_1', 'success', 'send_acceptance', 'transactional', 'success@simulator.amazonses.com',
-               'sent', '2026-07-03T12:00:00.000Z', '2026-07-03T12:00:01.000Z'
-             );`,
-          );
-        }),
+  it("returns SES event detail without the private notification body", async () => {
+    await withSeededSesOperations(async (app) => {
+      const detail = await app.fetch(
+        new Request("http://localhost/api/operations/ses/events/event_filter"),
       );
+      expect(detail.status).toBe(200);
+      const body = await detail.json();
+      expect(body).toMatchObject({ id: "event_filter", eventType: "Click" });
+      expect(JSON.stringify(body)).not.toContain("ses-private-sentinel");
+    });
+  });
 
+  it("filters SES events and lists simulator runs", async () => {
+    await withSeededSesOperations(async (app) => {
       const list = await app.fetch(
         new Request(
           "http://localhost/api/operations/ses/events?eventType=Click&mailingId=mailing_1",
@@ -712,25 +733,20 @@ describe("operations routes", () => {
       expect(list.status).toBe(200);
       await expect(list.json()).resolves.toMatchObject({ items: [{ id: "event_filter" }] });
 
-      const detail = await app.fetch(
-        new Request("http://localhost/api/operations/ses/events/event_filter"),
-      );
-      expect(detail.status).toBe(200);
-      await expect(detail.json()).resolves.toMatchObject({
-        id: "event_filter",
-        eventType: "Click",
-      });
-
-      const missingEvent = await app.fetch(
-        new Request("http://localhost/api/operations/ses/events/missing"),
-      );
-      expect(missingEvent.status).toBe(404);
-
       const simulatorList = await app.fetch(
         new Request("http://localhost/api/operations/ses/simulator-runs"),
       );
       expect(simulatorList.status).toBe(200);
       await expect(simulatorList.json()).resolves.toMatchObject({ items: [{ id: "sim_run_1" }] });
+    });
+  });
+
+  it("maps missing SES event and simulator resources to 404", async () => {
+    await withSeededSesOperations(async (app) => {
+      const missingEvent = await app.fetch(
+        new Request("http://localhost/api/operations/ses/events/missing"),
+      );
+      expect(missingEvent.status).toBe(404);
 
       const missingSimulator = await app.fetch(
         new Request("http://localhost/api/operations/ses/simulator-runs/missing"),

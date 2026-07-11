@@ -74,6 +74,7 @@ Help agents write idiomatic Effect v4 code that fits this repo: typed errors, ex
 - Use `Effect.catch`, `Effect.catchTag`, `Effect.catchTags`, `Effect.catchCause`, and typed error mapping rather than blanket `try/catch` around Effect programs.
 - Use `Result` for already-computed success/failure data and parser-style APIs.
 - Use `Exit`/`Cause` at runtime boundaries when you need complete success/failure/defect diagnostics.
+- `Cause.findErrorOption` returns only the first typed error; it does not prove the Cause contains only that failure. When retry, idempotency, dispatch ambiguity, or another safety decision depends on the complete Cause, inspect `cause.reasons` and handle every `Fail`/`Die`/`Interrupt`. Guard `instanceof` and property reads so hostile/contract-violating values fall back safely instead of defecting the classifier.
 - Use `Effect.retry` with `Schedule` for retries; avoid ad-hoc retry loops.
 - Use `Effect.timeout` for bounded external calls and catch timeout causes explicitly where user-facing errors matter.
 - Use `Clock` and `TestClock` for deterministic time-sensitive code/tests.
@@ -88,6 +89,7 @@ Help agents write idiomatic Effect v4 code that fits this repo: typed errors, ex
 - Using `any`/casts to silence Effect requirement or error-channel issues before understanding the missing layer/error mapping.
 - Implementing manual retry/sleep loops instead of `Schedule` and `Effect.retry`.
 - Testing timeouts/backoff with real sleeps instead of `TestClock` where possible.
+- Module-level eager construction that reads a `const` declared later in the file — a temporal-dead-zone trap that typechecks but throws `ReferenceError` at runtime. Two forms seen in this repo: (a) `export const XLive = Layer.succeed(Key)(makeThing())` at module scope where `makeThing` references a `const DEFAULT_X = ...` declared below it; (b) a top-level `await runLoop()` whose closure reads a `const N = 10` declared *after* the await (the module stays suspended at the await, so `N` is never initialized and the first cycle throws). Fix: hoist the referenced consts above the eager construction / entrypoint call, make the layer lazy (`Layer.sync`/`Layer.effect`), or move loop config into the loop function's params. Prefer extracting entrypoint loops into a testable function with injected deps so a unit test catches this.
 
 ## Validation checklist
 

@@ -12,10 +12,7 @@ import type {
 } from "../services/email-transport.ts";
 import { IdGenerator, type IdGeneratorService } from "../services/ids.ts";
 import type { UnsubscribeConfigService } from "../unsubscribe/config.ts";
-import {
-  markDeliveryFailedForDeadJob,
-  markReleasedDeadJobDeliveryAmbiguous,
-} from "../sending/attempts.ts";
+import { markReleasedDeadJobDeliveryAmbiguous } from "../sending/attempts.ts";
 import { processSendDeliveryJob } from "../sending/process-delivery.ts";
 import { addMillisecondsIso, currentIso, subtractDaysIso } from "../lib/iso-time.ts";
 import {
@@ -57,6 +54,14 @@ export function runSendWorkerOnce(
     // each job is processed.
     const now = yield* currentIso;
     const startedAt = now;
+    // Crash-safe reconciliation: dead-job/mailing state is updated
+    // non-transactionally after the release commit, so a crash in that window can
+    // leave a dead job with a non-terminal delivery (and a mailing stuck
+    // `sending`) that no later cycle re-observes (release only scans leased). This
+    // idempotent sweep repairs those before doing new work.
+    yield* reconcileOrphanedDeadJobs();
+    yield* reconcileStuckSendingMailings();
+
     const releasedJobs = yield* releaseExpiredSendDeliveryLeasesAt(now, {});
     const claimedJobs = yield* claimSendDeliveryJobsAt(now, {
       leaseSeconds: options.leaseSeconds,
@@ -111,7 +116,7 @@ export function runSendWorkerOnce(
         }).pipe(
           Effect.flatMap((failedJob) =>
             failedJob.state === "dead"
-              ? markDeliveryFailedForDeadJob({
+              ? markReleasedDeadJobDeliveryAmbiguous({
                   deliveryId: job.deliveryId,
                   errorMessage: failedJob.lastError ?? message,
                 }).pipe(Effect.as("dead" as const))
@@ -135,15 +140,66 @@ export function runSendWorkerOnce(
       succeeded: result.succeeded,
       workerId: options.workerId,
     });
+    // Observability only — a failure to record/prune the worker-run row must not
+    // fail the cycle (which would, in loop mode, otherwise be fatal).
     yield* recordWorkerRun({
       finishedAt,
       mode: options.mode ?? "once",
       result,
       startedAt,
       workerId: options.workerId,
-    });
+    }).pipe(
+      Effect.catchTag("DatabaseError", (error) =>
+        Effect.logWarning("failed to record worker run", { operation: error.operation }),
+      ),
+    );
 
     return result;
+  });
+}
+
+// Repairs dead jobs whose delivery is still non-terminal (a crash between the
+// release-to-dead commit and the post-release reconciliation). Idempotent: the
+// underlying helpers no-op once the delivery is terminal.
+function reconcileOrphanedDeadJobs(): Effect.Effect<void, DatabaseError, DatabaseService> {
+  return Effect.gen(function* () {
+    const db = yield* Database;
+    const orphans = yield* db.all<{ deliveryId: string; lastError: string | null }>(
+      "queue:reconcile-dead-jobs",
+      `SELECT j.delivery_id AS deliveryId, j.last_error AS lastError
+       FROM jobs j
+       JOIN deliveries d ON d.id = j.delivery_id
+       WHERE j.state = 'dead' AND d.status IN ('queued', 'sending');`,
+    );
+
+    for (const orphan of orphans) {
+      yield* markReleasedDeadJobDeliveryAmbiguous({
+        deliveryId: orphan.deliveryId,
+        errorMessage: orphan.lastError ?? "Dead send-delivery job reached max attempts.",
+      });
+      yield* refreshMailingStateForDelivery(orphan.deliveryId);
+    }
+  });
+}
+
+// Repairs mailings stuck in `sending` whose deliveries are all terminal (a crash
+// between the last delivery completing and the mailing-state refresh).
+function reconcileStuckSendingMailings(): Effect.Effect<void, DatabaseError, DatabaseService> {
+  return Effect.gen(function* () {
+    const db = yield* Database;
+    const stuck = yield* db.all<{ deliveryId: string }>(
+      "queue:reconcile-stuck-mailings",
+      `SELECT MIN(d.id) AS deliveryId
+       FROM mailings m
+       JOIN deliveries d ON d.mailing_id = m.id
+       WHERE m.state = 'sending'
+       GROUP BY m.id
+       HAVING SUM(CASE WHEN d.status IN ('queued', 'sending') THEN 1 ELSE 0 END) = 0;`,
+    );
+
+    for (const mailing of stuck) {
+      yield* refreshMailingStateForDelivery(mailing.deliveryId);
+    }
   });
 }
 

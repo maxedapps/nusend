@@ -61,4 +61,36 @@ describe("database service", () => {
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain("OK");
   });
+
+  it("bun:sqlite gives Better Auth a dedicated connection with matching pragmas", () => {
+    // The dedicated auth connection (SqliteHandle) only exists for file-path
+    // databases; assert it carries the same FK/WAL/busy_timeout pragmas as the
+    // app connection so FK enforcement and locking behavior cannot drift.
+    const result = runBunScenario(
+      `
+        import { join } from "node:path";
+        import { readAuthConnectionPragmas } from ${JSON.stringify(`${serviceRoot}src/testing/bun-fixtures.ts`)};
+
+        const path = join(import.meta.dir, "pragma-parity.sqlite");
+        console.log(JSON.stringify(await readAuthConnectionPragmas(path)));
+      `,
+      serviceRoot,
+    );
+
+    expect(result.status, result.stderr).toBe(0);
+    const parsed = JSON.parse(result.stdout.trim()) as {
+      appAlive: boolean;
+      foreignKeys: number;
+      journalMode: string;
+      busyTimeout: number;
+      appSeesAuthTempTable: boolean;
+    };
+    expect(parsed.appAlive).toBe(true);
+    expect(parsed.foreignKeys).toBe(1);
+    expect(parsed.journalMode).toBe("wal");
+    expect(parsed.busyTimeout).toBe(5000);
+    // A TEMP table on the auth connection must be invisible to the app
+    // connection — proves they are genuinely separate handles.
+    expect(parsed.appSeesAuthTempTable).toBe(false);
+  });
 });

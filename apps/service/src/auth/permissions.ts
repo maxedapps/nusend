@@ -1,5 +1,4 @@
 export {
-  authStatements,
   hasPermissions,
   isPermissionSubset,
   normalizePermissions,

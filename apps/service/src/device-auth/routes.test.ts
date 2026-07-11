@@ -1,9 +1,20 @@
-import { Effect } from "effect";
+import { Effect, Redacted } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { Database } from "../services/database.ts";
+import { makeAttemptLimiter } from "./attempt-limiter.ts";
+import { createDeviceAuthorizationRoutes } from "./routes.ts";
 import { DeviceAuthorizations } from "./service.ts";
-import { withTestApp, type TestRuntime } from "../testing/layers.ts";
+import { hashDeviceAuthCode, normalizeUserCode } from "./token.ts";
+import { makeTestRuntime, withTestApp, type TestRuntime } from "../testing/layers.ts";
+
+// Matches the secret makeTestRuntime uses for realDeviceAuthorizations, so test
+// helpers can locate a row by its (hashed) user code — the preview column is
+// masked and no longer a lookup key.
+const testDeviceAuthSecret = Redacted.make("test-device-auth-secret-32-value");
+function userCodeHash(userCode: string): string {
+  return hashDeviceAuthCode(normalizeUserCode(userCode), testDeviceAuthSecret);
+}
 
 describe("device authorization routes", () => {
   it("starts, polls, slows down, approves, consumes once, and returns a working API key", async () => {
@@ -160,7 +171,7 @@ describe("device authorization routes", () => {
     );
   });
 
-  it("rate-limits starts globally and per requester fingerprint and cleans stale rows", async () => {
+  it("enforces durable pending-row limits per fingerprint and globally while cleaning stale rows", async () => {
     await withTestApp(
       {
         realApiKeys: true,
@@ -228,6 +239,148 @@ describe("device authorization routes", () => {
         expect(await countStaleAuthorizations(runtime)).toBe(0);
       },
     );
+  });
+
+  it("stores only a masked user-code preview", async () => {
+    await withTestApp(
+      { ids: ["device_1"], realApiKeys: true, realDeviceAuthorizations: true },
+      async (app, runtime) => {
+        const start = await startDevice(app, "cli");
+        const preview = await runtime.runPromise(
+          Effect.flatMap(Database, (db) =>
+            db.get<{ user_code_preview: string }>(
+              "test:read-preview",
+              "SELECT user_code_preview FROM device_authorizations LIMIT 1;",
+            ),
+          ),
+        );
+        expect(preview?.user_code_preview).toContain("•");
+        expect(preview?.user_code_preview).not.toBe(start.userCode);
+      },
+    );
+  });
+
+  it("delivers an approved key even when polled faster than the interval", async () => {
+    await withTestApp(
+      { ids: ["device_1", "key_1"], realApiKeys: true, realDeviceAuthorizations: true },
+      async (app, runtime) => {
+        await seedUser(runtime);
+        const start = await startDevice(app, "cli");
+
+        // First poll records last_poll_at.
+        await app.fetch(
+          jsonRequest("http://localhost/api/device-authorizations/token", {
+            deviceCode: start.deviceCode,
+          }),
+        );
+        await approve(runtime, start.userCode, "user_1");
+
+        // Immediate second poll is within the interval (too-soon) but the grant is
+        // approved — it must be delivered, not masked by slow_down.
+        const response = await app.fetch(
+          jsonRequest("http://localhost/api/device-authorizations/token", {
+            deviceCode: start.deviceCode,
+          }),
+        );
+        await expect(response.json()).resolves.toMatchObject({ status: "approved" });
+      },
+    );
+  });
+
+  it("enforces the per-source route ceiling while another trusted last hop still succeeds", async () => {
+    const runtime = makeTestRuntime({
+      ids: ["device_a", "device_b", "device_c"],
+      realApiKeys: true,
+      realDeviceAuthorizations: true,
+    });
+    try {
+      const routes = createDeviceAuthorizationRoutes({
+        globalStartRateLimiter: makeAttemptLimiter({ max: 100, windowMs: 60_000 }),
+        runtime,
+        startRateLimiter: makeAttemptLimiter({ max: 2, windowMs: 60_000 }),
+      });
+      const make = (forwardedFor: string) =>
+        jsonRequest(
+          "http://localhost/",
+          { clientName: "cli", permissions: { contacts: ["read"] } },
+          forwardedFor,
+        );
+
+      expect((await routes.fetch(make("untrusted, 1.2.3.4"))).status).toBe(201);
+      expect((await routes.fetch(make("rotated, 1.2.3.4"))).status).toBe(201);
+      const limited = await routes.fetch(make("untrusted, 1.2.3.4"));
+      expect(limited.status).toBe(429);
+      await expect(limited.json()).resolves.toEqual({
+        error: {
+          code: "rate_limited",
+          message: "Too many device authorization requests. Try again later.",
+        },
+      });
+      expect((await routes.fetch(make("untrusted, 5.6.7.8"))).status).toBe(201);
+    } finally {
+      await runtime.dispose();
+    }
+  });
+
+  it("enforces the process-local global route ceiling across distinct sources", async () => {
+    const runtime = makeTestRuntime({
+      ids: ["device_a", "device_b"],
+      realApiKeys: true,
+      realDeviceAuthorizations: true,
+    });
+    try {
+      const routes = createDeviceAuthorizationRoutes({
+        globalStartRateLimiter: makeAttemptLimiter({ max: 2, windowMs: 60_000 }),
+        runtime,
+        startRateLimiter: makeAttemptLimiter({ max: 100, windowMs: 60_000 }),
+      });
+      const make = (address: string) =>
+        jsonRequest(
+          "http://localhost/",
+          { clientName: "cli", permissions: { contacts: ["read"] } },
+          address,
+        );
+
+      expect((await routes.fetch(make("1.1.1.1"))).status).toBe(201);
+      expect((await routes.fetch(make("2.2.2.2"))).status).toBe(201);
+      const limited = await routes.fetch(make("3.3.3.3"));
+      expect(limited.status).toBe(429);
+      await expect(limited.json()).resolves.toEqual({
+        error: {
+          code: "rate_limited",
+          message: "Too many device authorization requests. Try again later.",
+        },
+      });
+    } finally {
+      await runtime.dispose();
+    }
+  });
+
+  it("uses the configured public origin for verification URLs behind a proxy", async () => {
+    const runtime = makeTestRuntime({
+      ids: ["device_p"],
+      realApiKeys: true,
+      realDeviceAuthorizations: true,
+    });
+    try {
+      const routes = createDeviceAuthorizationRoutes({
+        publicOrigin: "https://public.example.com",
+        runtime,
+      });
+
+      const response = await routes.fetch(
+        jsonRequest("http://internal.local/", {
+          clientName: "cli",
+          permissions: { contacts: ["read"] },
+        }),
+      );
+
+      expect(response.status).toBe(201);
+      const body = (await response.json()) as { verificationUri: string };
+      expect(body.verificationUri).toBe("https://public.example.com/cli/activate");
+    } finally {
+      await runtime.dispose();
+    }
   });
 
   it("returns invalid_grant for unknown codes and preserves expired_token for expired rows", async () => {
@@ -384,8 +537,8 @@ async function readAuthorizationState(
         "deviceAuthTest:readAuthorizationState",
         `SELECT approved_at, approved_by_user_id, denied_at
          FROM device_authorizations
-         WHERE user_code_preview = $userCode;`,
-        { userCode },
+         WHERE user_code_hash = $userCodeHash;`,
+        { userCodeHash: userCodeHash(userCode) },
       );
       return {
         approvedAt: row?.approved_at ?? null,
@@ -458,8 +611,8 @@ async function corruptStoredPermissions(runtime: TestRuntime, userCode: string):
       const db = yield* Database;
       yield* db.run(
         "deviceAuthTest:corruptPermissions",
-        "UPDATE device_authorizations SET requested_permissions_json = 'not-json' WHERE user_code_preview = $userCode;",
-        { userCode },
+        "UPDATE device_authorizations SET requested_permissions_json = 'not-json' WHERE user_code_hash = $userCodeHash;",
+        { userCodeHash: userCodeHash(userCode) },
       );
     }),
   );
@@ -471,8 +624,8 @@ async function expire(runtime: TestRuntime, userCode: string): Promise<void> {
       const db = yield* Database;
       yield* db.run(
         "deviceAuthTest:expire",
-        "UPDATE device_authorizations SET expires_at = '2000-01-01T00:00:00.000Z' WHERE user_code_preview = $userCode;",
-        { userCode },
+        "UPDATE device_authorizations SET expires_at = '2000-01-01T00:00:00.000Z' WHERE user_code_hash = $userCodeHash;",
+        { userCodeHash: userCodeHash(userCode) },
       );
     }),
   );

@@ -1,9 +1,55 @@
 // Helpers imported by bun-scenario scripts (they run under Bun, so bun:sqlite is
 // available). Not used by in-process vitest tests.
 import { Database as BunDatabase } from "bun:sqlite";
-import { Result } from "effect";
+import { Effect, ManagedRuntime, Result } from "effect";
 
 import { readMigrationFiles } from "../db/migration-files.ts";
+import { Database } from "../services/database.ts";
+import { DatabaseBunLive, SqliteHandle } from "../services/database-bun.ts";
+
+// Reads FK/WAL/busy_timeout off the dedicated Better Auth connection
+// (SqliteHandle) of a file-path bun database, plus an app-connection ping.
+// Lives here so a bun-scenario script can call it without importing `effect`
+// itself (a direct bare `effect` import from the out-of-tree scenario file
+// resolves to a different effect copy than the in-tree project files).
+export async function readAuthConnectionPragmas(databasePath: string): Promise<{
+  appAlive: boolean;
+  foreignKeys: number;
+  journalMode: string;
+  busyTimeout: number;
+  appSeesAuthTempTable: boolean;
+}> {
+  const runtime = ManagedRuntime.make(DatabaseBunLive(databasePath));
+  try {
+    const handle = await runtime.runPromise(SqliteHandle);
+    const appAlive = await runtime.runPromise(Effect.flatMap(Database, (db) => db.ping));
+    const read = <T>(name: string) => handle.query(`PRAGMA ${name};`).get() as T;
+
+    // Prove the app and auth handles are genuinely separate connections (not the
+    // same handle handed out twice): TEMP tables are connection-private in
+    // SQLite, so a temp table created on the auth handle must be invisible to the
+    // app connection when they are distinct.
+    handle.run("CREATE TEMP TABLE nusend_auth_only_probe (x);");
+    const appSeesAuthTempTable = await runtime.runPromise(
+      Effect.flatMap(Database, (db) =>
+        db.get<{ name: string }>(
+          "test:temp-visibility",
+          "SELECT name FROM sqlite_temp_master WHERE name = 'nusend_auth_only_probe';",
+        ),
+      ).pipe(Effect.map((row) => row !== null)),
+    );
+
+    return {
+      appAlive,
+      appSeesAuthTempTable,
+      busyTimeout: read<{ timeout: number }>("busy_timeout").timeout,
+      foreignKeys: read<{ foreign_keys: number }>("foreign_keys").foreign_keys,
+      journalMode: read<{ journal_mode: string }>("journal_mode").journal_mode,
+    };
+  } finally {
+    await runtime.dispose();
+  }
+}
 
 export function createMigratedBunDatabase(): BunDatabase {
   const db = new BunDatabase(":memory:", { create: true, strict: true });

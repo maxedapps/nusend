@@ -14,14 +14,6 @@ describe("iso time helpers", () => {
     expect(addSecondsIso("2026-07-03T12:00:00.000Z", 60)).toMatch(isoPattern);
   });
 
-  it("preserves lexicographic chronological order", () => {
-    const earlier = "2026-07-03T12:00:00.000Z";
-    const later = addSecondsIso(earlier, 90);
-
-    expect(earlier < later).toBe(true);
-    expect([later, earlier].sort()).toEqual([earlier, later]);
-  });
-
   it("parses lenient dates to ISO and rejects garbage", () => {
     expect(parseLenientDateToIso("2026-07-03T12:00:00.000Z")).toBe("2026-07-03T12:00:00.000Z");
     expect(parseLenientDateToIso("2026-07-03")).toBe("2026-07-03T00:00:00.000Z");

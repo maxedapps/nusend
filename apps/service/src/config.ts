@@ -40,6 +40,7 @@ export type SendingConfig = {
   transactionalConfigurationSet: string | null;
   workerBatchSize: number;
   workerLeaseSeconds: number;
+  workerPollMs: number;
 };
 
 export type {
@@ -50,6 +51,66 @@ export type {
 const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
 const defaultDatabasePath = ".data/nusend.sqlite";
 const sendWorkerLeaseMarginMs = 10_000;
+
+type NumericConfigSpec = {
+  readonly defaultValue: number;
+  readonly envName: string;
+  readonly issueId: string;
+  readonly max: number | null;
+  readonly message: string;
+  readonly min: number;
+};
+
+const numericConfigSpecs = {
+  requestTimeoutMs: {
+    defaultValue: 30_000,
+    envName: "NUSEND_SES_REQUEST_TIMEOUT_MS",
+    issueId: "config.request_timeout_ms",
+    max: null,
+    message: "NUSEND_SES_REQUEST_TIMEOUT_MS must be an integer >= 1.",
+    min: 1,
+  },
+  workerBatchSize: {
+    defaultValue: 1,
+    envName: "NUSEND_SEND_WORKER_BATCH_SIZE",
+    issueId: "config.worker_batch_size",
+    max: 50,
+    message: "NUSEND_SEND_WORKER_BATCH_SIZE must be an integer between 1 and 50.",
+    min: 1,
+  },
+  workerLeaseSeconds: {
+    defaultValue: 300,
+    envName: "NUSEND_SEND_WORKER_LEASE_SECONDS",
+    issueId: "config.worker_lease_seconds",
+    max: null,
+    message: "NUSEND_SEND_WORKER_LEASE_SECONDS must be an integer >= 1.",
+    min: 1,
+  },
+  workerPollMs: {
+    defaultValue: 5_000,
+    envName: "NUSEND_SEND_WORKER_POLL_MS",
+    issueId: "config.worker_poll_ms",
+    max: null,
+    message: "NUSEND_SEND_WORKER_POLL_MS must be an integer >= 1.",
+    min: 1,
+  },
+} as const satisfies Record<string, NumericConfigSpec>;
+
+// Single source of truth for the lease-budget rule, consumed by both the
+// readiness-diagnostics config and the hard-failing sending config so they
+// cannot drift.
+const sendWorkerLeaseBudgetMessage =
+  "NUSEND_SEND_WORKER_LEASE_SECONDS must exceed NUSEND_SEND_WORKER_BATCH_SIZE * NUSEND_SES_REQUEST_TIMEOUT_MS by at least 10 seconds.";
+
+function exceedsSendWorkerLeaseBudget(input: {
+  readonly batchSize: number;
+  readonly requestTimeoutMs: number;
+  readonly leaseSeconds: number;
+}): boolean {
+  return (
+    input.batchSize * input.requestTimeoutMs + sendWorkerLeaseMarginMs >= input.leaseSeconds * 1000
+  );
+}
 
 const requiredAuthVariables = [
   "BETTER_AUTH_SECRET",
@@ -97,7 +158,9 @@ const authConfig: Effect.Effect<Option.Option<AuthConfig>, Config.ConfigError> =
     const googleClientId = yield* trimmedOption("GOOGLE_CLIENT_ID");
     const googleClientSecret = yield* trimmedOption("GOOGLE_CLIENT_SECRET");
     const trustedOrigins = yield* trimmedOption("NUSEND_AUTH_TRUSTED_ORIGINS");
-    const nodeEnv = yield* Config.option(Config.string("NODE_ENV"));
+    // trimmedOption so "production\n"/"production " still enables the production
+    // HTTPS enforcement below (a whitespace typo must not silently disable it).
+    const nodeEnv = yield* trimmedOption("NODE_ENV");
 
     const allValues = [secret, baseUrl, googleClientId, googleClientSecret, trustedOrigins];
     if (allValues.every(Option.isNone)) return Option.none<AuthConfig>();
@@ -207,49 +270,35 @@ export const serviceConfig: Effect.Effect<ServiceConfig, Config.ConfigError> = E
 export const sesOperationsConfig: Effect.Effect<ParsedSesOperationsConfig, Config.ConfigError> =
   Effect.gen(function* () {
     const issues: SesOperationsConfigIssue[] = [];
-    const requestTimeoutMs = parseOperationsInteger({
-      fallback: 30000,
-      id: "config.request_timeout_ms",
-      issue: issues,
-      max: null,
-      min: 1,
-      name: "NUSEND_SES_REQUEST_TIMEOUT_MS",
-      value: yield* trimmedOption("NUSEND_SES_REQUEST_TIMEOUT_MS"),
-    });
-    const workerBatchSize = parseOperationsInteger({
-      fallback: 1,
-      id: "config.worker_batch_size",
-      issue: issues,
-      max: 50,
-      min: 1,
-      name: "NUSEND_SEND_WORKER_BATCH_SIZE",
-      value: yield* trimmedOption("NUSEND_SEND_WORKER_BATCH_SIZE"),
-    });
-    const workerLeaseSeconds = parseOperationsInteger({
-      fallback: 300,
-      id: "config.worker_lease_seconds",
-      issue: issues,
-      max: null,
-      min: 1,
-      name: "NUSEND_SEND_WORKER_LEASE_SECONDS",
-      value: yield* trimmedOption("NUSEND_SEND_WORKER_LEASE_SECONDS"),
-    });
-    const workerPollMs = parseOperationsInteger({
-      fallback: 5000,
-      id: "config.worker_poll_ms",
-      issue: issues,
-      max: null,
-      min: 1,
-      name: "NUSEND_SEND_WORKER_POLL_MS",
-      value: yield* trimmedOption("NUSEND_SEND_WORKER_POLL_MS"),
-    });
+    const requestTimeoutMs = parseOperationsInteger(
+      numericConfigSpecs.requestTimeoutMs,
+      yield* trimmedOption(numericConfigSpecs.requestTimeoutMs.envName),
+      issues,
+    );
+    const workerBatchSize = parseOperationsInteger(
+      numericConfigSpecs.workerBatchSize,
+      yield* trimmedOption(numericConfigSpecs.workerBatchSize.envName),
+      issues,
+    );
+    const workerLeaseSeconds = parseOperationsInteger(
+      numericConfigSpecs.workerLeaseSeconds,
+      yield* trimmedOption(numericConfigSpecs.workerLeaseSeconds.envName),
+      issues,
+    );
+    const workerPollMs = parseOperationsInteger(
+      numericConfigSpecs.workerPollMs,
+      yield* trimmedOption(numericConfigSpecs.workerPollMs.envName),
+      issues,
+    );
 
-    if (workerBatchSize * requestTimeoutMs + sendWorkerLeaseMarginMs >= workerLeaseSeconds * 1000) {
-      issues.push({
-        id: "config.worker_budget",
-        message:
-          "NUSEND_SEND_WORKER_LEASE_SECONDS must exceed NUSEND_SEND_WORKER_BATCH_SIZE * NUSEND_SES_REQUEST_TIMEOUT_MS by at least 10 seconds.",
-      });
+    if (
+      exceedsSendWorkerLeaseBudget({
+        batchSize: workerBatchSize,
+        leaseSeconds: workerLeaseSeconds,
+        requestTimeoutMs,
+      })
+    ) {
+      issues.push({ id: "config.worker_budget", message: sendWorkerLeaseBudgetMessage });
     }
 
     const publicBaseUrl = normalizeOperationsPublicBaseUrl(
@@ -300,30 +349,31 @@ function parseTrackingEvents(value: string): ("click" | "open")[] {
   );
 }
 
-function parseOperationsInteger(input: {
-  fallback: number;
-  id: string;
-  issue: SesOperationsConfigIssue[];
-  max: number | null;
-  min: number;
-  name: string;
-  value: Option.Option<string>;
-}): number {
-  if (Option.isNone(input.value)) return input.fallback;
+function parseOperationsInteger(
+  spec: NumericConfigSpec,
+  value: Option.Option<string>,
+  issues: SesOperationsConfigIssue[],
+): number {
+  if (Option.isNone(value)) return spec.defaultValue;
+  const parsed = Number(value.value);
+  if (validNumericConfigValue(spec, parsed)) return parsed;
+  issues.push({ id: spec.issueId, message: spec.message });
+  return spec.defaultValue;
+}
 
-  const parsed = Number(input.value.value);
-  const valid =
-    Number.isInteger(parsed) && parsed >= input.min && (input.max === null || parsed <= input.max);
-  if (valid) return parsed;
+function parseSendingInteger(
+  spec: NumericConfigSpec,
+  value: Option.Option<string>,
+): Effect.Effect<number, Config.ConfigError> {
+  if (Option.isNone(value)) return Effect.succeed(spec.defaultValue);
+  const parsed = Number(value.value);
+  return validNumericConfigValue(spec, parsed)
+    ? Effect.succeed(parsed)
+    : configFailure(spec.message);
+}
 
-  input.issue.push({
-    id: input.id,
-    message:
-      input.max === null
-        ? `${input.name} must be an integer >= ${input.min}.`
-        : `${input.name} must be an integer between ${input.min} and ${input.max}.`,
-  });
-  return input.fallback;
+function validNumericConfigValue(spec: NumericConfigSpec, value: number): boolean {
+  return Number.isInteger(value) && value >= spec.min && (spec.max === null || value <= spec.max);
 }
 
 function normalizeOperationsPublicBaseUrl(
@@ -439,39 +489,31 @@ export const sendingConfig: Effect.Effect<SendingConfig, Config.ConfigError> = E
     const marketingConfigurationSet = Option.getOrNull(
       yield* trimmedOption("NUSEND_SES_MARKETING_CONFIGURATION_SET"),
     );
-    const requestTimeoutMsValue = Option.getOrElse(
-      yield* trimmedOption("NUSEND_SES_REQUEST_TIMEOUT_MS"),
-      () => "30000",
+    const requestTimeoutMs = yield* parseSendingInteger(
+      numericConfigSpecs.requestTimeoutMs,
+      yield* trimmedOption(numericConfigSpecs.requestTimeoutMs.envName),
     );
-    const requestTimeoutMs = Number(requestTimeoutMsValue);
-    if (!Number.isInteger(requestTimeoutMs) || requestTimeoutMs < 1) {
-      return yield* configFailure("NUSEND_SES_REQUEST_TIMEOUT_MS must be a positive integer.");
-    }
-
-    const workerLeaseSecondsValue = Option.getOrElse(
-      yield* trimmedOption("NUSEND_SEND_WORKER_LEASE_SECONDS"),
-      () => "300",
+    const workerLeaseSeconds = yield* parseSendingInteger(
+      numericConfigSpecs.workerLeaseSeconds,
+      yield* trimmedOption(numericConfigSpecs.workerLeaseSeconds.envName),
     );
-    const workerLeaseSeconds = Number(workerLeaseSecondsValue);
-    if (!Number.isInteger(workerLeaseSeconds) || workerLeaseSeconds < 1) {
-      return yield* configFailure("NUSEND_SEND_WORKER_LEASE_SECONDS must be a positive integer.");
-    }
-
-    const workerBatchSizeValue = Option.getOrElse(
-      yield* trimmedOption("NUSEND_SEND_WORKER_BATCH_SIZE"),
-      () => "1",
+    const workerBatchSize = yield* parseSendingInteger(
+      numericConfigSpecs.workerBatchSize,
+      yield* trimmedOption(numericConfigSpecs.workerBatchSize.envName),
     );
-    const workerBatchSize = Number(workerBatchSizeValue);
-    if (!Number.isInteger(workerBatchSize) || workerBatchSize < 1 || workerBatchSize > 50) {
-      return yield* configFailure(
-        "NUSEND_SEND_WORKER_BATCH_SIZE must be an integer between 1 and 50.",
-      );
-    }
+    const workerPollMs = yield* parseSendingInteger(
+      numericConfigSpecs.workerPollMs,
+      yield* trimmedOption(numericConfigSpecs.workerPollMs.envName),
+    );
 
-    if (workerBatchSize * requestTimeoutMs + sendWorkerLeaseMarginMs >= workerLeaseSeconds * 1000) {
-      return yield* configFailure(
-        "NUSEND_SEND_WORKER_LEASE_SECONDS must exceed NUSEND_SEND_WORKER_BATCH_SIZE * NUSEND_SES_REQUEST_TIMEOUT_MS by at least 10 seconds.",
-      );
+    if (
+      exceedsSendWorkerLeaseBudget({
+        batchSize: workerBatchSize,
+        leaseSeconds: workerLeaseSeconds,
+        requestTimeoutMs,
+      })
+    ) {
+      return yield* configFailure(sendWorkerLeaseBudgetMessage);
     }
 
     return {
@@ -482,6 +524,7 @@ export const sendingConfig: Effect.Effect<SendingConfig, Config.ConfigError> = E
       transactionalConfigurationSet,
       workerBatchSize,
       workerLeaseSeconds,
+      workerPollMs,
     };
   },
 );

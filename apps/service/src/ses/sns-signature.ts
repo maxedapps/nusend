@@ -3,17 +3,13 @@ import { createVerify } from "node:crypto";
 import { Effect } from "effect";
 
 import { SnsVerificationError } from "./errors.ts";
+import { parseSnsTopicArn, snsHostForTopic } from "./sns-arn.ts";
 import type { SnsEnvelope } from "./sns-schema.ts";
 
 const signingCertificateTimeoutMs = 10_000;
 const maxSigningCertificateBytes = 64 * 1024;
 
 export type CertificateFetcher = (url: URL) => Effect.Effect<string, SnsVerificationError>;
-
-type ParsedSnsTopicArn = {
-  readonly partition: "aws" | "aws-cn" | "aws-us-gov";
-  readonly region: string;
-};
 
 export function buildSnsStringToSign(
   envelope: SnsEnvelope,
@@ -156,20 +152,6 @@ function decodeBase64Signature(signature: string): Buffer {
 
 function invalidSnsSignature(reason: string): SnsVerificationError {
   return new SnsVerificationError({ reason });
-}
-
-function parseSnsTopicArn(topicArn: string): ParsedSnsTopicArn | null {
-  const match = /^arn:(aws|aws-us-gov|aws-cn):sns:([a-z0-9-]+):\d{12}:[A-Za-z0-9_.-]{1,256}$/.exec(
-    topicArn,
-  );
-  if (!match) return null;
-
-  return { partition: match[1] as ParsedSnsTopicArn["partition"], region: match[2] };
-}
-
-function snsHostForTopic(topic: ParsedSnsTopicArn): string {
-  const suffix = topic.partition === "aws-cn" ? "amazonaws.com.cn" : "amazonaws.com";
-  return `sns.${topic.region}.${suffix}`;
 }
 
 async function readLimitedResponseText(response: Response, maxBytes: number): Promise<string> {

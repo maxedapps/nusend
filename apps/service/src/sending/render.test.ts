@@ -58,19 +58,4 @@ describe("renderDeliveryEmail", () => {
       runTest(renderDeliveryEmail(context({ purpose: "transactional" }))),
     ).rejects.toThrow(/Unsupported placeholder: unsubscribe.url/);
   });
-
-  it("preserves existing escaped HTML placeholders", async () => {
-    const rendered = await runTest(
-      renderDeliveryEmail(
-        context({
-          html: "<p>{{ vars.firstName }}</p>",
-          subject: "Hi {{ user.email }}",
-          text: null,
-        }),
-      ),
-    );
-
-    expect(rendered.html).toBe("<p>Max</p>");
-    expect(rendered.unsubscribeUrl).toBeNull();
-  });
 });

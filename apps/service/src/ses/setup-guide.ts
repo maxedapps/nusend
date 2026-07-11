@@ -242,9 +242,12 @@ function step(
   readiness: SesReadinessResult,
   input: Omit<SetupGuideStep, "status">,
 ): SetupGuideStep {
-  const related = input.relatedChecks
-    .map((id) => readiness.checks.find((check) => check.id === id))
-    .filter(Boolean) as ReadinessCheck[];
+  // filter (not find): a related check id can appear once per feedback topic, and
+  // a failure on ANY topic must be reflected — find() would silently take only the
+  // first (often passing) one.
+  const related = input.relatedChecks.flatMap((id) =>
+    readiness.checks.filter((check) => check.id === id),
+  );
   return { ...input, status: related.length === 0 ? "warning" : aggregate(related) };
 }
 

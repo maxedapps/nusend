@@ -65,7 +65,11 @@ export function createApiKeyRoutes(options: ApiKeyRoutesOptions): Hono {
     const principal = context.get("principal") as Principal;
     const program = Effect.gen(function* () {
       const apiKeys = yield* ApiKeys;
-      yield* apiKeys.revoke({ id: context.req.param("id"), userId: principal.userId });
+      yield* apiKeys.revoke({
+        actorPermissions: principal.kind === "session" ? "owner" : principal.permissions,
+        id: context.req.param("id"),
+        userId: principal.userId,
+      });
     });
 
     return runRoute(context, options.runtime, program, () => new Response(null, { status: 204 }));
@@ -100,7 +104,14 @@ function decodeCreateApiKeyRequest(
   value: unknown,
 ): Effect.Effect<CreateApiKeyRequest, RequestValidationError> {
   const result = Schema.decodeUnknownResult(CreateApiKeyRequestSchema, { errors: "all" })(value);
-  return Result.isFailure(result)
-    ? Effect.fail(new RequestValidationError({ message: String(result.failure) }))
-    : Effect.succeed(result.success);
+  if (Result.isSuccess(result)) return Effect.succeed(result.success);
+  // Generic message to the caller; detail logged server-side for diagnosability.
+  return Effect.logWarning("request validation failed", {
+    detail: String(result.failure),
+    operation: "api-keys:create",
+  }).pipe(
+    Effect.andThen(
+      Effect.fail(new RequestValidationError({ message: "Request body is invalid." })),
+    ),
+  );
 }

@@ -10,11 +10,22 @@ import { bodyLimit } from "hono/body-limit";
 
 import { RequestValidationError } from "../errors.ts";
 import { errorEnvelope, runRoute, type AppRuntime } from "../http/respond.ts";
+import { makeAttemptLimiter, type AttemptLimiter } from "./attempt-limiter.ts";
 import { DeviceAuthorizations } from "./service.ts";
 
 type DeviceAuthorizationRoutesOptions = {
   readonly runtime: AppRuntime;
+  // Canonical public origin (from BETTER_AUTH_URL) used for verification URLs
+  // behind a TLS-terminating proxy; falls back to the request origin.
+  readonly publicOrigin?: string;
+  // Coarse request-rate limiters for the unauthenticated start endpoint (used
+  // as sliding-window counters). Injectable for tests.
+  readonly startRateLimiter?: AttemptLimiter;
+  readonly globalStartRateLimiter?: AttemptLimiter;
 };
+
+const rateWindowMs = 15 * 60_000;
+const globalRateKey = "global";
 
 export function createDeviceAuthorizationRoutes(options: DeviceAuthorizationRoutesOptions): Hono {
   const routes = new Hono();
@@ -23,17 +34,35 @@ export function createDeviceAuthorizationRoutes(options: DeviceAuthorizationRout
     onError: (context) =>
       context.json(errorEnvelope("request_too_large", "Request body is too large."), 413),
   });
+  // Unauthenticated endpoint: bound both per-source-address and total request
+  // rate so a client rotating X-Forwarded-For cannot flood pending rows and
+  // starve legitimate CLI logins.
+  const startRateLimiter =
+    options.startRateLimiter ?? makeAttemptLimiter({ max: 10, windowMs: rateWindowMs });
+  const globalStartRateLimiter =
+    options.globalStartRateLimiter ?? makeAttemptLimiter({ max: 60, windowMs: rateWindowMs });
 
   routes.post("/", jsonLimit, (context) => {
+    // Trust only the proxy-appended (last) X-Forwarded-For hop.
+    const address = lastForwardedAddress(context.req.header("x-forwarded-for")) ?? "direct";
+    if (startRateLimiter.isLocked(address) || globalStartRateLimiter.isLocked(globalRateKey)) {
+      return context.json(
+        errorEnvelope("rate_limited", "Too many device authorization requests. Try again later."),
+        429,
+      );
+    }
+    startRateLimiter.recordFailure(address);
+    globalStartRateLimiter.recordFailure(globalRateKey);
+
     const program = Effect.gen(function* () {
       const body = yield* readJsonBody(context.req.raw);
       const input = yield* decodeStartRequest(body);
       const deviceAuthorizations = yield* DeviceAuthorizations;
       return yield* deviceAuthorizations.start({
-        baseUrl: new URL(context.req.url).origin,
+        baseUrl: options.publicOrigin ?? new URL(context.req.url).origin,
         clientName: input.clientName,
         permissions: input.permissions,
-        requesterFingerprint: lastForwardedAddress(context.req.header("x-forwarded-for")),
+        requesterFingerprint: address === "direct" ? undefined : address,
       });
     });
 
@@ -72,7 +101,7 @@ function decodeStartRequest(
     errors: "all",
   })(value);
   return Result.isFailure(result)
-    ? Effect.fail(new RequestValidationError({ message: String(result.failure) }))
+    ? invalidRequest("device-authorization:start", result.failure)
     : Effect.succeed(result.success);
 }
 
@@ -83,6 +112,22 @@ function decodeTokenRequest(
     errors: "all",
   })(value);
   return Result.isFailure(result)
-    ? Effect.fail(new RequestValidationError({ message: String(result.failure) }))
+    ? invalidRequest("device-authorization:token", result.failure)
     : Effect.succeed(result.success);
+}
+
+// Returns the caller a generic message (never Effect Schema internals) while
+// logging the detail server-side for diagnosability.
+function invalidRequest(
+  operation: string,
+  failure: unknown,
+): Effect.Effect<never, RequestValidationError> {
+  return Effect.logWarning("request validation failed", {
+    detail: String(failure),
+    operation,
+  }).pipe(
+    Effect.andThen(
+      Effect.fail(new RequestValidationError({ message: "Request body is invalid." })),
+    ),
+  );
 }

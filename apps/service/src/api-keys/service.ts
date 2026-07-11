@@ -1,4 +1,8 @@
 import { Context, Effect, Layer, Redacted } from "effect";
+import type {
+  ApiKey as ContractApiKey,
+  ApiKeyWithSecret as ContractApiKeyWithSecret,
+} from "@nusend/api-contract";
 import { validatePermissionSet, type PermissionSet } from "@nusend/api-contract/permissions";
 
 import { DatabaseError, ForbiddenError, NotFoundError, RequestValidationError } from "../errors.ts";
@@ -7,20 +11,8 @@ import { type Pagination } from "../http/query.ts";
 import { IdGenerator, type IdGeneratorService } from "../services/ids.ts";
 import { buildApiKeyPreview, generateRawApiKey, hashApiKey, safeEqual } from "./crypto.ts";
 
-export type ApiKeyMetadata = {
-  readonly createdAt: string;
-  readonly expiresAt: string | null;
-  readonly id: string;
-  readonly lastUsedAt: string | null;
-  readonly name: string;
-  readonly permissions: PermissionSet;
-  readonly preview: string;
-  readonly revokedAt: string | null;
-};
-
-export type ApiKeyWithSecret = ApiKeyMetadata & {
-  readonly key: string;
-};
+export type ApiKeyMetadata = ContractApiKey;
+export type ApiKeyWithSecret = ContractApiKeyWithSecret;
 
 export type ApiKeyVerification = {
   readonly key: {
@@ -52,9 +44,10 @@ export interface ApiKeysService {
     pagination: Pagination,
   ) => Effect.Effect<ApiKeysPage, DatabaseError>;
   readonly revoke: (input: {
+    readonly actorPermissions: PermissionSet | "owner";
     readonly id: string;
     readonly userId: string;
-  }) => Effect.Effect<void, DatabaseError | NotFoundError>;
+  }) => Effect.Effect<void, DatabaseError | ForbiddenError | NotFoundError>;
   readonly rotate: (input: {
     readonly actorPermissions: PermissionSet | "owner";
     readonly id: string;
@@ -131,7 +124,7 @@ export function makeApiKeysService(input: {
           },
         );
 
-        return { ...metadata, key: rawKey };
+        return { ...metadata, key: rawKey } satisfies ApiKeyWithSecret;
       }),
     list: (userId, pagination) =>
       Effect.gen(function* () {
@@ -148,14 +141,21 @@ export function makeApiKeysService(input: {
         const page = hasMore ? rows.slice(0, pagination.limit) : rows;
         return { hasMore, items: yield* Effect.all(page.map(rowToMetadata)) };
       }),
-    revoke: ({ id, userId }) =>
+    revoke: ({ actorPermissions, id, userId }) =>
       Effect.gen(function* () {
-        const row = yield* input.db.get<{ id: string }>(
+        const row = yield* input.db.get<{ id: string; permissions_json: string }>(
           "apiKeys:findForRevoke",
-          `SELECT id FROM api_keys WHERE id = $id AND user_id = $userId AND revoked_at IS NULL;`,
+          `SELECT id, permissions_json FROM api_keys WHERE id = $id AND user_id = $userId AND revoked_at IS NULL;`,
           { id, userId },
         );
         if (!row) return yield* Effect.fail(new NotFoundError({ message: "API key not found." }));
+
+        // A scoped actor may only revoke a key whose permissions it fully holds,
+        // matching rotate — otherwise a narrow api_keys:write key could revoke the
+        // owner's broadest key (a lockout vector).
+        const targetPermissions = yield* parseStoredPermissions(row.permissions_json);
+        const subsetError = enforceSubset(targetPermissions, actorPermissions);
+        if (subsetError) return yield* Effect.fail(subsetError);
 
         yield* input.db.run(
           "apiKeys:revoke",
@@ -273,7 +273,7 @@ function rowToMetadata(row: ApiKeyRow): Effect.Effect<ApiKeyMetadata, DatabaseEr
       permissions: yield* parseStoredPermissions(row.permissions_json),
       preview: row.key_preview,
       revokedAt: row.revoked_at,
-    };
+    } satisfies ApiKeyMetadata;
   });
 }
 

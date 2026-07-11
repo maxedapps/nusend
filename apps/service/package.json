@@ -11,6 +11,7 @@
     "start": "bun src/main.ts",
     "ses:simulate": "bun src/ses/simulator-main.ts",
     "ses:simulate:all": "bun src/ses/simulator-main.ts all",
+    "test": "vitest run --root ../.. --dir src",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "worker:send": "bun src/sending/worker-main.ts loop",
     "worker:send:once": "bun src/sending/worker-main.ts once"

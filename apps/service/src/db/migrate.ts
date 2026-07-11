@@ -1,34 +1,26 @@
 // Migration CLI: bun src/db/migrate.ts <up|down|status>
-import { ConfigProvider, Effect, Exit, ManagedRuntime, Result } from "effect";
+import { ConfigProvider, Effect, Exit, ManagedRuntime } from "effect";
 
 import { serviceConfig } from "../config.ts";
 import { MigrationError, type DatabaseError } from "../errors.ts";
 import { Database, type DatabaseService } from "../services/database.ts";
 import { DatabaseBunLive } from "../services/database-bun.ts";
-import { migrationsDirectory, readMigrationFiles, type MigrationFile } from "./migration-files.ts";
+import {
+  mapAppliedMigrations,
+  migrationFiles,
+  validateAppliedMigrationFiles,
+  type AppliedMigration,
+} from "./migration-check.ts";
+import { droppedTableNames } from "./destructive-migration.ts";
+import { type MigrationFile } from "./migration-files.ts";
 
 type Command = "down" | "status" | "up";
-
-type AppliedMigration = {
-  checksum: string;
-  version: string;
-};
 
 function parseCommand(value: string | undefined): Command {
   if (value === "up" || value === "down" || value === "status") return value;
 
   throw new Error("Usage: bun src/db/migrate.ts <up|down|status>");
 }
-
-const migrationFiles: Effect.Effect<MigrationFile[], MigrationError> = Effect.suspend(() => {
-  const migrations: MigrationFile[] = [];
-  for (const parsed of readMigrationFiles()) {
-    if (Result.isFailure(parsed)) return Effect.fail(parsed.failure);
-    migrations.push(parsed.success);
-  }
-
-  return Effect.succeed(migrations);
-});
 
 function migrationProgram(
   command: Command,
@@ -125,6 +117,31 @@ function migrateDown(
       );
     }
 
+    // Destructive-rollback gate: a down migration that DROPs a table destroys that
+    // table's data. Require explicit confirmation so an accidental `db:rollback`
+    // does not silently delete e.g. the SES audit trail or all API keys.
+    const droppedTables = yield* Effect.try({
+      try: () => droppedTableNames(migration.downSql),
+      catch: (cause) =>
+        new MigrationError({
+          reason: `Cannot inspect destructive rollback ${migration.version}: ${cause instanceof Error ? cause.message : "malformed DROP TABLE statement"}`,
+          version: migration.version,
+        }),
+    });
+    if (droppedTables.length > 0) {
+      console.log(`Destructive rollback tables: ${droppedTables.join(", ")}`);
+    }
+    if (droppedTables.length > 0 && process.env.NUSEND_CONFIRM_DESTRUCTIVE_ROLLBACK !== "1") {
+      return yield* Effect.fail(
+        new MigrationError({
+          reason: `Rolling back ${migration.version} drops data-bearing table(s): ${droppedTables.join(
+            ", ",
+          )}. Re-run with NUSEND_CONFIRM_DESTRUCTIVE_ROLLBACK=1 to confirm.`,
+          version: migration.version,
+        }),
+      );
+    }
+
     yield* db.transaction(
       Effect.gen(function* () {
         yield* db.exec(`migrate:rollback:${migration.version}`, migration.downSql);
@@ -162,45 +179,6 @@ function printStatus(
       console.log(`missing  ${applied.version}`);
     }
   }
-}
-
-function validateAppliedMigrationFiles(
-  migrations: MigrationFile[],
-  appliedByVersion: Map<string, AppliedMigration>,
-): Effect.Effect<void, MigrationError> {
-  return Effect.gen(function* () {
-    const migrationsByVersion = new Map(
-      migrations.map((migration) => [migration.version, migration]),
-    );
-
-    for (const applied of appliedByVersion.values()) {
-      const migration = migrationsByVersion.get(applied.version);
-
-      if (!migration) {
-        return yield* Effect.fail(
-          new MigrationError({
-            reason: `Applied migration ${applied.version} is missing from ${migrationsDirectory}.`,
-            version: applied.version,
-          }),
-        );
-      }
-
-      if (migration.checksum !== applied.checksum) {
-        return yield* Effect.fail(
-          new MigrationError({
-            reason: `Applied migration ${applied.version} checksum changed. Roll it back before editing it.`,
-            version: applied.version,
-          }),
-        );
-      }
-    }
-  });
-}
-
-function mapAppliedMigrations(
-  appliedMigrations: readonly AppliedMigration[],
-): Map<string, AppliedMigration> {
-  return new Map(appliedMigrations.map((migration) => [migration.version, migration]));
 }
 
 const command = (() => {

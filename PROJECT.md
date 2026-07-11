@@ -116,15 +116,56 @@ pnpm --filter @nusend/service dev
 pnpm --filter @nusend/service start
 pnpm --filter @nusend/service worker:send:once
 pnpm --filter @nusend/service worker:send
+pnpm --filter @nusend/service ses:simulate
+pnpm --filter @nusend/service ses:simulate:all
+pnpm --filter @nusend/service typecheck
+pnpm --filter @nusend/service test
 ```
 
 Current CLI scripts:
 
 ```sh
-pnpm --filter @nusend/cli build
+pnpm --filter @nusend/cli build   # builds @nusend/api-contract first, then the CLI
 pnpm --filter @nusend/cli typecheck
+pnpm --filter @nusend/cli test
 ./apps/cli/dist/main.js --help
 ```
+
+Focused service tests use package-relative paths and omit pnpm's literal `--` separator because Vitest 4 treats arguments after it as non-filtering passthrough:
+
+```sh
+pnpm --filter @nusend/service test src/config.test.ts
+```
+
+Portable test-audit evidence is checked with:
+
+```sh
+pnpm audit:test          # exercise the adversarial audit-tool contract
+pnpm audit:validate      # strictly validate committed identities, topology, and review evidence
+pnpm audit:render:check  # verify the generated Markdown view is byte-current
+pnpm audit:independent   # independently recompute final identities and multiset deltas
+```
+
+To compare a newly collected Vitest JSON report without comparing timing bytes, run:
+
+```sh
+node scripts/test-quality-audit/cli.mjs compare-report --snapshot final --report <current.json> --inventory docs/test-audit/final-inventory.json
+```
+
+This comparison requires a successful report with matching normalized identities, multiplicities, file count, and test count.
+
+## Upgrade and compatibility notes
+
+- Scoped API keys can revoke or rotate only keys whose permissions are a subset of the actor's permissions. A previously accepted scoped revoke may now return `403`; owner sessions remain unrestricted.
+- CLI unknown options, options valid only on another subcommand, and duplicate nonrepeatable options exit `2` before config, credential, or network work. `--permission` remains repeatable.
+- CLI HTTP redirects are rejected and API keys are never forwarded to a redirect target. Configure each profile with the canonical service URL instead of a redirecting alias.
+- `NUSEND_HTTP_TIMEOUT_MS` overrides the CLI HTTP timeout (default `30000`). It must be an unpadded decimal safe integer of at least `1`; surrounding whitespace is invalid. Invalid values exit `2` when an HTTP client is needed. Local-only commands such as `config repair-permissions` do not parse it.
+- Destructive `db:rollback` operations print a sorted table inventory before refusal or execution and require `NUSEND_CONFIRM_DESTRUCTIVE_ROLLBACK=1`.
+- Migration `0008` creates a unique `jobs(delivery_id)` index. Legacy duplicate jobs make the migration fail and require operator inspection; do not delete duplicates silently.
+- The internal `PaginationSchema` value is no longer exported from `@nusend/api-contract`; the `Pagination` type and `PaginationMetaSchema` remain public.
+- Device-authorization request limiters are process-local in-memory ceilings and reset on restart. Multi-process deployments enforce one independent ceiling per process; durable pending-row limits remain database-backed.
+- Migration `0004` intentionally uses reset-clean semantics for legacy `ses_feedback_*` data. Applying it discards those legacy rows; export them before migration if history is required.
+- `/api/operations/deliveries` is a filtered, limit-only operational view and does not promise `offset`; unknown delivery query parameters are not a pagination contract. `/api/operations/ses/events` supports offset pagination.
 
 ## Current Stack
 
@@ -219,6 +260,8 @@ Nusend owns first-party auth tables:
 
 - `api_keys`, keyed by `user_id` and storing only key hashes/previews
 - `device_authorizations`, for short-lived CLI login approval and polling
+
+Connection model: app database access is serialized through a single-permit semaphore per connection so concurrent request fibers cannot interleave statements into an open transaction on the shared SQLite connection. Better Auth runs its own statements on a dedicated second connection (same pragmas) for file-path databases. A `:memory:` database (dev only) cannot split, so Better Auth shares the single handle and relies on the semaphore alone.
 
 ### Lists and Contacts
 
@@ -449,6 +492,12 @@ Routes:
 - `GET /api/operations/deliveries`
 - `GET /api/operations/deliveries/:id`
 - `GET /api/operations/ses/events`
+- `GET /api/operations/ses/events/:id`
+- `GET /api/operations/ses/summary`
+- `GET /api/operations/ses/readiness`
+- `GET /api/operations/ses/setup-guide`
+- `GET /api/operations/ses/simulator-runs`
+- `GET /api/operations/ses/simulator-runs/:id`
 
 Auth:
 
@@ -762,29 +811,38 @@ Current audit tables:
 
 ```sql
 ses_notifications(
-  sns_message_id,
+  id,                    -- PK
+  sns_message_id,        -- UNIQUE
   sns_topic_arn,
-  sns_type,
-  event_type,
+  sns_type,              -- Notification | SubscriptionConfirmation | UnsubscribeConfirmation
   ses_message_id,
+  event_type,
   raw_json,
   received_at
 )
 
 ses_events(
-  id,
-  sns_message_id,
+  id,                    -- PK
+  dedupe_key,            -- UNIQUE
+  notification_id,       -- FK ses_notifications(id)
   event_type,
   delivery_id,
   mailing_id,
   ses_message_id,
   recipient_email,
-  feedback_id,
+  action_taken,          -- recorded | suppressed | ignored
+  occurred_at,
   bounce_type,
   bounce_sub_type,
   complaint_feedback_type,
+  feedback_id,
   diagnostic_code,
-  action_taken,
+  reject_reason,
+  delivery_delay_type,
+  link_url,
+  link_tags_json,
+  ip_address,
+  user_agent,
   created_at
 )
 ```

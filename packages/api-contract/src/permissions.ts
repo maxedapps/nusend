@@ -9,22 +9,11 @@ export const permissionCatalog = {
   suppressions: ["read", "write"],
 } as const;
 
-export const authStatements = permissionCatalog;
-
 export type PermissionResource = keyof typeof permissionCatalog;
 export type PermissionAction<R extends PermissionResource = PermissionResource> =
   (typeof permissionCatalog)[R][number];
 export type PermissionSet = Partial<Record<PermissionResource, readonly string[]>>;
 
-export const PermissionActionSchema = Schema.Literals(["read", "write"]);
-export const PermissionResourceSchema = Schema.Literals([
-  "api_keys",
-  "contacts",
-  "lists",
-  "mailings",
-  "operations",
-  "suppressions",
-]);
 const PermissionSetRecordSchema = Schema.Record(Schema.String, Schema.Array(Schema.String));
 
 export const PermissionSetSchema = PermissionSetRecordSchema.check(

@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import type { PreparedEmail } from "./email-transport.ts";
 import {
   classifySesError,
+  makeSesClient,
   makeSesEmailTransport,
   toSendEmailCommand,
 } from "./email-transport-ses.ts";
@@ -113,6 +114,13 @@ describe("SES email transport", () => {
     expect(classifySesError(named("MessageRejected")).kind).toBe("permanent");
     expect(classifySesError(named("AbortError")).kind).toBe("ambiguous");
     expect(classifySesError(named("SomethingUnknown")).kind).toBe("ambiguous");
+    // Quota exhaustion means nothing was sent — retry, do not terminally fail.
+    expect(classifySesError(named("LimitExceededException")).kind).toBe("retryable");
+  });
+
+  it("pins the SES client to a single attempt so lost responses cannot double-send", async () => {
+    const client = makeSesClient("us-east-1");
+    expect(await client.config.maxAttempts()).toBe(1);
   });
 
   it("allows unsubscribe headers for future marketing support", () => {
@@ -178,11 +186,11 @@ describe("SES email transport", () => {
   });
 
   it.each([
-    ["contains\rreturn", "CR injection"],
-    ["contains\nnewline", "LF injection"],
-    ["contains\u0001control", "control character"],
-    ["x".repeat(996), "oversized value"],
-  ])("rejects invalid SES header value (%s)", async (headerValue) => {
+    ["CR", "contains\rreturn"],
+    ["LF", "contains\nnewline"],
+    ["U+0001", "contains\u0001control"],
+    ["oversized value", "x".repeat(996)],
+  ])("rejects invalid SES header value (%s)", async (_label, headerValue) => {
     const calls: SendEmailCommand[] = [];
     const transport = makeSesEmailTransport(
       {

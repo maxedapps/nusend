@@ -76,18 +76,63 @@ describe("login command", () => {
     });
   });
 
-  it("maps denied and invalid_grant to authentication exit errors", async () => {
-    await runSequential(["access_denied", "invalid_grant"] as const, async (status) => {
+  it("preserves a profile written concurrently during the device-approval wait", async () => {
+    const env = await tempEnv();
+    await mkdir(configDirectory(env), { mode: 0o700, recursive: true });
+    await writeFile(
+      configPath(env),
+      `${JSON.stringify({ activeProfile: "existing", profiles: { existing: { baseUrl: "https://old.example.com" } } })}\n`,
+      { mode: 0o600 },
+    );
+    const responses = [startResponse(0), approvedResponse()];
+    globalThis.fetch = vi.fn(async (input: Request | URL | string) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url.endsWith("/token")) {
+        // Simulate a concurrent `login --profile other` writing the config file
+        // while we wait for approval.
+        await writeFile(
+          configPath(env),
+          `${JSON.stringify({
+            activeProfile: "existing",
+            profiles: {
+              existing: { baseUrl: "https://old.example.com" },
+              other: { baseUrl: "https://other.example.com" },
+            },
+          })}\n`,
+          { mode: 0o600 },
+        );
+      }
+      return Response.json(responses.shift());
+    }) as unknown as typeof fetch;
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await runCli(["--profile", "new", "login", "https://mail.example.com"], env);
+
+    // The concurrently-written "other" profile survives the merge (not clobbered
+    // by the process-start snapshot).
+    await expect(loadConfig(env)).resolves.toMatchObject({
+      profiles: {
+        existing: { baseUrl: "https://old.example.com" },
+        new: { baseUrl: "https://mail.example.com" },
+        other: { baseUrl: "https://other.example.com" },
+      },
+    });
+  });
+
+  it.each(["access_denied", "invalid_grant"] as const)(
+    "maps %s to an authentication exit error",
+    async (status) => {
       const env = await tempEnv();
       const responses = [startResponse(0), { status }];
       globalThis.fetch = vi.fn(async () =>
         Response.json(responses.shift()),
       ) as unknown as typeof fetch;
+
       await expect(runCli(["login", "https://mail.example.com"], env)).rejects.toMatchObject({
         exitCode: 3,
       });
-    });
-  });
+    },
+  );
 
   it("does not print the raw approved key in human output", async () => {
     const env = await tempEnv();
@@ -105,34 +150,33 @@ describe("login command", () => {
     expect(output).toContain("Code: ABCD-2345");
   });
 
-  it("rejects path-carrying base URLs and accepts root URLs", async () => {
+  it("rejects path-carrying base URLs", async () => {
     const env = await tempEnv();
 
     await expect(runCli(["login", "https://mail.example.com/nusend"], env)).rejects.toMatchObject({
       exitCode: 2,
       message: expect.stringContaining("must not include a path"),
     });
+  });
 
-    await runSequential(["https://mail.example.com", "https://mail.example.com/"], async (url) => {
-      const responses = [startResponse(0), approvedResponse()];
-      const fetchMock = vi.fn(async (input: Request | URL | string) => {
-        const requested = input instanceof Request ? input.url : String(input);
-        expect(requested).toContain("https://mail.example.com/api/device-authorizations");
-        return Response.json(responses.shift());
-      });
-      globalThis.fetch = fetchMock as unknown as typeof fetch;
-      vi.spyOn(console, "log").mockImplementation(() => undefined);
-
-      await expect(runCli(["login", url], env)).resolves.toEqual({ exitCode: 0 });
-      expect(fetchMock).toHaveBeenCalled();
+  it.each([
+    ["without trailing slash", "https://mail.example.com"],
+    ["with trailing slash", "https://mail.example.com/"],
+  ] as const)("accepts a root base URL %s", async (_label, url) => {
+    const env = await tempEnv();
+    const responses = [startResponse(0), approvedResponse()];
+    const fetchMock = vi.fn(async (input: Request | URL | string) => {
+      const requested = input instanceof Request ? input.url : String(input);
+      expect(requested).toContain("https://mail.example.com/api/device-authorizations");
+      return Response.json(responses.shift());
     });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await expect(runCli(["login", url], env)).resolves.toEqual({ exitCode: 0 });
+    expect(fetchMock).toHaveBeenCalled();
   });
 });
-
-function runSequential<T>(values: readonly T[], task: (value: T) => Promise<void>): Promise<void> {
-  const [head, ...tail] = values;
-  return head === undefined ? Promise.resolve() : task(head).then(() => runSequential(tail, task));
-}
 
 async function tempEnv(): Promise<NodeJS.ProcessEnv> {
   const directory = await mkdtemp(join(tmpdir(), "nusend-cli-login-"));

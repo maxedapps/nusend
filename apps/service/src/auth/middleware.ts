@@ -3,7 +3,7 @@ import type { MiddlewareHandler } from "hono";
 
 import { ApiKeys, type ApiKeysService } from "../api-keys/service.ts";
 import { DatabaseError, ForbiddenError, UnauthenticatedError, type AuthError } from "../errors.ts";
-import { errorEnvelope, logCause, type AppRuntime } from "../http/respond.ts";
+import { errorEnvelope, logCause, safeRequestMeta, type AppRuntime } from "../http/respond.ts";
 import { Auth, type AuthService } from "../services/auth.ts";
 import { hasPermissions, type PermissionSet } from "./permissions.ts";
 import type { Principal } from "./principal.ts";
@@ -40,16 +40,22 @@ type RequirePrincipalOptions = {
 // failures to the exact envelopes the API has always returned.
 export function requirePrincipal(options: RequirePrincipalOptions): MiddlewareHandler<AuthContext> {
   return async (context, next) => {
-    const internalError = (cause: Cause.Cause<unknown>): Response => {
-      logCause(cause);
-      return context.json(errorEnvelope("internal_error", "Internal error."), 500);
-    };
+    const internalError = (cause: Cause.Cause<unknown>) =>
+      logCause(cause, safeRequestMeta(context.req.raw)).pipe(
+        Effect.as(context.json(errorEnvelope("internal_error", "Internal error."), 500)),
+      );
 
     const program = resolvePrincipal(context.req.raw.headers, options.permissions).pipe(
       Effect.map((principal) => ({ kind: "principal" as const, principal })),
       Effect.catchTags({
         AuthError: (error) =>
-          Effect.succeed({ kind: "response" as const, response: internalError(Cause.fail(error)) }),
+          internalError(Cause.fail(error)).pipe(
+            Effect.map((response) => ({ kind: "response" as const, response })),
+          ),
+        DatabaseError: (error) =>
+          internalError(Cause.fail(error)).pipe(
+            Effect.map((response) => ({ kind: "response" as const, response })),
+          ),
         ForbiddenError: (error) =>
           Effect.succeed({
             kind: "response" as const,
@@ -65,7 +71,9 @@ export function requirePrincipal(options: RequirePrincipalOptions): MiddlewareHa
 
     const exit = await options.runtime.runPromiseExit(program);
 
-    if (Exit.isFailure(exit)) return internalError(exit.cause);
+    if (Exit.isFailure(exit)) {
+      return await options.runtime.runPromise(internalError(exit.cause));
+    }
     if (exit.value.kind === "response") return exit.value.response;
 
     context.set("principal", exit.value.principal);

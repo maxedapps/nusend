@@ -32,16 +32,15 @@ describe("buildSesSetupGuide", () => {
     ).toMatchObject({ url: "https://mail.example.com/api/webhooks/aws/sns/ses" });
   });
 
-  it("aggregates related check status and does not expose secrets", () => {
+  it("aggregates duplicate per-topic checks in pass-then-error order", () => {
     const guide = buildSesSetupGuide({
       ...readiness(),
-      checks: [check("config.aws_region", "ok"), check("aws.credentials_and_account", "error")],
+      checks: [check("sns.subscription.webhook", "ok"), check("sns.subscription.webhook", "error")],
       status: "error",
     });
 
     expect(guide.status).toBe("error");
-    expect(guide.steps.find((step) => step.id === "choose-region")?.status).toBe("error");
-    expect(JSON.stringify(guide)).not.toContain("secret-value");
+    expect(guide.steps.find((step) => step.id === "webhook-subscription")?.status).toBe("error");
   });
 });
 

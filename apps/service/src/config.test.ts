@@ -102,10 +102,8 @@ describe("serviceConfig", () => {
     expect(config.port).toBe(4100);
   });
 
-  it("rejects invalid ports", async () => {
-    await expect(load({ NUSEND_PORT: "70000" })).rejects.toThrow(/NUSEND_PORT/);
-    await expect(load({ NUSEND_PORT: "abc" })).rejects.toThrow(/NUSEND_PORT/);
-    await expect(load({ NUSEND_PORT: "3.5" })).rejects.toThrow(/NUSEND_PORT/);
+  it.each(["70000", "abc", "3.5"])("rejects invalid port %s", async (port) => {
+    await expect(load({ NUSEND_PORT: port })).rejects.toThrow(/NUSEND_PORT/);
   });
 
   it("does not fall through to PORT when NUSEND_PORT is invalid", async () => {
@@ -170,10 +168,13 @@ describe("serviceConfig", () => {
     );
   });
 
-  it("rejects short secrets", async () => {
+  it("rejects a short auth secret", async () => {
     await expect(load({ ...validAuthFixture, BETTER_AUTH_SECRET: "short" })).rejects.toThrow(
       /at least 32 characters/,
     );
+  });
+
+  it("rejects a short API-key hash secret", async () => {
     await expect(
       load({ ...validAuthFixture, NUSEND_API_KEY_HASH_SECRET: "short" }),
     ).rejects.toThrow(/NUSEND_API_KEY_HASH_SECRET/);
@@ -214,6 +215,18 @@ describe("serviceConfig", () => {
       }),
     ).rejects.toThrow(/HTTPS/);
   });
+
+  it("still enforces production HTTPS when NODE_ENV has surrounding whitespace", async () => {
+    await expect(
+      load({
+        BETTER_AUTH_SECRET: "x".repeat(32),
+        BETTER_AUTH_URL: "http://example.com",
+        GOOGLE_CLIENT_ID: "google-client-id",
+        GOOGLE_CLIENT_SECRET: "google-client-secret",
+        NODE_ENV: "production\n",
+      }),
+    ).rejects.toThrow(/HTTPS/);
+  });
 });
 
 describe("sesOperationsConfig", () => {
@@ -226,6 +239,7 @@ describe("sesOperationsConfig", () => {
     expect(loaded.requestTimeoutMs).toBe(30000);
     expect(loaded.workerBatchSize).toBe(1);
     expect(loaded.workerLeaseSeconds).toBe(300);
+    expect(loaded.workerPollMs).toBe(5000);
   });
 
   it("reports invalid SES operations config as diagnostics without failing startup", async () => {
@@ -388,6 +402,7 @@ describe("sendingConfig", () => {
       transactionalConfigurationSet: "transactional-set",
       workerBatchSize: 1,
       workerLeaseSeconds: 300,
+      workerPollMs: 5000,
     });
   });
 
@@ -402,66 +417,90 @@ describe("sendingConfig", () => {
       transactionalConfigurationSet: null,
       workerBatchSize: 1,
       workerLeaseSeconds: 300,
+      workerPollMs: 5000,
     });
   });
 
-  it("loads custom valid worker lease and batch size", async () => {
-    await expect(
-      loadSending({
+  it.each([
+    {
+      envName: "NUSEND_SES_REQUEST_TIMEOUT_MS",
+      extra: {},
+      property: "requestTimeoutMs",
+      value: "1",
+    },
+    {
+      envName: "NUSEND_SEND_WORKER_BATCH_SIZE",
+      extra: {
+        NUSEND_SEND_WORKER_LEASE_SECONDS: "11",
+        NUSEND_SES_REQUEST_TIMEOUT_MS: "1",
+      },
+      property: "workerBatchSize",
+      value: "50",
+    },
+    {
+      envName: "NUSEND_SEND_WORKER_LEASE_SECONDS",
+      extra: { NUSEND_SES_REQUEST_TIMEOUT_MS: "1" },
+      property: "workerLeaseSeconds",
+      value: "11",
+    },
+    {
+      envName: "NUSEND_SEND_WORKER_POLL_MS",
+      extra: {},
+      property: "workerPollMs",
+      value: "1",
+    },
+  ] as const)(
+    "accepts shared numeric boundary $envName=$value in both config paths",
+    async (spec) => {
+      const env: Record<string, string> = { [spec.envName]: spec.value };
+      for (const [name, value] of Object.entries(spec.extra)) {
+        if (value !== undefined) env[name] = value;
+      }
+      const readiness = await loadSesOperations(env);
+      const sending = await loadSending({
         AWS_REGION: "us-east-1",
-        NUSEND_SEND_WORKER_BATCH_SIZE: "5",
-        NUSEND_SEND_WORKER_LEASE_SECONDS: "200",
         NUSEND_SES_FROM_EMAIL: "sender@example.com",
-        NUSEND_SES_REQUEST_TIMEOUT_MS: "30000",
-      }),
-    ).resolves.toMatchObject({
-      requestTimeoutMs: 30000,
-      workerBatchSize: 5,
-      workerLeaseSeconds: 200,
-    });
-  });
+        ...env,
+      });
+
+      expect(readiness[spec.property]).toBe(Number(spec.value));
+      expect(sending[spec.property]).toBe(Number(spec.value));
+    },
+  );
+
+  it.each([
+    ["NUSEND_SES_REQUEST_TIMEOUT_MS", "0", "requestTimeoutMs", 30000, "config.request_timeout_ms"],
+    ["NUSEND_SEND_WORKER_BATCH_SIZE", "0", "workerBatchSize", 1, "config.worker_batch_size"],
+    ["NUSEND_SEND_WORKER_BATCH_SIZE", "51", "workerBatchSize", 1, "config.worker_batch_size"],
+    [
+      "NUSEND_SEND_WORKER_LEASE_SECONDS",
+      "0",
+      "workerLeaseSeconds",
+      300,
+      "config.worker_lease_seconds",
+    ],
+    ["NUSEND_SEND_WORKER_POLL_MS", "0", "workerPollMs", 5000, "config.worker_poll_ms"],
+  ] as const)(
+    "falls back with diagnostics but fails strict startup for $0=$1",
+    async (envName, value, property, fallback, issueId) => {
+      const readiness = await loadSesOperations({ [envName]: value });
+      expect(readiness[property]).toBe(fallback);
+      expect(readiness.configIssues).toContainEqual(expect.objectContaining({ id: issueId }));
+      await expect(
+        loadSending({
+          AWS_REGION: "us-east-1",
+          NUSEND_SES_FROM_EMAIL: "sender@example.com",
+          [envName]: value,
+        }),
+      ).rejects.toThrow(envName);
+    },
+  );
 
   it("requires sender email and AWS region", async () => {
     await expect(loadSending({ AWS_REGION: "us-east-1" })).rejects.toThrow(/NUSEND_SES_FROM_EMAIL/);
     await expect(loadSending({ NUSEND_SES_FROM_EMAIL: "sender@example.com" })).rejects.toThrow(
       /AWS_REGION/,
     );
-  });
-
-  it("rejects invalid request timeouts", async () => {
-    await expect(
-      loadSending({
-        AWS_REGION: "us-east-1",
-        NUSEND_SES_FROM_EMAIL: "sender@example.com",
-        NUSEND_SES_REQUEST_TIMEOUT_MS: "0",
-      }),
-    ).rejects.toThrow(/NUSEND_SES_REQUEST_TIMEOUT_MS/);
-  });
-
-  it("rejects invalid worker lease and batch size", async () => {
-    await expect(
-      loadSending({
-        AWS_REGION: "us-east-1",
-        NUSEND_SEND_WORKER_LEASE_SECONDS: "0",
-        NUSEND_SES_FROM_EMAIL: "sender@example.com",
-      }),
-    ).rejects.toThrow(/NUSEND_SEND_WORKER_LEASE_SECONDS/);
-
-    await expect(
-      loadSending({
-        AWS_REGION: "us-east-1",
-        NUSEND_SEND_WORKER_BATCH_SIZE: "0",
-        NUSEND_SES_FROM_EMAIL: "sender@example.com",
-      }),
-    ).rejects.toThrow(/NUSEND_SEND_WORKER_BATCH_SIZE/);
-
-    await expect(
-      loadSending({
-        AWS_REGION: "us-east-1",
-        NUSEND_SEND_WORKER_BATCH_SIZE: "51",
-        NUSEND_SES_FROM_EMAIL: "sender@example.com",
-      }),
-    ).rejects.toThrow(/NUSEND_SEND_WORKER_BATCH_SIZE/);
   });
 
   it("rejects timeout settings that are too close to the worker lease", async () => {

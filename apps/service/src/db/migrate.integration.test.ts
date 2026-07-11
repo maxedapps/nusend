@@ -26,6 +26,7 @@ describe("migration runner", () => {
     expect(initialStatus).toContain("pending  0005_first_party_api_keys_and_device_auth");
     expect(initialStatus).toContain("pending  0006_device_auth_throttle_cleanup");
     expect(initialStatus).toContain("pending  0007_mailings_created_id_index");
+    expect(initialStatus).toContain("pending  0008_operations_pagination_and_job_uniqueness");
 
     const migrateUp = runMigrationCommand("up", databasePath).stdout;
     expect(migrateUp).toContain("Applied migration 0001_initial_schema.");
@@ -35,6 +36,7 @@ describe("migration runner", () => {
     expect(migrateUp).toContain("Applied migration 0005_first_party_api_keys_and_device_auth.");
     expect(migrateUp).toContain("Applied migration 0006_device_auth_throttle_cleanup.");
     expect(migrateUp).toContain("Applied migration 0007_mailings_created_id_index.");
+    expect(migrateUp).toContain("Applied migration 0008_operations_pagination_and_job_uniqueness.");
 
     const migratedStatus = runMigrationCommand("status", databasePath).stdout;
     expect(migratedStatus).toContain("applied  0001_initial_schema");
@@ -44,6 +46,12 @@ describe("migration runner", () => {
     expect(migratedStatus).toContain("applied  0005_first_party_api_keys_and_device_auth");
     expect(migratedStatus).toContain("applied  0006_device_auth_throttle_cleanup");
     expect(migratedStatus).toContain("applied  0007_mailings_created_id_index");
+    expect(migratedStatus).toContain("applied  0008_operations_pagination_and_job_uniqueness");
+
+    // 0008 keyset + uniqueness indexes.
+    expect(readIndexNames(databasePath, "ses_events")).toContain("ses_events_created_id_idx");
+    expect(readIndexNames(databasePath, "deliveries")).toContain("deliveries_created_id_idx");
+    expect(readIndexNames(databasePath, "jobs")).toContain("jobs_delivery_id_unique_idx");
 
     expect(readTableNames(databasePath)).toEqual([
       "accounts",
@@ -165,6 +173,12 @@ describe("migration runner", () => {
     expect(restore.status).toBe(0);
 
     expect(runMigrationCommand("down", databasePath).stdout).toContain(
+      "Rolled back migration 0008_operations_pagination_and_job_uniqueness.",
+    );
+    expect(readIndexNames(databasePath, "jobs")).not.toContain("jobs_delivery_id_unique_idx");
+    expect(readIndexNames(databasePath, "ses_events")).not.toContain("ses_events_created_id_idx");
+    expect(readIndexNames(databasePath, "deliveries")).not.toContain("deliveries_created_id_idx");
+    expect(runMigrationCommand("down", databasePath).stdout).toContain(
       "Rolled back migration 0007_mailings_created_id_index.",
     );
     expect(readIndexNames(databasePath, "mailings")).not.toContain("mailings_created_id_idx");
@@ -210,6 +224,12 @@ describe("migration runner", () => {
     );
     expect(migrateUpAgain).toContain("Applied migration 0006_device_auth_throttle_cleanup.");
     expect(migrateUpAgain).toContain("Applied migration 0007_mailings_created_id_index.");
+    expect(migrateUpAgain).toContain(
+      "Applied migration 0008_operations_pagination_and_job_uniqueness.",
+    );
+    expect(readIndexNames(databasePath, "ses_events")).toContain("ses_events_created_id_idx");
+    expect(readIndexNames(databasePath, "deliveries")).toContain("deliveries_created_id_idx");
+    expect(readIndexNames(databasePath, "jobs")).toContain("jobs_delivery_id_unique_idx");
 
     const synthetic = runBun(
       [
@@ -231,6 +251,45 @@ describe("migration runner", () => {
     expect(downWithMissingFile.stderr).toContain(
       "Cannot roll back 9999_missing: migration file is missing.",
     );
+  }, 20_000);
+
+  it("gates a destructive rollback behind NUSEND_CONFIRM_DESTRUCTIVE_ROLLBACK", () => {
+    const databasePath = createTemporaryDatabasePath();
+    expect(runMigrationCommand("up", databasePath).status).toBe(0);
+
+    // Roll back the index-only migrations (not gated) down to 0005, whose down
+    // section drops data-bearing tables (device_authorizations, api_keys).
+    expect(runMigrationCommand("down", databasePath).status).toBe(0); // 0008 (indexes)
+    expect(runMigrationCommand("down", databasePath).status).toBe(0); // 0007 (index)
+    expect(runMigrationCommand("down", databasePath).status).toBe(0); // 0006 (indexes)
+
+    // Without confirmation, the destructive 0005 rollback is refused.
+    const refused = runMigrationCommand("down", databasePath, {
+      NUSEND_CONFIRM_DESTRUCTIVE_ROLLBACK: "",
+    });
+    expect(refused.status).not.toBe(0);
+    expect(refused.stdout).toContain(
+      "Destructive rollback tables: api_keys, device_authorizations",
+    );
+    expect(refused.stderr).toContain("drops data-bearing table(s)");
+    expect(refused.stderr).toContain("device_authorizations");
+    expect(readTableNames(databasePath)).toContain("device_authorizations");
+    expect(readColumnNames(databasePath, "api_keys")).toContain("permissions_json");
+
+    // With confirmation, it prints the same inventory before execution.
+    const confirmed = runMigrationCommand("down", databasePath);
+    expect(confirmed.status).toBe(0);
+    const inventoryIndex = confirmed.stdout.indexOf(
+      "Destructive rollback tables: api_keys, device_authorizations",
+    );
+    const rolledBackIndex = confirmed.stdout.indexOf(
+      "Rolled back migration 0005_first_party_api_keys_and_device_auth.",
+    );
+    expect(inventoryIndex).toBeGreaterThanOrEqual(0);
+    expect(rolledBackIndex).toBeGreaterThan(inventoryIndex);
+    expect(readTableNames(databasePath)).not.toContain("device_authorizations");
+    expect(readColumnNames(databasePath, "api_keys")).toContain("reference_id");
+    expect(readColumnNames(databasePath, "api_keys")).not.toContain("permissions_json");
   }, 20_000);
 
   it("fails loudly when 0002 sees future-only mailing states", () => {
@@ -279,8 +338,14 @@ function createTemporaryDatabasePath(): string {
   return join(directory, "nusend.sqlite");
 }
 
-function runMigrationCommand(command: "down" | "status" | "up", databasePath: string) {
-  return runBun(["src/db/migrate.ts", command], databasePath);
+function runMigrationCommand(
+  command: "down" | "status" | "up",
+  databasePath: string,
+  // Confirm destructive rollbacks by default so mechanics tests can roll back
+  // table-dropping migrations; the gate test overrides this.
+  extraEnv: Record<string, string> = { NUSEND_CONFIRM_DESTRUCTIVE_ROLLBACK: "1" },
+) {
+  return runBun(["src/db/migrate.ts", command], databasePath, extraEnv);
 }
 
 function readTableNames(databasePath: string): string[] {
@@ -339,13 +404,14 @@ function readTableSql(databasePath: string, tableName: string): string {
   return result.stdout;
 }
 
-function runBun(args: string[], databasePath: string) {
+function runBun(args: string[], databasePath: string, extraEnv: Record<string, string> = {}) {
   return spawnSync("bun", args, {
     cwd: serviceRoot,
     encoding: "utf8",
     env: {
       ...process.env,
       NUSEND_DB_PATH: databasePath,
+      ...extraEnv,
     },
   });
 }

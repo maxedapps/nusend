@@ -81,7 +81,7 @@ describe("send attempt outcome recording", () => {
     });
   });
 
-  it("ignores late success after stale ambiguity resolution", async () => {
+  it("preserves the message id (not the status) on late success after stale ambiguity resolution", async () => {
     const result = await runTest(
       Effect.gen(function* () {
         yield* TestClock.setTime(fixedTime);
@@ -124,10 +124,11 @@ describe("send attempt outcome recording", () => {
 
     expect(result).toEqual({
       attemptError: "stale ambiguity",
-      attemptMessageId: null,
+      // The MessageId is preserved as proof-of-send; statuses are unchanged.
+      attemptMessageId: "late-message-id",
       attemptStatus: "ambiguous",
       deliveryError: "stale ambiguity",
-      deliveryMessageId: null,
+      deliveryMessageId: "late-message-id",
       deliveryStatus: "failed",
       jobState: "succeeded",
     });
@@ -176,7 +177,7 @@ describe("send attempt outcome recording", () => {
     });
   });
 
-  it("does not record success when the attempt is still started but the delivery is terminal", async () => {
+  it("preserves the message id (not the status) when the attempt is started but the delivery is terminal", async () => {
     const result = await runTest(
       Effect.gen(function* () {
         yield* TestClock.setTime(fixedTime);
@@ -210,10 +211,11 @@ describe("send attempt outcome recording", () => {
 
     expect(result).toEqual({
       attemptError: null,
-      attemptMessageId: null,
+      // The MessageId is preserved as proof-of-send; statuses are unchanged.
+      attemptMessageId: "late-message-id",
       attemptStatus: "started",
       deliveryError: "already resolved",
-      deliveryMessageId: null,
+      deliveryMessageId: "late-message-id",
       deliveryStatus: "failed",
       jobState: "queued",
     });

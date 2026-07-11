@@ -1,17 +1,17 @@
-import { defaultPageLimit, maxPageLimit } from "@nusend/api-contract";
+import {
+  defaultPageLimit,
+  maxPageLimit,
+  type Pagination,
+  type PaginationMeta,
+} from "@nusend/api-contract";
 import { Effect } from "effect";
 
 import { RequestValidationError } from "../errors.ts";
 export const maxRouteIdLength = 200;
 
-export type Pagination = {
-  readonly limit: number;
-  readonly offset: number;
-};
-
-export type PaginationMeta = Pagination & {
-  readonly nextOffset: number | null;
-};
+// Re-export the contract pagination types so read models depend on the single
+// source of truth (they import these from here).
+export type { Pagination, PaginationMeta };
 
 export function paginationMeta(pagination: Pagination, hasMore: boolean): PaginationMeta {
   return {

@@ -1,6 +1,7 @@
 import { Context, Effect, Layer } from "effect";
 
 import { SnsConfirmationError } from "./errors.ts";
+import { parseSnsTopicArn, snsHostForTopic } from "./sns-arn.ts";
 
 export type SnsSubscriptionConfirmerService = {
   readonly confirm: (input: {
@@ -24,6 +25,8 @@ export const SnsSubscriptionConfirmerLive: Layer.Layer<SnsSubscriptionConfirmerS
             try: async () => {
               const response = await fetch(input.subscribeUrl, {
                 method: "GET",
+                // Never follow a redirect to another host (SSRF defense-in-depth).
+                redirect: "error",
                 signal: AbortSignal.timeout(subscriptionConfirmationTimeoutMs),
               });
               if (!response.ok) {
@@ -64,26 +67,25 @@ export function validateSnsSubscribeUrl(
       if (url.hostname !== snsHostForTopic(topic)) {
         throw new Error("SubscribeURL host must match the SNS topic region and partition.");
       }
+      // Unlike SigningCertURL, a real SubscribeURL MUST carry a query
+      // (?Action=ConfirmSubscription&Token=...), so the query is allowed; pin the
+      // rest of the shape and reject SSRF-shaped anomalies.
+      if (url.username !== "" || url.password !== "") {
+        throw new Error("SubscribeURL must not contain credentials.");
+      }
+      if (url.port !== "" && url.port !== "443") {
+        throw new Error("SubscribeURL must use the default HTTPS port.");
+      }
+      if (url.hash !== "") {
+        throw new Error("SubscribeURL must not contain a fragment.");
+      }
+      if (url.pathname !== "/") {
+        throw new Error("SubscribeURL must target the root path.");
+      }
+      if (url.searchParams.get("Action") !== "ConfirmSubscription") {
+        throw new Error("SubscribeURL must be a ConfirmSubscription action.");
+      }
     },
     catch: (cause) => new SnsConfirmationError({ cause, reason: "Invalid SNS SubscribeURL." }),
   });
-}
-
-type ParsedSnsTopicArn = {
-  readonly partition: "aws" | "aws-cn" | "aws-us-gov";
-  readonly region: string;
-};
-
-function parseSnsTopicArn(topicArn: string): ParsedSnsTopicArn | null {
-  const match = /^arn:(aws|aws-us-gov|aws-cn):sns:([a-z0-9-]+):\d{12}:[A-Za-z0-9_-]{1,256}$/.exec(
-    topicArn,
-  );
-  if (!match) return null;
-
-  return { partition: match[1] as ParsedSnsTopicArn["partition"], region: match[2] };
-}
-
-function snsHostForTopic(topic: ParsedSnsTopicArn): string {
-  const suffix = topic.partition === "aws-cn" ? "amazonaws.com.cn" : "amazonaws.com";
-  return `sns.${topic.region}.${suffix}`;
 }

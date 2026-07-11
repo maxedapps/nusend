@@ -3,7 +3,7 @@ import { Schema } from "effect";
 export const defaultPageLimit = 50;
 export const maxPageLimit = 100;
 
-export const PaginationSchema = Schema.Struct({
+const PaginationSchema = Schema.Struct({
   limit: Schema.Number,
   offset: Schema.Number,
 });

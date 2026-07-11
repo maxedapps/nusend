@@ -21,7 +21,7 @@ export default defineConfig({
   test: {
     clearMocks: true,
     environment: "node",
-    exclude: ["**/dist/**", "**/node_modules/**"],
+    exclude: ["**/dist/**", "**/node_modules/**", ".progress/**"],
     globals: false,
     restoreMocks: true,
   },
