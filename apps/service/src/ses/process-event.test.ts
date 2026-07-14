@@ -143,6 +143,78 @@ describe("handleSesSnsRequest", () => {
     ]);
   });
 
+  it("promotes a manual global suppression through bounce to complaint without rewriting identity", async () => {
+    const permanentBounce = envelope("sns_promote_bounce", {
+      bounce: {
+        bounceType: "Permanent",
+        bouncedRecipients: [{ emailAddress: "promote@example.com" }],
+      },
+      eventType: "Bounce",
+      mail: mail("ses_promote_bounce", "promote@example.com"),
+    });
+    const complaint = envelope("sns_promote_complaint", {
+      complaint: {
+        complainedRecipients: [{ emailAddress: "Promote@Example.com" }],
+        complaintFeedbackType: "abuse",
+      },
+      eventType: "Complaint",
+      mail: mail("ses_promote_complaint", "Promote@Example.com"),
+    });
+    const laterBounce = envelope("sns_promote_later_bounce", {
+      bounce: {
+        bounceType: "Permanent",
+        bouncedRecipients: [{ emailAddress: "promote@example.com" }],
+      },
+      eventType: "Bounce",
+      mail: mail("ses_promote_later_bounce", "promote@example.com"),
+    });
+
+    const result = await runTest(
+      Effect.gen(function* () {
+        const db = yield* Database;
+        yield* db.run(
+          "test:manual-suppression",
+          `INSERT INTO suppressions (id, email, scope, list_id, reason, created_at)
+           VALUES ('supp_manual', 'Promote@Example.com', 'all', NULL, 'manual', '2026-07-01T00:00:00.000Z');`,
+        );
+
+        yield* handleSesSnsRequest(JSON.stringify(permanentBounce));
+        const afterBounce = yield* db.all(
+          "test:suppression-after-bounce",
+          "SELECT id, lower(email) AS email, reason, created_at AS createdAt FROM suppressions;",
+        );
+        yield* handleSesSnsRequest(JSON.stringify(complaint));
+        yield* handleSesSnsRequest(JSON.stringify(laterBounce));
+        const final = yield* db.all(
+          "test:suppression-after-complaint",
+          "SELECT id, lower(email) AS email, reason, created_at AS createdAt FROM suppressions;",
+        );
+        return { afterBounce, final };
+      }),
+      {
+        snsVerifier: (message) =>
+          Effect.succeed(JSON.parse(String(message)) as VerifiedSnsEnvelope),
+      },
+    );
+
+    expect(result.afterBounce).toEqual([
+      {
+        createdAt: "2026-07-01T00:00:00.000Z",
+        email: "promote@example.com",
+        id: "supp_manual",
+        reason: "bounce",
+      },
+    ]);
+    expect(result.final).toEqual([
+      {
+        createdAt: "2026-07-01T00:00:00.000Z",
+        email: "promote@example.com",
+        id: "supp_manual",
+        reason: "complaint",
+      },
+    ]);
+  });
+
   it("reprocesses a redelivered notification whose event rows were never written", async () => {
     const bounceEnvelope = envelope("sns_partial", {
       bounce: {

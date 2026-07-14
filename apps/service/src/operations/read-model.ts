@@ -147,7 +147,7 @@ export function getOperationsSummary(): Effect.Effect<
            SELECT 'delivery' AS kind, id, mailing_id AS relatedId, status,
              last_error AS message, updated_at AS updatedAt
            FROM deliveries
-           WHERE last_error IS NOT NULL
+           WHERE last_error IS NOT NULL OR status = 'ambiguous'
            UNION ALL
            SELECT 'send_attempt' AS kind, id, delivery_id AS relatedId, status,
              error_message AS message, COALESCE(finished_at, started_at) AS updatedAt
@@ -356,7 +356,7 @@ function deliveryListWhere(query: DeliveriesQuery): { params: SqlParams; where: 
   }
   if (query.issue === "failed_or_ambiguous") {
     clauses.push(
-      "(d.status = 'failed' OR d.last_error IS NOT NULL OR a.status IN ('failed', 'ambiguous'))",
+      "(d.status IN ('failed', 'ambiguous') OR d.last_error IS NOT NULL OR a.status IN ('failed', 'ambiguous'))",
     );
   }
 

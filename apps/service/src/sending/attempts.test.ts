@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { Effect, Exit } from "effect";
 import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
 
@@ -81,7 +81,7 @@ describe("send attempt outcome recording", () => {
     });
   });
 
-  it("preserves the message id (not the status) on late success after stale ambiguity resolution", async () => {
+  it("reconciles late exact-attempt MessageId evidence to succeeded and sent", async () => {
     const result = await runTest(
       Effect.gen(function* () {
         yield* TestClock.setTime(fixedTime);
@@ -92,7 +92,7 @@ describe("send attempt outcome recording", () => {
         yield* db.run(
           "seed:resolved-delivery",
           `UPDATE deliveries
-           SET status = 'failed', last_error = 'stale ambiguity', updated_at = '2026-07-03T12:00:00.000Z'
+           SET status = 'ambiguous', last_error = 'stale ambiguity', updated_at = '2026-07-03T12:00:00.000Z'
            WHERE id = $deliveryId;`,
           { deliveryId: row.deliveryId },
         );
@@ -123,13 +123,12 @@ describe("send attempt outcome recording", () => {
     );
 
     expect(result).toEqual({
-      attemptError: "stale ambiguity",
-      // The MessageId is preserved as proof-of-send; statuses are unchanged.
+      attemptError: null,
       attemptMessageId: "late-message-id",
-      attemptStatus: "ambiguous",
-      deliveryError: "stale ambiguity",
+      attemptStatus: "succeeded",
+      deliveryError: null,
       deliveryMessageId: "late-message-id",
-      deliveryStatus: "failed",
+      deliveryStatus: "sent",
       jobState: "succeeded",
     });
   });
@@ -177,7 +176,7 @@ describe("send attempt outcome recording", () => {
     });
   });
 
-  it("preserves the message id (not the status) when the attempt is started but the delivery is terminal", async () => {
+  it("does not attach late MessageId proof to an incompatible terminal delivery", async () => {
     const result = await runTest(
       Effect.gen(function* () {
         yield* TestClock.setTime(fixedTime);
@@ -211,17 +210,242 @@ describe("send attempt outcome recording", () => {
 
     expect(result).toEqual({
       attemptError: null,
-      // The MessageId is preserved as proof-of-send; statuses are unchanged.
-      attemptMessageId: "late-message-id",
+      attemptMessageId: null,
       attemptStatus: "started",
       deliveryError: "already resolved",
-      deliveryMessageId: "late-message-id",
+      deliveryMessageId: null,
       deliveryStatus: "failed",
       jobState: "queued",
     });
   });
 
-  it("does not mark completed attempts as stale ambiguous", async () => {
+  it("is idempotent after reconciling exact late MessageId evidence", async () => {
+    const result = await runTest(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(fixedTime);
+        yield* createMailing(baseInput());
+        const db = yield* Database;
+        const row = yield* deliveryAndJob();
+        yield* db.run(
+          "seed:ambiguous-delivery",
+          "UPDATE deliveries SET status = 'ambiguous', last_error = 'unknown' WHERE id = $deliveryId;",
+          { deliveryId: row.deliveryId },
+        );
+        yield* db.run(
+          "seed:ambiguous-attempt",
+          `INSERT INTO send_attempts (id, delivery_id, job_id, attempt_no, status, error_message, started_at, finished_at)
+           VALUES ('attempt_1', $deliveryId, $jobId, 1, 'ambiguous', 'unknown', '2026-07-03T12:00:00.000Z', '2026-07-03T12:00:00.000Z');`,
+          row,
+        );
+
+        const first = yield* recordSendSuccess({
+          attemptId: "attempt_1",
+          deliveryId: row.deliveryId,
+          messageId: "message_1",
+        });
+        const second = yield* recordSendSuccess({
+          attemptId: "attempt_1",
+          deliveryId: row.deliveryId,
+          messageId: "message_1",
+        });
+        return { first, second, state: yield* currentState() };
+      }),
+    );
+
+    expect(result.first).toBe("Reconciled");
+    expect(result.second).toBe("AlreadyRecorded");
+    expect(result.state).toMatchObject({
+      attemptMessageId: "message_1",
+      attemptStatus: "succeeded",
+      deliveryMessageId: "message_1",
+      deliveryStatus: "sent",
+    });
+  });
+
+  it("does not overwrite a conflicting MessageId on an ambiguous exact attempt", async () => {
+    const result = await runTest(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(fixedTime);
+        yield* createMailing(baseInput());
+        const db = yield* Database;
+        const row = yield* deliveryAndJob();
+        yield* db.run(
+          "seed:ambiguous-delivery",
+          "UPDATE deliveries SET status = 'ambiguous', last_error = 'unknown' WHERE id = $deliveryId;",
+          { deliveryId: row.deliveryId },
+        );
+        yield* db.run(
+          "seed:ambiguous-attempt",
+          `INSERT INTO send_attempts (id, delivery_id, job_id, attempt_no, status, ses_message_id, error_message, started_at, finished_at)
+           VALUES ('attempt_1', $deliveryId, $jobId, 1, 'ambiguous', 'provider-a', 'unknown', '2026-07-03T12:00:00.000Z', '2026-07-03T12:00:00.000Z');`,
+          row,
+        );
+
+        const writeResult = yield* recordSendSuccess({
+          attemptId: "attempt_1",
+          deliveryId: row.deliveryId,
+          messageId: "provider-b",
+        });
+        return { writeResult, state: yield* currentState() };
+      }),
+    );
+
+    expect(result.writeResult).toBe("SupersededTerminal");
+    expect(result.state).toMatchObject({
+      attemptMessageId: "provider-a",
+      attemptStatus: "ambiguous",
+      deliveryMessageId: null,
+      deliveryStatus: "ambiguous",
+    });
+  });
+
+  it("does not promote a permanently suppressed delivery from a started attempt", async () => {
+    const deliveryStatus = "suppressed" as const;
+    const result = await runTest(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(fixedTime);
+        yield* createMailing(baseInput());
+        const db = yield* Database;
+        const row = yield* deliveryAndJob();
+        yield* db.run(
+          "seed:terminal-delivery",
+          "UPDATE deliveries SET status = $status, last_error = 'terminal' WHERE id = $deliveryId;",
+          { deliveryId: row.deliveryId, status: deliveryStatus },
+        );
+        yield* db.run(
+          "seed:started-attempt",
+          `INSERT INTO send_attempts (id, delivery_id, job_id, attempt_no, status, started_at)
+             VALUES ('attempt_1', $deliveryId, $jobId, 1, 'started', '2026-07-03T12:00:00.000Z');`,
+          row,
+        );
+
+        const writeResult = yield* recordSendSuccess({
+          attemptId: "attempt_1",
+          deliveryId: row.deliveryId,
+          messageId: "late-message",
+        });
+        return { writeResult, state: yield* currentState() };
+      }),
+    );
+
+    expect(result.writeResult).toBe("SupersededTerminal");
+    expect(result.state).toMatchObject({
+      attemptMessageId: null,
+      attemptStatus: "started",
+      deliveryMessageId: null,
+      deliveryStatus,
+    });
+  });
+
+  it("rolls back the first paired write when the delivery write is not applied", async () => {
+    const result = await runTest(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(fixedTime);
+        yield* createMailing(baseInput());
+        const real = yield* Database;
+        const row = yield* deliveryAndJob();
+        yield* real.run(
+          "seed:ambiguous-delivery",
+          "UPDATE deliveries SET status = 'ambiguous', last_error = 'unknown' WHERE id = $deliveryId;",
+          { deliveryId: row.deliveryId },
+        );
+        yield* real.run(
+          "seed:ambiguous-attempt",
+          `INSERT INTO send_attempts (id, delivery_id, job_id, attempt_no, status, error_message, started_at, finished_at)
+           VALUES ('attempt_1', $deliveryId, $jobId, 1, 'ambiguous', 'unknown', '2026-07-03T12:00:00.000Z', '2026-07-03T12:00:00.000Z');`,
+          row,
+        );
+        const failingDb: DatabaseService = {
+          ...real,
+          get: <T>(
+            operation: string,
+            sql: string,
+            params?: Record<string, string | number | null>,
+          ) =>
+            operation === "sending:delivery:succeed"
+              ? Effect.succeed(null)
+              : real.get<T>(operation, sql, params),
+        };
+
+        const exit = yield* Effect.exit(
+          recordSendSuccess({
+            attemptId: "attempt_1",
+            deliveryId: row.deliveryId,
+            messageId: "message_1",
+          }).pipe(Effect.provideService(Database, failingDb)),
+        );
+        return { exit, state: yield* currentState() };
+      }),
+    );
+
+    expect(Exit.isFailure(result.exit)).toBe(true);
+    expect(result.state).toMatchObject({
+      attemptMessageId: null,
+      attemptStatus: "ambiguous",
+      deliveryMessageId: null,
+      deliveryStatus: "ambiguous",
+    });
+  });
+
+  it("allows only terminal supersession when a newer attempt exists", async () => {
+    const result = await runTest(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(fixedTime);
+        yield* createMailing(baseInput());
+        const db = yield* Database;
+        const row = yield* deliveryAndJob();
+        yield* db.run(
+          "seed:sending-delivery",
+          "UPDATE deliveries SET status = 'sending' WHERE id = $deliveryId;",
+          { deliveryId: row.deliveryId },
+        );
+        yield* db.run(
+          "seed:attempt-1",
+          `INSERT INTO send_attempts (id, delivery_id, job_id, attempt_no, status, started_at)
+           VALUES ('attempt_1', $deliveryId, $jobId, 1, 'started', '2026-07-03T12:00:00.000Z');`,
+          row,
+        );
+        yield* db.run(
+          "seed:attempt-2",
+          `INSERT INTO send_attempts (id, delivery_id, job_id, attempt_no, status, error_message, started_at, finished_at)
+           VALUES ('attempt_2', $deliveryId, $jobId, 2, 'failed', 'newer', '2026-07-03T12:00:01.000Z', '2026-07-03T12:00:02.000Z');`,
+          row,
+        );
+
+        const nonterminal = yield* Effect.exit(
+          recordSendSuccess({
+            attemptId: "attempt_1",
+            deliveryId: row.deliveryId,
+            messageId: "late",
+          }),
+        );
+        yield* db.run(
+          "seed:terminal-delivery",
+          "UPDATE deliveries SET status = 'failed', last_error = 'newer terminal' WHERE id = $deliveryId;",
+          { deliveryId: row.deliveryId },
+        );
+        const terminal = yield* recordSendSuccess({
+          attemptId: "attempt_1",
+          deliveryId: row.deliveryId,
+          messageId: "late",
+        });
+        const attempts = yield* db.all(
+          "assert:attempts",
+          "SELECT id, status, ses_message_id AS messageId FROM send_attempts ORDER BY attempt_no;",
+        );
+        return { attempts, nonterminal, terminal };
+      }),
+    );
+
+    expect(Exit.isFailure(result.nonterminal)).toBe(true);
+    expect(result.terminal).toBe("SupersededTerminal");
+    expect(result.attempts).toEqual([
+      { id: "attempt_1", messageId: null, status: "started" },
+      { id: "attempt_2", messageId: null, status: "failed" },
+    ]);
+  });
+
+  it("fails stale marking when a completed attempt leaves the delivery nonterminal", async () => {
     const result = await runTest(
       Effect.gen(function* () {
         yield* TestClock.setTime(fixedTime);
@@ -245,16 +469,19 @@ describe("send attempt outcome recording", () => {
           { deliveryId: row.deliveryId, jobId: row.jobId },
         );
 
-        yield* recordStaleSendingAsAmbiguous({
-          deliveryId: row.deliveryId,
-          errorMessage: "stale marker",
-        });
+        const exit = yield* Effect.exit(
+          recordStaleSendingAsAmbiguous({
+            deliveryId: row.deliveryId,
+            errorMessage: "stale marker",
+          }),
+        );
 
-        return yield* currentState();
+        return { exit, state: yield* currentState() };
       }),
     );
 
-    expect(result).toEqual({
+    expect(Exit.isFailure(result.exit)).toBe(true);
+    expect(result.state).toEqual({
       attemptError: null,
       attemptMessageId: "message_1",
       attemptStatus: "succeeded",

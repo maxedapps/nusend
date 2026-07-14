@@ -14,6 +14,7 @@ import {
   releaseExpiredSendDeliveryLeases,
 } from "../queue/jobs.ts";
 import { Database, type DatabaseService } from "../services/database.ts";
+import { upsertAutomatedSuppression } from "../suppressions/write.ts";
 import { seedJob } from "./queue-fixtures.ts";
 
 // Pass an UNMIGRATED layer — migrations are applied here through Database.exec
@@ -29,17 +30,24 @@ export function runDriverParityCycle(
     }
 
     yield* db.run(
-      "parity:suppression:insert",
+      "parity:suppression:insert-manual",
       `INSERT INTO suppressions (id, email, scope, list_id, reason, created_at)
-       VALUES ('sup_1', 'User@Example.com', 'marketing', NULL, 'unsubscribe', '2026-07-03T12:00:00.000Z')
-       ON CONFLICT(email, scope) WHERE list_id IS NULL DO NOTHING;`,
+       VALUES ('sup_1', 'User@Example.com', 'marketing', NULL, 'manual', '2026-07-01T00:00:00.000Z');`,
     );
-    yield* db.run(
-      "parity:suppression:insert-conflict",
-      `INSERT INTO suppressions (id, email, scope, list_id, reason, created_at)
-       VALUES ('sup_2', 'user@example.com', 'marketing', NULL, 'unsubscribe', '2026-07-03T12:00:00.000Z')
-       ON CONFLICT(email, scope) WHERE list_id IS NULL DO NOTHING;`,
-    );
+    yield* upsertAutomatedSuppression({
+      createdAt: "2026-07-03T12:00:00.000Z",
+      email: "user@example.com",
+      id: "sup_2",
+      reason: "unsubscribe",
+      scope: "marketing",
+    });
+    yield* upsertAutomatedSuppression({
+      createdAt: "2026-07-04T12:00:00.000Z",
+      email: "USER@example.com",
+      id: "sup_3",
+      reason: "unsubscribe",
+      scope: "marketing",
+    });
 
     yield* TestClock.setTime(Date.parse("2026-07-03T12:00:00.000Z"));
     yield* seedJob({ id: "complete_me" });
@@ -88,7 +96,8 @@ export function runDriverParityCycle(
     const missing = yield* db.get("parity:missing", "SELECT id FROM jobs WHERE id = 'nope';");
     const suppressions = yield* db.all(
       "parity:suppressions",
-      "SELECT lower(email) AS email, scope FROM suppressions ORDER BY id;",
+      `SELECT id, lower(email) AS email, scope, reason, created_at AS createdAt
+       FROM suppressions ORDER BY id;`,
     );
 
     return { claimed, completed, dead, failed, missing, released, rows, stale, suppressions };

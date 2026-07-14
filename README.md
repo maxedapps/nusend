@@ -29,7 +29,7 @@ pnpm --filter @nusend/service worker:send:once
 pnpm --filter @nusend/service worker:send
 ```
 
-The current migration set is intentionally reset-clean. If you have an older local development DB, delete it and recreate it with `db:migrate`.
+Apply migrations to existing databases; do not delete production data. Migration `0009` requires stopped API/worker processes and matching binaries as described in [`docs/deployment.md`](./docs/deployment.md).
 
 Default service environment:
 
@@ -50,7 +50,7 @@ NUSEND_AUTH_TRUSTED_ORIGINS=http://localhost:3000
 NUSEND_API_KEY_HASH_SECRET=replace-with-at-least-32-random-characters
 ```
 
-Configuration is validated at startup (via Effect `Config`); invalid or partially configured auth environments fail fast with a message that may name several variables at once. Empty or whitespace-only values are treated as unset. In production, auth URLs and trusted origins must use HTTPS.
+Configuration is validated at startup (via Effect `Config`); invalid or partially configured auth environments fail fast with a message that may name several variables at once. Empty or whitespace-only values are treated as unset. When `NODE_ENV=production`, auth URLs and trusted origins must use HTTPS; this conditional validation is not a secure transport default, so TLS termination and safe deployment defaults remain operator responsibilities.
 
 Send worker / SES environment:
 
@@ -60,7 +60,7 @@ NUSEND_SES_FROM_EMAIL=sender@example.com
 NUSEND_SES_TRANSACTIONAL_CONFIGURATION_SET=optional-ses-config-set
 NUSEND_SES_MARKETING_CONFIGURATION_SET=required-for-marketing-sends
 NUSEND_SES_FEEDBACK_TOPIC_ARNS=arn:aws:sns:us-east-1:123456789012:nusend-ses-events-prod
-NUSEND_SES_TRACKING_EVENTS=open,click
+NUSEND_SES_TRACKING_EVENTS=
 NUSEND_SES_TRACKING_CUSTOM_REDIRECT_DOMAIN=tracking.example.com
 NUSEND_SES_REQUEST_TIMEOUT_MS=30000
 NUSEND_SEND_WORKER_LEASE_SECONDS=300
@@ -71,7 +71,7 @@ NUSEND_UNSUBSCRIBE_SECRET=at-least-32-characters
 NUSEND_UNSUBSCRIBE_PREVIOUS_SECRET=optional-previous-secret-for-rotation
 ```
 
-AWS credentials use the standard AWS SDK provider chain. The API service can queue transactional mailings without SES send-worker config; marketing creation requires unsubscribe config. The send worker requires SES config, and marketing sends additionally require unsubscribe config plus `NUSEND_SES_MARKETING_CONFIGURATION_SET`. `NUSEND_SES_FEEDBACK_TOPIC_ARNS` is optional for the API service; when unset, the SES operations webhook returns `404`. Worker config must satisfy `batchSize * requestTimeoutMs + 10000 < leaseSeconds * 1000`; the default batch size is `1` for conservative live SES sending.
+AWS credentials use the standard AWS SDK provider chain. The API service can queue transactional mailings without SES send-worker config; marketing creation requires unsubscribe config. The send worker requires SES config, and marketing sends additionally require unsubscribe config plus `NUSEND_SES_MARKETING_CONFIGURATION_SET`. `NUSEND_SES_FEEDBACK_TOPIC_ARNS` is optional for the API service; when unset, the SES operations webhook returns `404`. OPEN/CLICK are optional: marketing readiness requires only the events listed in `NUSEND_SES_TRACKING_EVENTS`, and transactional readiness never adds them. Worker config must satisfy `batchSize * requestTimeoutMs + 10000 < leaseSeconds * 1000`; the default batch size is `1` for conservative live SES sending.
 
 `NUSEND_PUBLIC_BASE_URL` must be an absolute HTTPS URL without a query string, fragment, or HTML-escapable characters (`&`, `'`, `"`, `<`, `>`). Retain delivery rows for at least 13 months so old signed unsubscribe links can resolve.
 
@@ -171,7 +171,7 @@ curl -H 'x-api-key: nusend_...' -H 'content-type: application/json' \
   http://localhost:3000/api/suppressions
 ```
 
-Contact updates do not rewrite historical delivery snapshots or email-based suppressions. List membership unsubscribe/resubscribe does not remove marketing/global suppressions. Automated bounce, complaint, and unsubscribe suppressions are visible through `GET /api/suppressions` but only `reason='manual'` suppressions can be deleted through the API in this milestone.
+Contact updates do not rewrite historical delivery snapshots or email-based suppressions. List membership unsubscribe/resubscribe does not remove marketing/global suppressions. Automated evidence monotonically promotes matching manual rows (`complaint > bounce > manual` for `all`; `unsubscribe > manual` for `marketing`) while preserving the row ID and original suppression start time. Only rows that remain `reason='manual'` can be deleted. `DELETE /api/lists/:id` returns `409 conflict` while a scheduled or sending mailing references the list; completed mailings retain the existing null-list behavior after deletion.
 
 ## Mailings API
 
@@ -238,7 +238,9 @@ Success response:
 }
 ```
 
-A request that resolves to no sendable recipients returns `422 empty_recipient_set`, including when all recipients are suppressed. Suppressed recipients in a partially sendable mailing still get persisted `deliveries` rows, so `counts.deliveries = counts.queued + counts.suppressed`. `scope=all` suppressions block transactional and marketing mail; marketing/list suppressions only block marketing mail.
+A request that resolves to no sendable recipients returns `422 empty_recipient_set`, including when all recipients are suppressed. Suppressed recipients in a partially sendable mailing still get persisted `deliveries` rows, so creation `counts.deliveries = counts.queued + counts.suppressed`. `scope=all` suppressions block transactional and marketing mail; marketing/list suppressions only block marketing mail.
+
+Mailing list/detail reads expose six delivery counts: `queued`, `sending`, `sent`, `failed`, `suppressed`, and `ambiguous`. The new service always emits required `counts.ambiguous`; the updated first-party CLI treats an absent key from an older service as zero.
 
 ## Operations inspection
 
@@ -297,12 +299,12 @@ Current state model:
 
 ```txt
 mailings.state = scheduled | sending | completed
-deliveries.status = queued | sending | sent | failed | suppressed
+deliveries.status = queued | sending | sent | failed | suppressed | ambiguous
 jobs.state = queued | leased | succeeded | dead
 jobs.delivery_id -> deliveries.id
 ```
 
-`completed` means send processing is finished for all deliveries, not SES inbox delivery confirmation. SES operations is stored separately in audit tables and does not add `delivered`, `bounced`, or `complained` delivery statuses; future pause/cancel/draft workflows may add their own states when implemented.
+`completed` means every delivery is terminal, including `ambiguous`; it does not mean SES inbox delivery confirmation. `failed` is a known failure, while `ambiguous` means provider acceptance is unknown. Ambiguous outcomes are never automatically retried. Only a compatible SES MessageId from the exact same latest attempt can reconcile an ambiguous attempt/delivery to succeeded/sent; a dead job remains dead as queue incident history. SES operations is stored separately in audit tables and does not add `delivered`, `bounced`, or `complained` delivery statuses.
 
 Supported placeholders for now:
 

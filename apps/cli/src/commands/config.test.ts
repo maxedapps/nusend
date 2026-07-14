@@ -62,6 +62,7 @@ describe("config repair-permissions", () => {
           config: { profiles: {} },
           env,
           options: { json: false },
+          runtime: { now: Date.now, sleep: async () => undefined },
           store: new FileCredentialStore(env),
         },
         "win32",

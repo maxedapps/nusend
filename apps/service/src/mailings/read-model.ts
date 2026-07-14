@@ -31,13 +31,14 @@ const MailingDetailRow = Schema.Struct({
 const CountRow = Schema.Struct({
   count: Schema.Number,
   mailingId: Schema.String,
-  status: Schema.Literals(["queued", "sending", "sent", "failed", "suppressed"]),
+  status: Schema.Literals(["queued", "sending", "sent", "failed", "suppressed", "ambiguous"]),
 });
 
 type MailingRow = typeof MailingRow.Type;
 type CountRow = typeof CountRow.Type;
 
 const emptyCounts = (): MailingCounts => ({
+  ambiguous: 0,
   failed: 0,
   queued: 0,
   sending: 0,

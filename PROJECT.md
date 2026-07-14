@@ -42,11 +42,19 @@ Implemented today:
 - sanitized SES operations endpoints
 - request/body/content limits
 - sanitized internal error logging
-- production HTTPS validation for auth URLs/trusted origins
+- monotonic automated suppression promotion and guarded manual deletion
+- guarded list deletion while non-completed mailings retain policy context
+- explicit terminal `ambiguous` delivery outcomes with exact-attempt late MessageId reconciliation
+- bounded, process-local device-token polling plus exact durable outstanding-grant counts
+- retryable rejection of verified malformed Bounce/Complaint payloads
+- SES readiness that requires optional OPEN/CLICK events only when configured
+- cross-process CLI local-state locking and minimum-paced, locally expiry-aware login polling
+- HTTPS validation for auth URLs/trusted origins when `NODE_ENV=production`
 
 Not implemented yet:
 
-- production marketing volume (pending live SES simulator feedback validation, operations monitoring, and Gmail DKIM one-click verification)
+- production marketing volume (deployment/recovery, secure transport defaults, SES retention/capacity, live SES simulator feedback validation, operations monitoring, and Gmail DKIM one-click verification remain open)
+- hosted CI or release automation; local validation commands are the repository contract, not evidence of hosted automation
 - templates
 - Cloudflare R2 assets
 - remaining CLI domain families for lists, suppressions, operations, and SES administration
@@ -163,9 +171,14 @@ This comparison requires a successful report with matching normalized identities
 - Destructive `db:rollback` operations print a sorted table inventory before refusal or execution and require `NUSEND_CONFIRM_DESTRUCTIVE_ROLLBACK=1`.
 - Migration `0008` creates a unique `jobs(delivery_id)` index. Legacy duplicate jobs make the migration fail and require operator inspection; do not delete duplicates silently.
 - The internal `PaginationSchema` value is no longer exported from `@nusend/api-contract`; the `Pagination` type and `PaginationMetaSchema` remain public.
-- Device-authorization request limiters are process-local in-memory ceilings and reset on restart. Multi-process deployments enforce one independent ceiling per process; durable pending-row limits remain database-backed.
+- Migration `0009` converts failed deliveries whose latest attempt was ambiguous into `ambiguous`, unless that exact latest attempt has a compatible non-null SES MessageId proving acceptance. Its destructive DOWN maps delivery/simulator ambiguity to `failed` and is semantically lossy. Stop old API and worker processes before UP, then start matching service/worker binaries and distribute the matching CLI. Stop processes again before DOWN and use binaries matching the downgraded schema.
+- Mailing read responses add required decoded `counts.ambiguous`; the updated first-party CLI defaults an absent old-wire key to `0`. New services always emit it, and exhaustive third-party clients must handle the additive field and `ambiguous` status literal.
+- `DELETE /api/lists/:id` now returns `409 conflict` while any non-completed mailing references the list.
+- Device-authorization request limiters are process-local and reset on restart. Token polling is limited to 120 requests/minute per source and 600/minute globally with at most 1024 active source keys per process; durable limits count unexpired, non-denied, non-consumed grants, including approved-but-unconsumed grants.
+- CLI config and credential mutations share a bounded cross-process local-filesystem lock. Network-mounted config directories are unsupported. Login polling has a 1000 ms minimum and stops locally at authorization expiry; there is no hidden polling-speed environment override.
 - Migration `0004` intentionally uses reset-clean semantics for legacy `ses_feedback_*` data. Applying it discards those legacy rows; export them before migration if history is required.
 - `/api/operations/deliveries` is a filtered, limit-only operational view and does not promise `offset`; unknown delivery query parameters are not a pagination contract. `/api/operations/ses/events` supports offset pagination.
+- Hosted CI/release automation is intentionally absent. `pnpm check`, build, and audit commands are local validation contracts only.
 
 ## Current Stack
 
@@ -263,6 +276,12 @@ Nusend owns first-party auth tables:
 
 Connection model: app database access is serialized through a single-permit semaphore per connection so concurrent request fibers cannot interleave statements into an open transaction on the shared SQLite connection. Better Auth runs its own statements on a dedicated second connection (same pragmas) for file-path databases. A `:memory:` database (dev only) cannot split, so Better Auth shares the single handle and relies on the semaphore alone.
 
+### Device Authorization
+
+Outstanding durable grants satisfy `expires_at > now AND denied_at IS NULL AND consumed_at IS NULL`; approved-but-unconsumed grants still count, while denied, consumed, and expired grants do not. Early polling inside the five-second interval is read-only and returns `slow_down`; approval remains immediately consumable.
+
+Start/token route ceilings are process-local and reset independently per process. Token polling is limited to 120 requests/minute per source and 600/minute globally, with a bounded 1024-key source map. Rejection occurs before authorization-row mutation and returns `429 rate_limited` with integer `Retry-After`.
+
 ### Lists and Contacts
 
 Current schema supports list-based recipient resolution:
@@ -289,7 +308,7 @@ list_memberships(
 )
 ```
 
-Contacts and lists are manageable through protected `/api/contacts` and `/api/lists` endpoints. List-recipient personalization is still not implemented.
+Contacts and lists are manageable through protected `/api/contacts` and `/api/lists` endpoints. Deleting a list is refused with `409 conflict` while a scheduled or sending mailing references it; completed-mailing deletion retains the existing `ON DELETE SET NULL` behavior. List-recipient personalization is still not implemented.
 
 A membership is subscribed when:
 
@@ -322,12 +341,14 @@ marketing  blocks marketing only
 list       blocks one list only
 ```
 
-Current create-mailing behavior:
+Current suppression and create-mailing behavior:
 
 - transactional mailings check only `scope = all`
 - marketing mailings check `all`, `marketing`, and matching `list`
 - all-suppressed or empty recipient sets return `422 empty_recipient_set`
 - partially suppressed mailings still persist suppressed `deliveries` rows, but only unsuppressed deliveries get jobs
+- automated global reasons are monotonic: `complaint > bounce > manual`; marketing-wide `unsubscribe > manual`
+- promotion preserves the suppression row ID and original `created_at`; only rows that remain `reason='manual'` are deletable
 
 ### Mailings
 
@@ -358,7 +379,7 @@ Notes:
 - a marketing campaign is represented as a marketing mailing.
 - new mailings start as `scheduled`.
 - the send worker advances mailings to `sending` when the first attempt starts.
-- `completed` means all deliveries are terminal (`sent`, `failed`, or `suppressed`), not that recipient inbox delivery was confirmed by SES events.
+- `completed` means all deliveries are terminal (`sent`, `failed`, `suppressed`, or `ambiguous`), not that recipient inbox delivery was confirmed by SES events.
 
 ### Deliveries
 
@@ -371,7 +392,7 @@ deliveries(
   email,
   contact_id,
   vars_json,
-  status,       -- queued | sending | sent | failed | suppressed
+  status,       -- queued | sending | sent | failed | suppressed | ambiguous
   ses_message_id,
   last_error,
   created_at,
@@ -386,7 +407,8 @@ Notes:
 - `vars_json` is per-recipient personalization data supplied by explicit-recipient requests.
 - list recipient personalization is not implemented yet because contacts have no attrs column.
 - `ses_message_id` stores the provider message ID after SES accepts a send.
-- `last_error` stores a safe, bounded delivery-level failure reason.
+- `last_error` stores a safe, bounded delivery-level outcome reason.
+- `failed` means a known permanent or exhausted non-dispatched failure; `ambiguous` means provider acceptance is unknown and is terminal for automatic processing.
 - SES operations is recorded separately in `ses_notifications / ses_events` audit tables; it does not add `delivered`, `bounced`, or `complained` delivery statuses.
 - future pause/cancel APIs may add cancelled delivery/job states; draft mailings should only be added with a real draft workflow.
 
@@ -421,7 +443,7 @@ Current queue primitives support:
 - complete jobs
 - fail jobs into retry or dead state
 
-`worker:send:once` and `worker:send` consume due send-delivery jobs. The queue runner owns complete/fail transitions, reconciles dead jobs back to terminal delivery state, and refreshes mailing state. The send processor records delivery/attempt state and returns success/failure.
+`worker:send:once` and `worker:send` consume due send-delivery jobs. The queue runner owns complete/fail transitions, reconciles dead jobs back to terminal delivery state, and refreshes mailing state. A dead queued delivery becomes `failed`; a dead in-flight attempt becomes `ambiguous`. Later exact-attempt SES MessageId proof may promote the attempt/delivery to `succeeded`/`sent` while the job remains `dead` as queue incident history.
 
 ### Send Attempts
 
@@ -441,7 +463,7 @@ send_attempts(
 )
 ```
 
-Attempts are created before the external SES call, then updated after success/failure. DB transactions stay short and never wrap the SES request.
+Attempts are created before the external SES call, then updated after success, known failure, or provider-unknown ambiguity. Ambiguous outcomes are never automatically retried. Only a compatible SES MessageId from that exact latest attempt may reconcile `ambiguous` to `succeeded`/`sent`. DB transactions stay short and never wrap the SES request.
 
 ## Current Mailings API
 
@@ -474,7 +496,7 @@ Current limits:
 - serialized recipient `vars`: 10,000 bytes
 - `Idempotency-Key`: 255 characters after trimming
 
-Successful creation returns the mailing ID, purpose, scheduled time, state, and delivery/queued/suppressed counts.
+Successful creation returns the mailing ID, purpose, scheduled time, state, and delivery/queued/suppressed creation counts. Mailing list/detail reads expose six outcome counts: `queued`, `sending`, `sent`, `failed`, `suppressed`, and `ambiguous`.
 
 Optional `Idempotency-Key` behavior:
 
@@ -507,6 +529,8 @@ Auth:
 Scope and privacy:
 
 - read-only: no retry, cancel, release, or queue mutation controls
+- delivery list/detail and summary/recent-issue views expose `ambiguous` directly, including ambiguity without an error string
+- `issue=failed_or_ambiguous` includes failed/ambiguous delivery or attempt state
 - delivery list/detail include job and latest/all attempt context
 - responses omit recipient `vars_json`, mailing HTML/text, auth/session data, API-key data, and raw SES/SNS feedback JSON
 - standalone jobs/attempts endpoints, queue mutation APIs, and an admin UI remain future work
@@ -600,11 +624,11 @@ Those belong in earlier pipeline stages.
    - mark delivery `sent`
    - complete job
 
-9. **Record failure**
-   - mark attempt failed
-   - store safe error message
-   - for retryable failures, fail the send-delivery job so queue backoff handles retry/dead state
-   - if a job reaches `dead`, mark its delivery `failed` and refresh mailing state
+9. **Record failure or ambiguity**
+   - mark known permanent failures as `failed` and store a safe error message
+   - for retryable pre-dispatch failures, fail the send-delivery job so queue backoff handles retry/dead state
+   - if a job reaches `dead`, mark a never-started queued delivery `failed`, but mark an in-flight provider-unknown delivery `ambiguous`
+   - never automatically retry an ambiguous outcome
    - for permanent policy failures, mark delivery failed/suppressed and complete the job
 
 Never hold a DB transaction open while calling SES.
@@ -718,13 +742,13 @@ deliveries.ses_message_id
 deliveries.last_error
 ```
 
-Important ambiguity:
+Provider-unknown boundary:
 
 ```txt
-SES accepts message -> process crashes before DB success write -> lease expires -> retry can duplicate send
+SES may accept message -> process crashes before DB success write -> outcome is ambiguous
 ```
 
-This cannot be eliminated completely without provider idempotency. Mitigate by recording attempts before sending, keeping sends one-recipient-per-delivery, using clear statuses, and surfacing ambiguous states if needed.
+`ambiguous` is an explicit terminal delivery outcome and is never automatically retried. A compatible non-null SES MessageId proved for the exact same latest attempt may later reconcile the attempt/delivery to `succeeded`/`sent`; no other event or attempt may do so. A dead job remains `dead` after this reconciliation because queue incident history and delivery outcome are separate facts. No manual retry/reconciliation API exists yet.
 
 ### Marketing Compliance Gate
 
@@ -861,19 +885,19 @@ receive raw SNS request
   -> insert global suppressions for permanent bounces and complaints
 ```
 
-Permanent bounces create `scope=all reason=bounce`; complaints create `scope=all reason=complaint` except `complaintFeedbackType='not-spam'`. Transient bounces, rejects, delivery delays, deliveries, and unknown authentic event types are recorded without suppression. Delivery status remains send-processing-only.
+Permanent bounces create `scope=all reason=bounce`; complaints create `scope=all reason=complaint` except `complaintFeedbackType='not-spam'`. Transient bounces, rejects, delivery delays, deliveries, and unknown authentic event types are recorded without suppression. A verified notification declaring Bounce or Complaint must contain the matching body block; a missing/mismatched block keeps one unprocessed raw audit row, writes no event/suppression, and returns retryable `503`. Malformed outer requests remain `400`. Delivery status remains send-processing-only.
 
-Supported event types for the current milestone: Bounce, Complaint, Reject, DeliveryDelay, optional Delivery, optional Open/Click tracking, and authentic unknown events. Operations readiness also checks SES identity/DKIM, account suppression, configuration-set event destinations/tracking domain, SNS SignatureVersion 2, and confirmed webhook subscriptions. Worker-cycle observability is stored in bounded `worker_runs` rows with idle heartbeat behavior. SNS→SQS remains a documented alternative if public webhook delivery/retry/security becomes painful.
+Supported event types for the current milestone: Bounce, Complaint, Reject, DeliveryDelay, optional Delivery, optional Open/Click tracking, and authentic unknown events. Readiness always requires BOUNCE, COMPLAINT, REJECT, and DELIVERY_DELAY; marketing readiness additionally requires OPEN and/or CLICK only when configured, while transactional readiness remains base-only. Operations readiness also checks SES identity/DKIM, account suppression, configuration-set event destinations/tracking domain, SNS SignatureVersion 2, and confirmed webhook subscriptions. Worker-cycle observability is stored in bounded `worker_runs` rows with idle heartbeat behavior. SNS→SQS remains a documented alternative if public webhook delivery/retry/security becomes painful.
 
 ## Suppression and Unsubscribe Policy
 
 Nusend's database suppressions are the application source of truth.
 
-Recommended policy:
+Current policy:
 
 - hard permanent bounce -> `scope=all`, `reason=bounce`
 - SES complaint feedback -> `scope=all`, `reason=complaint` unless `complaintFeedbackType='not-spam'`
-- marketing unsubscribe -> `scope=list` or `scope=marketing`, `reason=unsubscribe`
+- marketing unsubscribe -> `scope=marketing`, `reason=unsubscribe`; originating list membership is also marked unsubscribed when present
 - manual suppression -> caller chooses scope deliberately
 
 Rationale: hard bounces and complaints are reputation-critical and should block both transactional and marketing sends; marketing unsubscribes remain marketing/list-scoped.
@@ -937,13 +961,15 @@ Recommendations:
 
 The CLI is now a core Nusend interface, not a future polish item.
 
-The CLI must:
+The CLI currently:
 
 - call the public HTTP API
 - avoid importing service internals or touching the service SQLite database directly
 - import shared public API contracts from `@nusend/api-contract`
 - support stable JSON output for automation
 - store credentials through an explicit credential-store abstraction
+- serialize config and credential mutations under one bounded cross-process lock on supported local filesystems; network filesystems are unsupported
+- poll device authorization iteratively at no less than 1000 ms and stop before a token request when local expiry has arrived
 
 Shared packages are now justified because `apps/service` and `apps/cli` are both real consumers of the public API contract.
 
@@ -1056,7 +1082,7 @@ Next milestones:
 - Store raw SES events before processing.
 - Verify SNS signatures.
 - Use context-aware escaping for rendered variables.
-- Require HTTPS for auth production origins and final email assets.
+- Validate HTTPS auth URLs/trusted origins when `NODE_ENV=production`, but do not treat that conditional check as a secure transport default.
 - Avoid logging secrets, API keys, raw auth causes, or sensitive email payloads.
 
 ## Open Questions
@@ -1064,7 +1090,7 @@ Next milestones:
 Questions for future milestones:
 
 - whether `text` should become required before real sending
-- how to surface ambiguous send attempts in API/admin views
+- whether to add an explicit operator reconciliation API for ambiguous sends; current APIs are inspection-only
 - exact SES configuration-set names and operator setup docs
 - exact SES account/config-set suppression recommendation for transactional vs marketing
 - whether to add queue mutation/admin controls beyond the existing read-only operations API

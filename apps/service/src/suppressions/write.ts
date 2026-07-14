@@ -13,6 +13,49 @@ export type CreateSuppressionResult = {
   readonly suppression: Suppression;
 };
 
+export type AutomatedSuppressionInput =
+  | {
+      readonly createdAt: string;
+      readonly email: string;
+      readonly id: string;
+      readonly reason: "bounce" | "complaint";
+      readonly scope: "all";
+    }
+  | {
+      readonly createdAt: string;
+      readonly email: string;
+      readonly id: string;
+      readonly reason: "unsubscribe";
+      readonly scope: "marketing";
+    };
+
+export function upsertAutomatedSuppression(
+  input: AutomatedSuppressionInput,
+): Effect.Effect<void, DatabaseError, DatabaseService> {
+  return Effect.flatMap(Database, (db) =>
+    db.run(
+      "suppressions:upsert-automated",
+      `INSERT INTO suppressions (id, email, scope, list_id, reason, created_at)
+       VALUES ($id, $email, $scope, NULL, $reason, $createdAt)
+       ON CONFLICT(email, scope) WHERE list_id IS NULL
+       DO UPDATE SET reason = CASE
+         WHEN excluded.reason = 'complaint' AND suppressions.reason IN ('manual', 'bounce')
+           THEN 'complaint'
+         WHEN excluded.reason = 'bounce' AND suppressions.reason = 'manual'
+           THEN 'bounce'
+         WHEN excluded.reason = 'unsubscribe' AND suppressions.reason = 'manual'
+           THEN 'unsubscribe'
+         ELSE suppressions.reason
+       END
+       WHERE
+         (excluded.reason = 'complaint' AND suppressions.reason IN ('manual', 'bounce'))
+         OR (excluded.reason = 'bounce' AND suppressions.reason = 'manual')
+         OR (excluded.reason = 'unsubscribe' AND suppressions.reason = 'manual');`,
+      input,
+    ),
+  );
+}
+
 export function createManualSuppression(
   input: CreateSuppressionInput,
 ): Effect.Effect<
@@ -69,14 +112,25 @@ export function deleteManualSuppression(
 ): Effect.Effect<void, ConflictError | DatabaseError | NotFoundError, DatabaseService> {
   return Effect.gen(function* () {
     const db = yield* Database;
-    const suppression = yield* requireSuppressionById(id);
-    if (suppression.reason !== "manual") {
-      return yield* Effect.fail(
-        new ConflictError({ message: "Only manual suppressions can be deleted through this API." }),
-      );
-    }
+    yield* db.transaction(
+      Effect.gen(function* () {
+        const deleted = yield* db.get<{ id: string }>(
+          "suppressions:delete-manual",
+          `DELETE FROM suppressions
+           WHERE id = $id AND reason = 'manual'
+           RETURNING id;`,
+          { id },
+        );
+        if (deleted) return;
 
-    yield* db.run("suppressions:delete", "DELETE FROM suppressions WHERE id = $id;", { id });
+        yield* requireSuppressionById(id);
+        return yield* Effect.fail(
+          new ConflictError({
+            message: "Only manual suppressions can be deleted through this API.",
+          }),
+        );
+      }),
+    );
   });
 }
 

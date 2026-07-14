@@ -1,6 +1,6 @@
 import { Effect } from "effect";
 
-import { DatabaseError, ListNotFoundError, NotFoundError } from "../errors.ts";
+import { ConflictError, DatabaseError, ListNotFoundError, NotFoundError } from "../errors.ts";
 import { currentIso } from "../lib/iso-time.ts";
 import { Database, type DatabaseService } from "../services/database.ts";
 import { IdGenerator, type IdGeneratorService } from "../services/ids.ts";
@@ -68,13 +68,34 @@ export function updateList(
 
 export function deleteList(
   listId: string,
-): Effect.Effect<void, DatabaseError | ListNotFoundError, DatabaseService> {
+): Effect.Effect<void, ConflictError | DatabaseError | ListNotFoundError, DatabaseService> {
   return Effect.gen(function* () {
     const db = yield* Database;
-    const list = yield* getListRow(listId);
-    if (!list) return yield* Effect.fail(new ListNotFoundError({ listId }));
+    yield* db.transaction(
+      Effect.gen(function* () {
+        const deleted = yield* db.get<{ id: string }>(
+          "lists:delete",
+          `DELETE FROM lists
+           WHERE id = $listId
+             AND NOT EXISTS (
+               SELECT 1
+               FROM mailings
+               WHERE list_id = $listId AND state <> 'completed'
+             )
+           RETURNING id;`,
+          { listId },
+        );
+        if (deleted) return;
 
-    yield* db.run("lists:delete", "DELETE FROM lists WHERE id = $listId;", { listId });
+        const list = yield* getListRow(listId);
+        if (!list) return yield* Effect.fail(new ListNotFoundError({ listId }));
+        return yield* Effect.fail(
+          new ConflictError({
+            message: "List cannot be deleted while non-completed mailings reference it.",
+          }),
+        );
+      }),
+    );
   });
 }
 

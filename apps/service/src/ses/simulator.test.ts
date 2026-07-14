@@ -3,6 +3,7 @@ import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
 
 import { Database } from "../services/database.ts";
+import { EmailTransportError } from "../services/email-transport.ts";
 import { fakeEmailTransportLayer, fakeSendingConfigLayer } from "../testing/email-transport.ts";
 import { runTest } from "../testing/layers.ts";
 import { runSesSimulator } from "./simulator.ts";
@@ -79,6 +80,45 @@ describe("runSesSimulator", () => {
 
     expect(result.runResult.status).toBe("timed_out");
     expect(result.run).toEqual({ finishedAt: "2026-07-03T12:00:00.000Z", status: "timed_out" });
+  });
+
+  it("records send acceptance ambiguity without timing out or retrying", async () => {
+    const fake = fakeEmailTransportLayer([
+      {
+        error: new EmailTransportError({ kind: "ambiguous", operation: "send" }),
+        kind: "Fail",
+      },
+    ]);
+    const result = await runTest(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(fixedTime);
+        const runResult = yield* runSesSimulator({
+          mode: "send_acceptance",
+          purpose: "transactional",
+          scenario: "success",
+          targetBaseUrl: null,
+          timeoutMs: 1000,
+          workerId: "worker_1",
+        });
+        const db = yield* Database;
+        const run = yield* db.get(
+          "test:simulator-run",
+          "SELECT status, error_message AS errorMessage FROM ses_simulator_runs WHERE id = $id;",
+          { id: runResult.runId },
+        );
+        const delivery = yield* db.get("test:delivery", "SELECT status FROM deliveries;");
+        return { delivery, run, runResult };
+      }).pipe(Effect.provide(Layer.mergeAll(fake.layer, fakeSendingConfigLayer()))),
+      { ids: ["run_1", "mailing_1", "delivery_1", "job_1", "attempt_1"] },
+    );
+
+    expect(result.runResult.status).toBe("ambiguous");
+    expect(result.run).toEqual({
+      errorMessage: "Email transport ambiguous failure.",
+      status: "ambiguous",
+    });
+    expect(result.delivery).toEqual({ status: "ambiguous" });
+    expect(fake.state.sent).toHaveLength(1);
   });
 
   it("records send acceptance success as sent", async () => {

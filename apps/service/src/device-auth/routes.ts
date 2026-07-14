@@ -18,14 +18,52 @@ type DeviceAuthorizationRoutesOptions = {
   // Canonical public origin (from BETTER_AUTH_URL) used for verification URLs
   // behind a TLS-terminating proxy; falls back to the request origin.
   readonly publicOrigin?: string;
-  // Coarse request-rate limiters for the unauthenticated start endpoint (used
-  // as sliding-window counters). Injectable for tests.
+  // Process-local sliding-window limiters. Injectable for deterministic tests.
   readonly startRateLimiter?: AttemptLimiter;
   readonly globalStartRateLimiter?: AttemptLimiter;
+  readonly tokenRateLimiter?: AttemptLimiter;
+  readonly globalTokenRateLimiter?: AttemptLimiter;
 };
 
-const rateWindowMs = 15 * 60_000;
+const startRateWindowMs = 15 * 60_000;
+const tokenRateWindowMs = 60_000;
 const globalRateKey = "global";
+const rateLimitMessage = "Too many device authorization requests. Try again later.";
+
+export function makeDefaultDeviceAuthorizationRouteLimiters(now?: () => number): {
+  readonly globalStart: AttemptLimiter;
+  readonly globalToken: AttemptLimiter;
+  readonly startSource: AttemptLimiter;
+  readonly tokenSource: AttemptLimiter;
+} {
+  const clock = now ? { now } : {};
+  return {
+    globalStart: makeAttemptLimiter({
+      max: 60,
+      maxEntries: 1,
+      windowMs: startRateWindowMs,
+      ...clock,
+    }),
+    globalToken: makeAttemptLimiter({
+      max: 600,
+      maxEntries: 1,
+      windowMs: tokenRateWindowMs,
+      ...clock,
+    }),
+    startSource: makeAttemptLimiter({
+      max: 10,
+      maxEntries: 128,
+      windowMs: startRateWindowMs,
+      ...clock,
+    }),
+    tokenSource: makeAttemptLimiter({
+      max: 120,
+      maxEntries: 1_024,
+      windowMs: tokenRateWindowMs,
+      ...clock,
+    }),
+  };
+}
 
 export function createDeviceAuthorizationRoutes(options: DeviceAuthorizationRoutesOptions): Hono {
   const routes = new Hono();
@@ -37,22 +75,25 @@ export function createDeviceAuthorizationRoutes(options: DeviceAuthorizationRout
   // Unauthenticated endpoint: bound both per-source-address and total request
   // rate so a client rotating X-Forwarded-For cannot flood pending rows and
   // starve legitimate CLI logins.
-  const startRateLimiter =
-    options.startRateLimiter ?? makeAttemptLimiter({ max: 10, windowMs: rateWindowMs });
-  const globalStartRateLimiter =
-    options.globalStartRateLimiter ?? makeAttemptLimiter({ max: 60, windowMs: rateWindowMs });
+  const defaults = makeDefaultDeviceAuthorizationRouteLimiters();
+  const startRateLimiter = options.startRateLimiter ?? defaults.startSource;
+  const globalStartRateLimiter = options.globalStartRateLimiter ?? defaults.globalStart;
+  const tokenRateLimiter = options.tokenRateLimiter ?? defaults.tokenSource;
+  const globalTokenRateLimiter = options.globalTokenRateLimiter ?? defaults.globalToken;
 
   routes.post("/", jsonLimit, (context) => {
     // Trust only the proxy-appended (last) X-Forwarded-For hop.
     const address = lastForwardedAddress(context.req.header("x-forwarded-for")) ?? "direct";
-    if (startRateLimiter.isLocked(address) || globalStartRateLimiter.isLocked(globalRateKey)) {
-      return context.json(
-        errorEnvelope("rate_limited", "Too many device authorization requests. Try again later."),
-        429,
-      );
+    const globalDecision = globalStartRateLimiter.attempt(globalRateKey);
+    if (globalDecision.kind === "Limited") {
+      context.header("Retry-After", retryAfterSeconds(globalDecision.retryAfterMs));
+      return context.json(errorEnvelope("rate_limited", rateLimitMessage), 429);
     }
-    startRateLimiter.recordFailure(address);
-    globalStartRateLimiter.recordFailure(globalRateKey);
+    const sourceDecision = startRateLimiter.attempt(address);
+    if (sourceDecision.kind === "Limited") {
+      context.header("Retry-After", retryAfterSeconds(sourceDecision.retryAfterMs));
+      return context.json(errorEnvelope("rate_limited", rateLimitMessage), 429);
+    }
 
     const program = Effect.gen(function* () {
       const body = yield* readJsonBody(context.req.raw);
@@ -70,6 +111,18 @@ export function createDeviceAuthorizationRoutes(options: DeviceAuthorizationRout
   });
 
   routes.post("/token", jsonLimit, (context) => {
+    const address = lastForwardedAddress(context.req.header("x-forwarded-for")) ?? "direct";
+    const globalDecision = globalTokenRateLimiter.attempt(globalRateKey);
+    if (globalDecision.kind === "Limited") {
+      context.header("Retry-After", retryAfterSeconds(globalDecision.retryAfterMs));
+      return context.json(errorEnvelope("rate_limited", rateLimitMessage), 429);
+    }
+    const sourceDecision = tokenRateLimiter.attempt(address);
+    if (sourceDecision.kind === "Limited") {
+      context.header("Retry-After", retryAfterSeconds(sourceDecision.retryAfterMs));
+      return context.json(errorEnvelope("rate_limited", rateLimitMessage), 429);
+    }
+
     const program = Effect.gen(function* () {
       const body = yield* readJsonBody(context.req.raw);
       const input = yield* decodeTokenRequest(body);
@@ -85,6 +138,10 @@ export function createDeviceAuthorizationRoutes(options: DeviceAuthorizationRout
 
 function lastForwardedAddress(value: string | undefined): string | undefined {
   return value?.split(",").at(-1)?.trim();
+}
+
+function retryAfterSeconds(retryAfterMs: number): string {
+  return String(Math.max(1, Math.ceil(retryAfterMs / 1_000)));
 }
 
 function readJsonBody(request: Request): Effect.Effect<unknown, RequestValidationError> {

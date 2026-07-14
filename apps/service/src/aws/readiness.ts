@@ -48,10 +48,14 @@ export function runSesReadinessChecks(
         ? `${Option.getOrThrow(settings.publicBaseUrl)}${sesSnsWebhookPath}`
         : null;
 
-    // Config issues are authoritative for their check ids: a local check that
-    // shares an id (e.g. config.public_base_url, config.worker_budget) would
-    // duplicate or contradict the diagnostic, so it is dropped.
+    // Config issues are authoritative: a corresponding local check could
+    // duplicate or contradict the diagnostic, so it is dropped. Invalid
+    // tracking-event input also shadows the derived enabled/disabled summary.
     const configIssueIds = new Set(settings.configIssues.map((issue) => issue.id));
+    const shadowedLocalCheckIds = new Set(configIssueIds);
+    if (configIssueIds.has("config.tracking_events")) {
+      shadowedLocalCheckIds.add("config.tracking");
+    }
     const localChecks: ReadinessCheck[] = [
       publicBaseUrl,
       optionCheck({
@@ -116,7 +120,7 @@ export function runSesReadinessChecks(
     ];
     checks.push(
       ...settings.configIssues.map(configIssueCheck),
-      ...localChecks.filter((check) => !configIssueIds.has(check.id)),
+      ...localChecks.filter((check) => !shadowedLocalCheckIds.has(check.id)),
     );
 
     if (options.includeAws === false) {
@@ -617,10 +621,11 @@ function configurationSetChecks(
       return checks;
     }
 
+    const baseRequired = ["BOUNCE", "COMPLAINT", "REJECT", "DELIVERY_DELAY"];
     const required =
       kind === "marketing"
-        ? ["BOUNCE", "COMPLAINT", "REJECT", "DELIVERY_DELAY", "OPEN", "CLICK"]
-        : ["BOUNCE", "COMPLAINT", "REJECT", "DELIVERY_DELAY"];
+        ? [...baseRequired, ...settings.trackingEvents.map((event) => event.toUpperCase())]
+        : baseRequired;
     const enabledToConfiguredTopic = destinations.right.filter(
       (destination) =>
         destination.enabled &&

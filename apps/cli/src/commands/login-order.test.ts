@@ -3,19 +3,22 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { FileCredentialStore } from "../credentials/file-store.js";
+import { configPath, credentialsPath } from "../config/paths.js";
 import { runCli } from "../main.js";
 
 const events = vi.hoisted(() => [] as string[]);
 
-vi.mock("../config/profiles.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../config/profiles.js")>();
+vi.mock("../config/local-state.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../config/local-state.js")>();
   return {
     ...actual,
-    saveConfig: vi.fn(async (...args: Parameters<typeof actual.saveConfig>) => {
-      events.push("saveConfig");
-      return actual.saveConfig(...args);
-    }),
+    updateLoginState: vi.fn(async (...args: Parameters<typeof actual.updateLoginState>) =>
+      actual.updateLoginState(args[0], args[1], {
+        beforeRename: async (destination) => {
+          events.push(destination);
+        },
+      }),
+    ),
   };
 });
 
@@ -32,18 +35,10 @@ afterEach(async () => {
 });
 
 describe("login write ordering", () => {
-  it("stores the credential strictly before writing config", async () => {
+  it("renames the credential strictly before config in one shared mutation", async () => {
     const directory = await mkdtemp(join(tmpdir(), "nusend-cli-login-order-"));
     temporaryDirectories.push(directory);
     const env = { XDG_CONFIG_HOME: directory };
-    const originalWrite = FileCredentialStore.prototype.write;
-    vi.spyOn(FileCredentialStore.prototype, "write").mockImplementation(async function (
-      this: FileCredentialStore,
-      ...args
-    ) {
-      events.push("credentialWrite");
-      return originalWrite.apply(this, args);
-    });
     const responses = [
       {
         deviceCode: "device",
@@ -72,10 +67,13 @@ describe("login write ordering", () => {
     ) as unknown as typeof fetch;
     vi.spyOn(console, "log").mockImplementation(() => undefined);
 
-    await expect(runCli(["login", "https://mail.example.com"], env)).resolves.toEqual({
-      exitCode: 0,
-    });
+    await expect(
+      runCli(["login", "https://mail.example.com"], env, {
+        now: () => 0,
+        sleep: async () => undefined,
+      }),
+    ).resolves.toEqual({ exitCode: 0 });
 
-    expect(events).toEqual(["credentialWrite", "saveConfig"]);
+    expect(events).toEqual([credentialsPath(env), configPath(env)]);
   });
 });

@@ -42,10 +42,7 @@ describe("CLI and service", () => {
         );
         const directory = await mkdtemp(join(tmpdir(), "nusend-cli-e2e-"));
         temporaryDirectories.push(directory);
-        const env = {
-          NUSEND_LOGIN_POLL_INTERVAL_MS: "10",
-          XDG_CONFIG_HOME: directory,
-        };
+        const env = { XDG_CONFIG_HOME: directory };
         const logs: string[] = [];
         const requestedPaths: string[] = [];
         vi.spyOn(console, "log").mockImplementation((value) => logs.push(String(value)));
@@ -60,7 +57,9 @@ describe("CLI and service", () => {
           return response;
         });
 
-        await expect(runCli(["login", "http://localhost"], env)).resolves.toEqual({ exitCode: 0 });
+        await expect(runCli(["login", "http://localhost"], env, noWaitRuntime())).resolves.toEqual({
+          exitCode: 0,
+        });
         await expect(runCli(["whoami"], env)).resolves.toEqual({ exitCode: 0 });
         const beforeKeyCreate = Date.now();
         await expect(
@@ -106,10 +105,7 @@ describe("CLI and service", () => {
         await seedTestUser(runtime);
         const directory = await mkdtemp(join(tmpdir(), "nusend-cli-e2e-json-"));
         temporaryDirectories.push(directory);
-        const env = {
-          NUSEND_LOGIN_POLL_INTERVAL_MS: "10",
-          XDG_CONFIG_HOME: directory,
-        };
+        const env = { XDG_CONFIG_HOME: directory };
         const logs: string[] = [];
         const errors: string[] = [];
         vi.spyOn(console, "log").mockImplementation((value) => logs.push(String(value)));
@@ -124,7 +120,9 @@ describe("CLI and service", () => {
           return response;
         });
 
-        await expect(runCli(["--json", "login", "http://localhost"], env)).resolves.toEqual({
+        await expect(
+          runCli(["--json", "login", "http://localhost"], env, noWaitRuntime()),
+        ).resolves.toEqual({
           exitCode: 0,
         });
 
@@ -147,6 +145,13 @@ describe("CLI and service", () => {
     );
   });
 });
+
+function noWaitRuntime() {
+  return {
+    now: Date.now,
+    sleep: async (_milliseconds: number) => undefined,
+  };
+}
 
 async function approveThroughActivation(
   app: { fetch: (request: Request) => Response | Promise<Response> },

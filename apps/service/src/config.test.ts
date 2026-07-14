@@ -240,6 +240,8 @@ describe("sesOperationsConfig", () => {
     expect(loaded.workerBatchSize).toBe(1);
     expect(loaded.workerLeaseSeconds).toBe(300);
     expect(loaded.workerPollMs).toBe(5000);
+    expect(loaded.trackingEvents).toEqual([]);
+    expect(loaded.configIssues).toEqual([]);
   });
 
   it("reports invalid SES operations config as diagnostics without failing startup", async () => {
@@ -275,10 +277,38 @@ describe("sesOperationsConfig", () => {
 
     expect(Option.getOrThrow(loaded.awsRegion)).toBe("us-east-1");
     expect(Option.getOrThrow(loaded.publicBaseUrl)).toBe("https://mail.example.com");
-    expect(loaded.configIssues).toEqual([]);
+    expect(loaded.configIssues).toEqual([
+      {
+        id: "config.tracking_events",
+        message:
+          "NUSEND_SES_TRACKING_EVENTS contains unsupported values: invalid. Use only open and click.",
+      },
+    ]);
     expect(loaded.feedbackTopicArns).toEqual(["arn:aws:sns:us-east-1:123456789012:nusend-prod"]);
     expect(loaded.trackingEvents).toEqual(["open", "click"]);
     expect(Option.getOrThrow(loaded.trackingCustomRedirectDomain)).toBe("tracking.example.com");
+  });
+
+  it("reports all-invalid tracking events instead of treating tracking as disabled", async () => {
+    const loaded = await loadSesOperations({
+      NUSEND_SES_TRACKING_EVENTS: "delivery, rendering",
+    });
+
+    expect(loaded.trackingEvents).toEqual([]);
+    expect(loaded.configIssues).toEqual([
+      {
+        id: "config.tracking_events",
+        message:
+          "NUSEND_SES_TRACKING_EVENTS contains unsupported values: delivery, rendering. Use only open and click.",
+      },
+    ]);
+  });
+
+  it("accepts blank tracking events as disabled without a config issue", async () => {
+    const loaded = await loadSesOperations({ NUSEND_SES_TRACKING_EVENTS: " , " });
+
+    expect(loaded.trackingEvents).toEqual([]);
+    expect(loaded.configIssues).toEqual([]);
   });
 });
 

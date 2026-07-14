@@ -130,6 +130,66 @@ describe("SES webhook routes", () => {
     );
   });
 
+  it.each([
+    ["Bounce without bounce", { eventType: "Bounce" }],
+    ["Bounce with complaint", { complaint: complaintBlock(), eventType: "Bounce" }],
+    ["Complaint without complaint", { eventType: "Complaint" }],
+    ["Complaint with bounce", { bounce: bounceBlock(), eventType: "Complaint" }],
+  ])(
+    "returns empty 503 and reuses one unprocessed audit for verified %s",
+    async (_label, sesEvent) => {
+      await withTestApp(
+        {
+          snsVerifier: (message) =>
+            Effect.succeed(JSON.parse(String(message)) as VerifiedSnsEnvelope),
+        },
+        async (app, runtime) => {
+          const body = JSON.stringify({
+            ...notification(
+              `sns_retryable_${sesEvent.eventType.toLowerCase()}_${Object.keys(sesEvent).length}`,
+            ),
+            Message: JSON.stringify({ ...sesEvent, mail: mailBlock() }),
+          });
+
+          const first = await app.fetch(new Request(webhookUrl, { body, method: "POST" }));
+          expect(first.status).toBe(503);
+          expect(await first.text()).toBe("");
+
+          const duplicate = await app.fetch(new Request(webhookUrl, { body, method: "POST" }));
+          expect(duplicate.status).toBe(503);
+          expect(await duplicate.text()).toBe("");
+
+          const state = await runtime.runPromise(
+            Effect.flatMap(Database, (db) =>
+              Effect.all({
+                events: db.get<{ count: number }>(
+                  "test:count-retryable-events",
+                  "SELECT count(*) AS count FROM ses_events;",
+                ),
+                notification: db.get<{
+                  count: number;
+                  eventType: string | null;
+                  sesMessageId: string | null;
+                }>(
+                  "test:retryable-notification",
+                  `SELECT count(*) AS count, event_type AS eventType, ses_message_id AS sesMessageId
+                   FROM ses_notifications;`,
+                ),
+                suppressions: db.get<{ count: number }>(
+                  "test:count-retryable-suppressions",
+                  "SELECT count(*) AS count FROM suppressions;",
+                ),
+              }),
+            ),
+          );
+          expect(state.notification).toEqual({ count: 1, eventType: null, sesMessageId: null });
+          expect(state.events).toEqual({ count: 0 });
+          expect(state.suppressions).toEqual({ count: 0 });
+        },
+      );
+    },
+  );
+
   it("audits verified malformed SES before returning 400", async () => {
     await withTestApp(
       {
@@ -332,6 +392,30 @@ async function countRows(runtime: TestRuntime): Promise<{
       })),
     ),
   );
+}
+
+function mailBlock() {
+  return {
+    destination: ["user@example.com"],
+    messageId: "ses_retryable",
+    timestamp: "2026-07-03T12:00:00.000Z",
+  };
+}
+
+function bounceBlock(
+  bouncedRecipients: readonly { readonly emailAddress: string }[] = [
+    { emailAddress: "user@example.com" },
+  ],
+) {
+  return { bounceType: "Permanent", bouncedRecipients };
+}
+
+function complaintBlock(
+  complainedRecipients: readonly { readonly emailAddress: string }[] = [
+    { emailAddress: "user@example.com" },
+  ],
+) {
+  return { complainedRecipients };
 }
 
 function unsubscribeConfirmation(messageId: string): VerifiedSnsEnvelope {

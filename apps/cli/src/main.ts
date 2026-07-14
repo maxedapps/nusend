@@ -15,6 +15,7 @@ import {
   printError,
   selectedProfile,
   UsageError,
+  type CliRuntimeDependencies,
   type CommandContext,
 } from "./commands/context.js";
 import { helpText } from "./commands/help.js";
@@ -23,8 +24,10 @@ import { runLogoutCommand } from "./commands/logout.js";
 import { runMailingsCommand } from "./commands/mailings.js";
 import { runWhoamiCommand } from "./commands/whoami.js";
 import { validateCommandGrammar } from "./commands/options.js";
+import { loadLocalStateSnapshot } from "./config/local-state.js";
 import { loadConfig, resolveProfile } from "./config/profiles.js";
 import { FileCredentialStore } from "./credentials/file-store.js";
+import type { StoredCredential } from "./credentials/store.js";
 
 const require = createRequire(import.meta.url);
 const VERSION = (require("../package.json") as { version: string }).version;
@@ -32,7 +35,16 @@ const VERSION = (require("../package.json") as { version: string }).version;
 export type CliResult = { readonly exitCode: number };
 export { printError };
 
-export async function runCli(args: string[], env = process.env): Promise<CliResult> {
+const defaultRuntimeDependencies: CliRuntimeDependencies = {
+  now: Date.now,
+  sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+};
+
+export async function runCli(
+  args: string[],
+  env = process.env,
+  runtime: CliRuntimeDependencies = defaultRuntimeDependencies,
+): Promise<CliResult> {
   const parsed = parseGlobalOptions(expandEqualsSyntax(args));
   const helpCount = parsed.rest.filter((token) => token === "--help" || token === "-h").length;
   const versionCount = parsed.rest.filter(
@@ -55,16 +67,61 @@ export async function runCli(args: string[], env = process.env): Promise<CliResu
   validateCommandGrammar(parsed.rest);
   const [command, ...rest] = parsed.rest;
   const store = new FileCredentialStore(env);
-  const config = await loadConfig(env);
-  const baseContext: CommandContext = { config, env, options: parsed.options, store };
 
-  if (command === "login") await runLoginCommand(rest, baseContext);
-  else if (command === "config") await runConfigCommand(rest, baseContext);
-  else if (command === "logout") {
+  // Login and config repair are local setup commands. They neither need nor
+  // should wait for an authenticated config/credential snapshot.
+  if (command === "login" || command === "config") {
+    const config = await loadConfig(env);
+    const context: CommandContext = { config, env, options: parsed.options, runtime, store };
+    if (command === "login") await runLoginCommand(rest, context);
+    else await runConfigCommand(rest, context);
+    return { exitCode: 0 };
+  }
+
+  // An environment credential has explicit precedence and does not participate
+  // in the two-file login commit, so preserve its file-store bypass behavior.
+  if (env.NUSEND_API_KEY) {
+    const config = await loadConfig(env);
+    const baseContext: CommandContext = { config, env, options: parsed.options, runtime, store };
+    if (command === "logout") {
+      const unknown = rest.find((token) => token !== "--revoke");
+      if (unknown) throw new UsageError(`Unknown logout option: ${unknown}`, 2);
+      if (rest.includes("--revoke")) httpTimeoutMsFromEnv(env);
+      await runLogoutCommand(rest, baseContext);
+      return { exitCode: 0 };
+    }
+    const profile = resolveProfileForCli({ ...parsed.options, config, env });
+    const context = {
+      ...baseContext,
+      api: makeApi(profile.baseUrl, env.NUSEND_API_KEY, env),
+    };
+    if (command === "whoami") await runWhoamiCommand(context);
+    else if (command === "api-keys") await runApiKeysCommand(rest, context);
+    else if (command === "contacts") await runContactsCommand(rest, context);
+    else if (command === "mailings") await runMailingsCommand(rest, context);
+    return { exitCode: 0 };
+  }
+
+  // The lock is released before API construction or network work. Reading both
+  // files in one critical section prevents pairing a newly-renamed credential
+  // with the previous profile URL during login's intentional two-file commit.
+  const snapshot = await loadLocalStateSnapshot(env, {
+    afterLockContention: runtime.afterLocalStateContention,
+  });
+  const baseContext: CommandContext = {
+    config: snapshot.config,
+    env,
+    options: parsed.options,
+    runtime,
+    store,
+  };
+  const profileName = selectedProfile(baseContext);
+  const fileCredential = snapshot.credentials.credentials?.[profileName] ?? null;
+  const credential: StoredCredential | null = fileCredential;
+
+  if (command === "logout") {
     const unknown = rest.find((token) => token !== "--revoke");
     if (unknown) throw new UsageError(`Unknown logout option: ${unknown}`, 2);
-    const profile = selectedProfile(baseContext);
-    const credential = await store.read(profile);
     let api: NusendApi | undefined;
     let revokeSetupError: unknown;
     if (rest.includes("--revoke") && credential) {
@@ -73,7 +130,7 @@ export async function runCli(args: string[], env = process.env): Promise<CliResu
       httpTimeoutMsFromEnv(env);
       try {
         api = makeApi(
-          resolveProfileForCli({ ...parsed.options, config, env }).baseUrl,
+          resolveProfileForCli({ ...parsed.options, config: snapshot.config, env }).baseUrl,
           credential.apiKey,
           env,
         );
@@ -81,29 +138,35 @@ export async function runCli(args: string[], env = process.env): Promise<CliResu
         revokeSetupError = error;
       }
     }
-    await runLogoutCommand(rest, { ...baseContext, api }, revokeSetupError);
-  } else {
-    const profileName = selectedProfile(baseContext);
-    const credential = await store.read(profileName);
-    if (!credential) {
-      throw new UsageError(
-        "Authentication required. Run `nusend login <base-url>` or set NUSEND_API_KEY.",
-        3,
-      );
-    }
-    const profile = resolveProfileForCli({ ...parsed.options, config, env });
-    const context = { ...baseContext, api: makeApi(profile.baseUrl, credential.apiKey, env) };
-    if (command === "whoami") await runWhoamiCommand(context);
-    else if (command === "api-keys") await runApiKeysCommand(rest, context);
-    else if (command === "contacts") await runContactsCommand(rest, context);
-    else if (command === "mailings") await runMailingsCommand(rest, context);
+    await runLogoutCommand(rest, { ...baseContext, api }, revokeSetupError, {
+      credential,
+      storedCredentialKept: fileCredential !== null,
+    });
+    return { exitCode: 0 };
   }
+
+  if (!credential) {
+    throw new UsageError(
+      "Authentication required. Run `nusend login <base-url>` or set NUSEND_API_KEY.",
+      3,
+    );
+  }
+  const profile = resolveProfileForCli({ ...parsed.options, config: snapshot.config, env });
+  const context = { ...baseContext, api: makeApi(profile.baseUrl, credential.apiKey, env) };
+  if (command === "whoami") await runWhoamiCommand(context);
+  else if (command === "api-keys") await runApiKeysCommand(rest, context);
+  else if (command === "contacts") await runContactsCommand(rest, context);
+  else if (command === "mailings") await runMailingsCommand(rest, context);
   return { exitCode: 0 };
 }
 
-export async function runMain(args: string[], env = process.env): Promise<CliResult> {
+export async function runMain(
+  args: string[],
+  env = process.env,
+  runtime: CliRuntimeDependencies = defaultRuntimeDependencies,
+): Promise<CliResult> {
   try {
-    return await runCli(args, env);
+    return await runCli(args, env, runtime);
   } catch (error) {
     const exitCode = exitCodeForError(error);
     printError(

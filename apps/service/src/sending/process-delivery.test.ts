@@ -106,7 +106,7 @@ async function expectTerminalTransportAmbiguity(
   expect(outcome.job).toEqual({ lastError: null, state: "succeeded" });
   expect(outcome.delivery).toEqual({
     lastError: "Unexpected email transport failure after dispatch.",
-    status: "failed",
+    status: "ambiguous",
   });
   expect(outcome.attempt).toEqual({
     errorMessage: "Unexpected email transport failure after dispatch.",
@@ -464,7 +464,7 @@ describe("processSendDeliveryJob", () => {
     expect(outcome.job).toEqual({ lastError: null, state: "succeeded" });
     expect(outcome.delivery).toEqual({
       lastError: "Email transport ambiguous failure.",
-      status: "failed",
+      status: "ambiguous",
     });
     expect(outcome.attempt).toEqual({
       errorMessage: "Email transport ambiguous failure.",
@@ -537,6 +537,68 @@ describe("processSendDeliveryJob", () => {
       await expectTerminalTransportAmbiguity(sendFailure, sentinels);
     },
   );
+
+  it("fails the owned job instead of completing it on incompatible nonterminal read-back", async () => {
+    const dispatched: PreparedEmail[] = [];
+    const transport = Layer.effect(
+      EmailTransport,
+      Effect.map(Database, (db) => ({
+        send: (email: PreparedEmail) =>
+          Effect.gen(function* () {
+            dispatched.push(email);
+            yield* db
+              .run(
+                "test:insert-newer-attempt",
+                `INSERT INTO send_attempts (
+                   id, delivery_id, job_id, attempt_no, status, error_message, started_at, finished_at
+                 ) SELECT
+                   'newer_attempt', $deliveryId, id, 2, 'failed', 'newer attempt',
+                   '2026-07-03T12:00:01.000Z', '2026-07-03T12:00:02.000Z'
+                 FROM jobs WHERE delivery_id = $deliveryId;`,
+                { deliveryId: email.tags.delivery_id },
+              )
+              .pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new EmailTransportError({
+                      cause,
+                      kind: "ambiguous",
+                      operation: "test:insert-newer-attempt",
+                    }),
+                ),
+              );
+            return { messageId: "late-message" };
+          }),
+      })),
+    );
+
+    const outcome = await runTest(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(fixedTime);
+        yield* createMailing(baseInput());
+        const result = yield* runSendWorkerOnce({ workerId: "worker_1" });
+        const db = yield* Database;
+        return {
+          attempts: yield* db.all(
+            "assert:attempts",
+            "SELECT attempt_no AS attemptNo, status, ses_message_id AS messageId FROM send_attempts ORDER BY attempt_no;",
+          ),
+          delivery: yield* db.get("assert:delivery", "SELECT status FROM deliveries;"),
+          job: yield* db.get("assert:job", "SELECT state FROM jobs;"),
+          result,
+        };
+      }).pipe(Effect.provide(Layer.mergeAll(transport, fakeSendingConfigLayer()))),
+    );
+
+    expect(outcome.result).toMatchObject({ claimed: 1, failed: 1, succeeded: 0 });
+    expect(outcome.job).toEqual({ state: "queued" });
+    expect(outcome.delivery).toEqual({ status: "sending" });
+    expect(outcome.attempts).toEqual([
+      { attemptNo: 1, messageId: null, status: "started" },
+      { attemptNo: 2, messageId: null, status: "failed" },
+    ]);
+    expect(dispatched).toHaveLength(1);
+  });
 
   it("records permanent transport failures as terminal failed deliveries", async () => {
     const fake = fakeEmailTransportLayer([
@@ -1150,7 +1212,7 @@ describe("processSendDeliveryJob", () => {
     expect(outcome.result.job).toEqual({ state: "succeeded" });
     expect(outcome.result.delivery).toEqual({
       lastError: "Delivery was left sending by a previous attempt; outcome is ambiguous.",
-      status: "failed",
+      status: "ambiguous",
     });
     expect(outcome.result.attempt).toEqual({
       errorMessage: "Delivery was left sending by a previous attempt; outcome is ambiguous.",

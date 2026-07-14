@@ -23,11 +23,18 @@ export type GlobalOptions = {
   readonly profile?: string;
 };
 
+export type CliRuntimeDependencies = {
+  readonly afterLocalStateContention?: () => Promise<void>;
+  readonly now: () => number;
+  readonly sleep: (milliseconds: number) => Promise<void>;
+};
+
 export type CommandContext = {
   readonly api?: NusendApi;
   readonly config: ConfigFile;
   readonly env: NodeJS.ProcessEnv;
   readonly options: GlobalOptions;
+  readonly runtime: CliRuntimeDependencies;
   readonly store: FileCredentialStore;
 };
 

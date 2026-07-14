@@ -5,6 +5,7 @@ import type { MailingPurpose } from "../mailings/schema.ts";
 import { currentIso } from "../lib/iso-time.ts";
 import { Database, type DatabaseService } from "../services/database.ts";
 import { IdGenerator, type IdGeneratorService } from "../services/ids.ts";
+import { upsertAutomatedSuppression } from "../suppressions/write.ts";
 import { UnsubscribeConfig, type UnsubscribeConfigService } from "./config.ts";
 import { verifyUnsubscribeToken } from "./token.ts";
 
@@ -111,13 +112,13 @@ function writeMarketingUnsubscribe(
     const ids = yield* IdGenerator;
     const now = yield* currentIso;
 
-    yield* db.run(
-      "unsubscribe:suppression:insert",
-      `INSERT INTO suppressions (id, email, scope, list_id, reason, created_at)
-       VALUES ($id, $email, 'marketing', NULL, 'unsubscribe', $now)
-       ON CONFLICT(email, scope) WHERE list_id IS NULL DO NOTHING;`,
-      { email: delivery.email, id: yield* ids.next, now },
-    );
+    yield* upsertAutomatedSuppression({
+      createdAt: now,
+      email: delivery.email,
+      id: yield* ids.next,
+      reason: "unsubscribe",
+      scope: "marketing",
+    });
 
     if (delivery.listId === null) return;
 

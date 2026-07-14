@@ -202,7 +202,11 @@ export function makeDeviceAuthorizationsService(input: {
           Effect.gen(function* () {
             const globalPending = yield* input.db.get<{ count: number }>(
               "deviceAuth:countPending",
-              "SELECT COUNT(*) AS count FROM device_authorizations WHERE expires_at > $now;",
+              `SELECT COUNT(*) AS count
+               FROM device_authorizations
+               WHERE expires_at > $now
+                 AND denied_at IS NULL
+                 AND consumed_at IS NULL;`,
               { now: nowIso },
             );
             if ((globalPending?.count ?? 0) >= globalPendingLimit) {
@@ -215,7 +219,10 @@ export function makeDeviceAuthorizationsService(input: {
               "deviceAuth:countPendingByFingerprint",
               `SELECT COUNT(*) AS count
                FROM device_authorizations
-               WHERE expires_at > $now AND requester_fingerprint_hash = $requesterFingerprintHash;`,
+               WHERE expires_at > $now
+                 AND denied_at IS NULL
+                 AND consumed_at IS NULL
+                 AND requester_fingerprint_hash = $requesterFingerprintHash;`,
               { now: nowIso, requesterFingerprintHash },
             );
             if ((fingerprintPending?.count ?? 0) >= fingerprintPendingLimit) {
@@ -253,56 +260,102 @@ export function makeDeviceAuthorizationsService(input: {
         };
       }),
     token: (deviceCode) =>
-      input.db.transaction(
-        Effect.gen(function* () {
-          const now = new Date().toISOString();
-          const row = yield* input.db.get<DeviceAuthorizationRow>(
-            "deviceAuth:findByDeviceCodeForToken",
-            `SELECT id, client_name, requested_permissions_json, approved_by_user_id, approved_at, denied_at, consumed_at, expires_at, poll_count, last_poll_at
-             FROM device_authorizations
-             WHERE device_code_hash = $deviceCodeHash;`,
-            { deviceCodeHash: hashDeviceAuthCode(deviceCode, input.hashSecret) },
-          );
-          if (!row) return { status: "invalid_grant" };
-          if (row.consumed_at || isExpired(row, now)) return { status: "expired_token" };
-          if (row.denied_at) return { status: "access_denied" };
+      Effect.gen(function* () {
+        const deviceCodeHash = hashDeviceAuthCode(deviceCode, input.hashSecret);
+        const preflightNow = new Date().toISOString();
+        const preflightRow = yield* findTokenRow(
+          input.db,
+          "deviceAuth:findByDeviceCodeForTokenPreflight",
+          deviceCodeHash,
+        );
+        const preflightDecision = classifyTokenRow(preflightRow, preflightNow);
+        if (preflightDecision.kind === "Outcome") return preflightDecision.outcome;
 
-          // Deliver an approved grant regardless of poll timing — the slow-down
-          // debounce only paces still-pending polling, and must not mask a key that
-          // is already available (which would strand a client that polled slightly
-          // too soon after approval).
-          if (!row.approved_at || !row.approved_by_user_id) {
-            const lastPollMs = row.last_poll_at ? Date.parse(row.last_poll_at) : 0;
-            const tooSoon =
-              lastPollMs > 0 && Date.parse(now) - lastPollMs < pollIntervalSeconds * 1000;
-            yield* input.db.run(
-              "deviceAuth:recordPoll",
-              `UPDATE device_authorizations SET poll_count = poll_count + 1, last_poll_at = $lastPollAt WHERE id = $id;`,
-              { id: row.id, lastPollAt: now },
+        // Only potentially mutating paths reserve the write connection. Re-read
+        // under BEGIN IMMEDIATE so concurrent polls/approval/denial are linearized
+        // before either recording a poll or creating and consuming an approved key.
+        return yield* input.db.transaction(
+          Effect.gen(function* () {
+            const now = new Date().toISOString();
+            const row = yield* findTokenRow(
+              input.db,
+              "deviceAuth:findByDeviceCodeForTokenMutation",
+              deviceCodeHash,
             );
-            return tooSoon
-              ? { intervalSeconds: pollIntervalSeconds + 5, status: "slow_down" }
-              : { intervalSeconds: pollIntervalSeconds, status: "authorization_pending" };
-          }
+            const decision = classifyTokenRow(row, now);
+            if (decision.kind === "Outcome") return decision.outcome;
 
-          const permissions = yield* parseStoredPermissions(row.requested_permissions_json);
-          const apiKey = yield* input.apiKeys.create({
-            actorPermissions: "owner",
-            expiresAt: new Date(Date.parse(now) + deviceApiKeyTtlMs).toISOString(),
-            name: `CLI: ${row.client_name}`,
-            permissions,
-            userId: row.approved_by_user_id,
-          });
-          yield* input.db.run(
-            "deviceAuth:consume",
-            `UPDATE device_authorizations SET consumed_at = $consumedAt WHERE id = $id;`,
-            { consumedAt: now, id: row.id },
-          );
+            if (!decision.row.approved_at || !decision.row.approved_by_user_id) {
+              yield* input.db.run(
+                "deviceAuth:recordPoll",
+                `UPDATE device_authorizations SET poll_count = poll_count + 1, last_poll_at = $lastPollAt WHERE id = $id;`,
+                { id: decision.row.id, lastPollAt: now },
+              );
+              return {
+                intervalSeconds: pollIntervalSeconds,
+                status: "authorization_pending",
+              } satisfies DeviceAuthorizationTokenResponse;
+            }
 
-          return { apiKey, status: "approved" };
-        }),
-      ),
+            const permissions = yield* parseStoredPermissions(
+              decision.row.requested_permissions_json,
+            );
+            const apiKey = yield* input.apiKeys.create({
+              actorPermissions: "owner",
+              expiresAt: new Date(Date.parse(now) + deviceApiKeyTtlMs).toISOString(),
+              name: `CLI: ${decision.row.client_name}`,
+              permissions,
+              userId: decision.row.approved_by_user_id,
+            });
+            yield* input.db.run(
+              "deviceAuth:consume",
+              `UPDATE device_authorizations SET consumed_at = $consumedAt WHERE id = $id;`,
+              { consumedAt: now, id: decision.row.id },
+            );
+
+            return { apiKey, status: "approved" } satisfies DeviceAuthorizationTokenResponse;
+          }),
+        );
+      }),
   };
+}
+
+function findTokenRow(
+  db: DatabaseService,
+  operation: string,
+  deviceCodeHash: string,
+): Effect.Effect<DeviceAuthorizationRow | null, DatabaseError> {
+  return db.get<DeviceAuthorizationRow>(
+    operation,
+    `SELECT id, client_name, requested_permissions_json, approved_by_user_id, approved_at, denied_at, consumed_at, expires_at, poll_count, last_poll_at
+     FROM device_authorizations
+     WHERE device_code_hash = $deviceCodeHash;`,
+    { deviceCodeHash },
+  );
+}
+
+type TokenRowDecision =
+  | { readonly kind: "Mutation"; readonly row: DeviceAuthorizationRow }
+  | { readonly kind: "Outcome"; readonly outcome: DeviceAuthorizationTokenResponse };
+
+function classifyTokenRow(row: DeviceAuthorizationRow | null, now: string): TokenRowDecision {
+  if (!row) return { kind: "Outcome", outcome: { status: "invalid_grant" } };
+  if (row.consumed_at || isExpired(row, now)) {
+    return { kind: "Outcome", outcome: { status: "expired_token" } };
+  }
+  if (row.denied_at) return { kind: "Outcome", outcome: { status: "access_denied" } };
+
+  // Approval always proceeds to the transactional re-read, regardless of prior
+  // poll timing. Only a still-pending early poll is completed by this preflight.
+  if (row.approved_at && row.approved_by_user_id) return { kind: "Mutation", row };
+  const lastPollMs = row.last_poll_at ? Date.parse(row.last_poll_at) : 0;
+  const tooSoon = lastPollMs > 0 && Date.parse(now) - lastPollMs < pollIntervalSeconds * 1_000;
+  return tooSoon
+    ? {
+        kind: "Outcome",
+        outcome: { intervalSeconds: pollIntervalSeconds + 5, status: "slow_down" },
+      }
+    : { kind: "Mutation", row };
 }
 
 type DeviceAuthorizationRow = {

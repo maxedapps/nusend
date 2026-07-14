@@ -305,6 +305,10 @@ export const sesOperationsConfig: Effect.Effect<ParsedSesOperationsConfig, Confi
       yield* trimmedOption("NUSEND_PUBLIC_BASE_URL"),
       issues,
     );
+    const trackingEvents = parseTrackingEvents(
+      Option.getOrElse(yield* trimmedOption("NUSEND_SES_TRACKING_EVENTS"), () => ""),
+      issues,
+    );
 
     return {
       awsRegion: yield* trimmedOption("AWS_REGION"),
@@ -319,9 +323,7 @@ export const sesOperationsConfig: Effect.Effect<ParsedSesOperationsConfig, Confi
       trackingCustomRedirectDomain: yield* trimmedOption(
         "NUSEND_SES_TRACKING_CUSTOM_REDIRECT_DOMAIN",
       ),
-      trackingEvents: parseTrackingEvents(
-        Option.getOrElse(yield* trimmedOption("NUSEND_SES_TRACKING_EVENTS"), () => ""),
-      ),
+      trackingEvents,
       transactionalConfigurationSet: yield* trimmedOption(
         "NUSEND_SES_TRANSACTIONAL_CONFIGURATION_SET",
       ),
@@ -343,10 +345,22 @@ function uniqueCsv(value: string): string[] {
   ];
 }
 
-function parseTrackingEvents(value: string): ("click" | "open")[] {
-  return uniqueCsv(value).filter(
+function parseTrackingEvents(
+  value: string,
+  issues: SesOperationsConfigIssue[],
+): ("click" | "open")[] {
+  const configured = uniqueCsv(value);
+  const valid = configured.filter(
     (item): item is "click" | "open" => item === "click" || item === "open",
   );
+  const unsupported = configured.filter((item) => item !== "click" && item !== "open");
+  if (unsupported.length > 0) {
+    issues.push({
+      id: "config.tracking_events",
+      message: `NUSEND_SES_TRACKING_EVENTS contains unsupported values: ${unsupported.join(", ")}. Use only open and click.`,
+    });
+  }
+  return valid;
 }
 
 function parseOperationsInteger(

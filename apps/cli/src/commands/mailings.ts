@@ -14,8 +14,10 @@ export async function runMailingsCommand(args: string[], context: CommandContext
       else {
         for (const mailing of result.items) {
           const total = Object.values(mailing.counts).reduce((sum, count) => sum + count, 0);
+          const ambiguity =
+            mailing.counts.ambiguous > 0 ? `\tambiguous=${mailing.counts.ambiguous}` : "";
           console.log(
-            `${mailing.id}\t${mailing.state}\t${mailing.purpose}\t${mailing.subject}\t${mailing.counts.sent}/${total}`,
+            `${mailing.id}\t${mailing.state}\t${mailing.purpose}\t${mailing.subject}\t${mailing.counts.sent}/${total}${ambiguity}`,
           );
         }
       }
@@ -34,6 +36,9 @@ export async function runMailingsCommand(args: string[], context: CommandContext
         console.log(`purpose: ${mailing.purpose}`);
         console.log(`subject: ${mailing.subject}`);
         console.log(`deliveries: ${mailing.counts.sent}/${total} sent`);
+        if (mailing.counts.ambiguous > 0) {
+          console.log(`ambiguous=${mailing.counts.ambiguous}`);
+        }
       }
       return;
     }

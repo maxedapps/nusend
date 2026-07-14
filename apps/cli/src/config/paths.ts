@@ -21,3 +21,11 @@ export function configPath(env: PathEnvironment = process.env): string {
 export function credentialsPath(env: PathEnvironment = process.env): string {
   return join(configDirectory(env), "credentials.json");
 }
+
+export function localStateLockPath(env: PathEnvironment = process.env): string {
+  return join(configDirectory(env), "local-state.lock");
+}
+
+export function localStateReaperMutexPath(env: PathEnvironment = process.env): string {
+  return join(configDirectory(env), "local-state-reaper");
+}

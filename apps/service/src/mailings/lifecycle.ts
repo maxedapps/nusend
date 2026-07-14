@@ -4,7 +4,7 @@ import type { DatabaseError } from "../errors.ts";
 import { currentIso } from "../lib/iso-time.ts";
 import { Database, type DatabaseService } from "../services/database.ts";
 
-export const terminalDeliveryStatuses = ["sent", "failed", "suppressed"] as const;
+export const terminalDeliveryStatuses = ["sent", "failed", "suppressed", "ambiguous"] as const;
 
 // `completed` means all send processing for the mailing is terminal. It does
 // not mean recipient inbox delivery has been confirmed by SES events.
@@ -47,7 +47,7 @@ export function refreshMailingStateForDelivery(
       "mailings:lifecycle:state-counts",
       `SELECT
          count(*) AS total,
-         sum(CASE WHEN d.status IN ('sent', 'failed', 'suppressed') THEN 1 ELSE 0 END) AS terminal,
+         sum(CASE WHEN d.status IN ('sent', 'failed', 'suppressed', 'ambiguous') THEN 1 ELSE 0 END) AS terminal,
          count(sa.id) AS attempts
        FROM deliveries d
        LEFT JOIN send_attempts sa ON sa.delivery_id = d.id

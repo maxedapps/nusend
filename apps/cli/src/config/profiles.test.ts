@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { configPath } from "./paths.js";
-import { loadConfig, normalizeBaseUrl, saveConfig } from "./profiles.js";
+import { loadConfig, normalizeBaseUrl, updateConfig } from "./profiles.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -22,7 +22,7 @@ describe("CLI profiles", () => {
       profiles: { production: { baseUrl: "https://mail.example.com" } },
     };
 
-    await saveConfig(config, env);
+    await updateConfig(() => config, env);
 
     await expect(loadConfig(env)).resolves.toEqual(config);
   });

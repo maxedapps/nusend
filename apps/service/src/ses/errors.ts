@@ -8,6 +8,12 @@ export class SesOperationsMalformedError extends Data.TaggedError("SesOperations
   readonly reason: string;
 }> {}
 
+export class SesOperationsRetryablePayloadError extends Data.TaggedError(
+  "SesOperationsRetryablePayloadError",
+)<{
+  readonly reason: string;
+}> {}
+
 export class SesOperationsForbiddenError extends Data.TaggedError("SesOperationsForbiddenError")<{
   readonly reason: string;
 }> {}
@@ -24,6 +30,7 @@ export class SnsConfirmationError extends Data.TaggedError("SnsConfirmationError
 export type SesWebhookError =
   | SesOperationsDisabledError
   | SesOperationsMalformedError
+  | SesOperationsRetryablePayloadError
   | SesOperationsForbiddenError
   | SnsVerificationError
   | SnsConfirmationError;

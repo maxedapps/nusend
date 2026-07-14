@@ -13,6 +13,7 @@ import {
   type SendResult,
 } from "../services/email-transport.ts";
 import { fakeEmailTransportLayer, fakeSendingConfigLayer } from "../testing/email-transport.ts";
+import { recordSendSuccess } from "../sending/attempts.ts";
 import { runTest, type CapturedLog, type TestServices } from "../testing/layers.ts";
 import { seedJob } from "../testing/queue-fixtures.ts";
 import { runSendWorkerOnce, type SendWorkerOnceResult } from "./runner.ts";
@@ -210,7 +211,7 @@ describe("send queue runner", () => {
 
     expect(outcome.firstResult).toMatchObject({ claimed: 1, dead: 1 });
     expect(outcome.job).toEqual({ state: "dead" });
-    expect(outcome.delivery).toMatchObject({ status: "failed" });
+    expect(outcome.delivery).toMatchObject({ status: "ambiguous" });
     expect(outcome.attempt).toMatchObject({ finished: 1, status: "ambiguous" });
     expect(outcome.mailing).toEqual({ state: "completed" });
     expect(outcome.secondResult).toMatchObject({ claimed: 0, dead: 0, failed: 0, succeeded: 0 });
@@ -305,7 +306,7 @@ describe("send queue runner", () => {
     expect(outcome.job).toEqual({ state: "dead" });
     expect(outcome.delivery).toEqual({
       lastError: "Expired send-delivery job reached max attempts.",
-      status: "failed",
+      status: "ambiguous",
     });
     expect(outcome.attempt).toEqual({
       errorMessage: "Expired send-delivery job reached max attempts.",
@@ -367,7 +368,45 @@ describe("send queue runner", () => {
 
     // The started attempt must be finalized to ambiguous, not left dangling.
     expect(outcome.attempt).toEqual({ status: "ambiguous" });
-    expect(outcome.delivery).toEqual({ status: "failed" });
+    expect(outcome.delivery).toEqual({ status: "ambiguous" });
+  });
+
+  it("keeps dead queue history after late proof promotes an ambiguous delivery", async () => {
+    const outcome = await runSendScenario(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(fixedTime);
+        yield* seedJob({ id: "dead_late", state: "dead" });
+        const db = yield* Database;
+        yield* db.run(
+          "seed:sending-delivery",
+          "UPDATE deliveries SET status = 'sending' WHERE id = 'delivery_dead_late';",
+        );
+        yield* db.run(
+          "seed:started-attempt",
+          `INSERT INTO send_attempts (id, delivery_id, job_id, attempt_no, status, started_at)
+           VALUES ('attempt_1', 'delivery_dead_late', 'dead_late', 1, 'started', '2026-07-03T11:58:00.000Z');`,
+        );
+
+        yield* runSendWorkerOnce({ workerId: "worker_1" });
+        const writeResult = yield* recordSendSuccess({
+          attemptId: "attempt_1",
+          deliveryId: "delivery_dead_late",
+          messageId: "late-proof",
+        });
+
+        return {
+          attempt: yield* db.get("assert:attempt", "SELECT status FROM send_attempts;"),
+          delivery: yield* db.get("assert:delivery", "SELECT status FROM deliveries;"),
+          job: yield* db.get("assert:job", "SELECT state FROM jobs;"),
+          writeResult,
+        };
+      }),
+    );
+
+    expect(outcome.writeResult).toBe("Reconciled");
+    expect(outcome.attempt).toEqual({ status: "succeeded" });
+    expect(outcome.delivery).toEqual({ status: "sent" });
+    expect(outcome.job).toEqual({ state: "dead" });
   });
 
   it("repairs a mailing stuck sending though all deliveries are terminal", async () => {

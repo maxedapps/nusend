@@ -1,6 +1,6 @@
 # Operations
 
-Operational HTTP routes are designed for inspection, not risky remote control. CLI wrappers are planned for a follow-up.
+Operational HTTP routes are for inspection, not remote mutation. CLI wrappers are planned for a follow-up.
 
 Useful service routes:
 
@@ -13,4 +13,6 @@ Useful service routes:
 - `GET /api/operations/ses/events`
 - `GET /api/operations/ses/simulator-runs`
 
-Use API keys with least privilege, typically `operations:read` for inspection. Do not log raw API keys, device codes, user codes, cookies, unsubscribe tokens, recipient vars, mailing HTML, or raw SES/SNS payloads.
+`ambiguous` is an explicit terminal delivery outcome: provider acceptance is unknown, automatic retry is forbidden, and the mailing may still be `completed`. Summary/recent-issue views include ambiguous deliveries even when no error string exists. Use `GET /api/operations/deliveries?issue=failed_or_ambiguous` and delivery detail to inspect the delivery, job, and exact attempt. A late exact-attempt MessageId may make the delivery sent while its dead job remains dead as incident history. No reconciliation/retry API exists.
+
+Use least-privilege API keys, typically `operations:read`. Do not log raw API keys, device/user codes, cookies, unsubscribe tokens, recipient vars, mailing HTML, or raw SES/SNS payloads.

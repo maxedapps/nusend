@@ -1,6 +1,6 @@
 import { Effect, Schema } from "effect";
 
-import { SesOperationsMalformedError } from "./errors.ts";
+import { SesOperationsMalformedError, SesOperationsRetryablePayloadError } from "./errors.ts";
 
 const SesRecipient = Schema.Struct({
   action: Schema.optional(Schema.String),
@@ -107,11 +107,33 @@ export function normalizeSesEventType(value: string): SesEventType {
 
 export function decodeSesEvent(
   message: string,
-): Effect.Effect<SesEvent, SesOperationsMalformedError> {
+): Effect.Effect<SesEvent, SesOperationsMalformedError | SesOperationsRetryablePayloadError> {
   return Schema.decodeUnknownEffect(SesEventSchema)(message, { errors: "all" }).pipe(
-    Effect.map((event) => ({ ...event, eventType: normalizeSesEventType(event.eventType) })),
     Effect.mapError(
       () => new SesOperationsMalformedError({ reason: "SES event has an invalid shape." }),
     ),
+    Effect.flatMap(validateReputationEventBody),
+    Effect.map((event) => ({ ...event, eventType: normalizeSesEventType(event.eventType) })),
   );
+}
+
+function validateReputationEventBody(
+  event: typeof SesEventSchema.Type,
+): Effect.Effect<typeof SesEventSchema.Type, SesOperationsRetryablePayloadError> {
+  const mismatched =
+    (event.eventType === "Bounce" &&
+      (event.bounce === undefined ||
+        event.bounce.bouncedRecipients.length === 0 ||
+        event.complaint !== undefined)) ||
+    (event.eventType === "Complaint" &&
+      (event.complaint === undefined ||
+        event.complaint.complainedRecipients.length === 0 ||
+        event.bounce !== undefined));
+  return mismatched
+    ? Effect.fail(
+        new SesOperationsRetryablePayloadError({
+          reason: "SES reputation event does not contain its declared event body.",
+        }),
+      )
+    : Effect.succeed(event);
 }

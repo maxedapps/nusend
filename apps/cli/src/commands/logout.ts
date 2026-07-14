@@ -1,3 +1,4 @@
+import type { StoredCredential } from "../credentials/store.js";
 import { printJson } from "../output/format.js";
 import { selectedProfile, type CommandContext } from "./context.js";
 
@@ -5,6 +6,10 @@ export async function runLogoutCommand(
   args: string[],
   context: CommandContext,
   revokeSetupError?: unknown,
+  localSnapshot?: {
+    readonly credential: StoredCredential | null;
+    readonly storedCredentialKept: boolean;
+  },
 ): Promise<void> {
   const profile = selectedProfile(context);
   if (context.env.NUSEND_API_KEY) {
@@ -17,7 +22,8 @@ export async function runLogoutCommand(
         console.error(`Warning: ${message}`);
       }
     }
-    const storedCredentialKept = await context.store.hasStored(profile);
+    const storedCredentialKept =
+      localSnapshot?.storedCredentialKept ?? (await context.store.hasStored(profile));
     if (context.options.json) {
       printJson({
         loggedOut: false,
@@ -34,10 +40,17 @@ export async function runLogoutCommand(
     return;
   }
 
-  const credential = await context.store.read(profile);
+  const credential = localSnapshot ? localSnapshot.credential : await context.store.read(profile);
   if (!credential) {
-    if (context.options.json) printJson({ loggedOut: false, profile, reason: "not_logged_in" });
-    else console.log(`No credential stored for profile ${profile}.`);
+    const removedConcurrentCredential = await context.store.delete(profile);
+    if (removedConcurrentCredential) {
+      if (context.options.json) printJson({ loggedOut: true, profile });
+      else console.log(`Logged out profile ${profile}.`);
+    } else if (context.options.json) {
+      printJson({ loggedOut: false, profile, reason: "not_logged_in" });
+    } else {
+      console.log(`No credential stored for profile ${profile}.`);
+    }
     return;
   }
 

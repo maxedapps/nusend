@@ -38,6 +38,7 @@ import type {
   SesOperationsDisabledError,
   SesOperationsForbiddenError,
   SesOperationsMalformedError,
+  SesOperationsRetryablePayloadError,
   SnsConfirmationError,
   SnsVerificationError,
 } from "../ses/errors.ts";
@@ -79,6 +80,7 @@ export type WebhookRouteError =
   | SesOperationsDisabledError
   | SesOperationsForbiddenError
   | SesOperationsMalformedError
+  | SesOperationsRetryablePayloadError
   | SnsConfirmationError
   | SnsVerificationError;
 
@@ -133,6 +135,7 @@ export async function runWebhookRoute<A>(
       SesOperationsDisabledError: () => Effect.succeed(new Response(null, { status: 404 })),
       SesOperationsForbiddenError: () => Effect.succeed(new Response(null, { status: 403 })),
       SesOperationsMalformedError: () => Effect.succeed(new Response(null, { status: 400 })),
+      SesOperationsRetryablePayloadError: () => Effect.succeed(new Response(null, { status: 503 })),
       SnsConfirmationError: (error) => emptyInternalError(context, error),
       SnsVerificationError: () => Effect.succeed(new Response(null, { status: 403 })),
     }),

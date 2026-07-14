@@ -56,6 +56,25 @@ describe("runSesReadinessChecks", () => {
     });
   });
 
+  it("surfaces all-invalid tracking input as an actionable readiness error", async () => {
+    const message =
+      "NUSEND_SES_TRACKING_EVENTS contains unsupported values: delivery, rendering. Use only open and click.";
+    const result = await runTest(runSesReadinessChecks({ includeAws: false }), {
+      sesOperations: fakeSesOperationsConfig({
+        configIssues: [{ id: "config.tracking_events", message }],
+        trackingEvents: [],
+      }),
+    });
+
+    expect(result.status).toBe("error");
+    expect(result.checks.find((check) => check.id === "config.tracking_events")).toMatchObject({
+      action: "Fix the invalid environment variable value and restart Nusend.",
+      message,
+      status: "error",
+    });
+    expect(result.checks.some((check) => check.id === "config.tracking")).toBe(false);
+  });
+
   it("does not emit duplicate check ids when a config issue shadows a local check", async () => {
     const result = await runTest(runSesReadinessChecks({ includeAws: false }), {
       sesOperations: fakeSesOperationsConfig({
@@ -98,6 +117,69 @@ describe("runSesReadinessChecks", () => {
     expect(result.checks.find((check) => check.id === "sns.topic.signature_version")?.status).toBe(
       "ok",
     );
+  });
+
+  it("accepts base SES events when optional tracking is not configured", async () => {
+    const result = await runTest(runSesReadinessChecks(), {
+      sesAdmin: sesAdminWithEvents({ marketing: baseEvents, transactional: baseEvents }),
+      snsAdmin: okSnsAdmin(),
+    });
+
+    expect(
+      result.checks.find((check) => check.id === "ses.config_set.marketing.events"),
+    ).toMatchObject({ status: "ok" });
+    expect(
+      result.checks.find((check) => check.id === "ses.config_set.transactional.events"),
+    ).toMatchObject({ status: "ok" });
+  });
+
+  it("requires only OPEN when marketing open tracking is configured", async () => {
+    const result = await runTest(runSesReadinessChecks(), {
+      sesAdmin: sesAdminWithEvents({ marketing: baseEvents, transactional: baseEvents }),
+      sesOperations: fakeSesOperationsConfig({ trackingEvents: ["open"] }),
+      snsAdmin: okSnsAdmin(),
+    });
+
+    expect(
+      result.checks.find((check) => check.id === "ses.config_set.marketing.events"),
+    ).toMatchObject({
+      details: { missing: ["OPEN"] },
+      message: "Missing configured SES event publishing for: OPEN.",
+      status: "warning",
+    });
+  });
+
+  it("accepts configured CLICK when the marketing destination publishes click events", async () => {
+    const result = await runTest(runSesReadinessChecks(), {
+      sesAdmin: sesAdminWithEvents({
+        marketing: [...baseEvents, "CLICK"],
+        transactional: baseEvents,
+      }),
+      sesOperations: fakeSesOperationsConfig({ trackingEvents: ["click"] }),
+      snsAdmin: okSnsAdmin(),
+    });
+
+    expect(
+      result.checks.find((check) => check.id === "ses.config_set.marketing.events"),
+    ).toMatchObject({ status: "ok" });
+  });
+
+  it("does not apply configured marketing tracking requirements to transactional readiness", async () => {
+    const result = await runTest(runSesReadinessChecks(), {
+      sesAdmin: sesAdminWithEvents({
+        marketing: [...baseEvents, "OPEN"],
+        transactional: baseEvents,
+      }),
+      sesOperations: fakeSesOperationsConfig({ trackingEvents: ["open"] }),
+      snsAdmin: okSnsAdmin(),
+    });
+
+    expect(
+      result.checks.find((check) => check.id === "ses.config_set.marketing.events"),
+    ).toMatchObject({ status: "ok" });
+    expect(
+      result.checks.find((check) => check.id === "ses.config_set.transactional.events"),
+    ).toMatchObject({ status: "ok" });
   });
 
   it("warns when configured tracking domain does not match SES configuration set", async () => {
@@ -155,6 +237,26 @@ describe("runSesReadinessChecks", () => {
     );
   });
 });
+
+const baseEvents = ["BOUNCE", "COMPLAINT", "REJECT", "DELIVERY_DELAY"] as const;
+
+function sesAdminWithEvents(events: {
+  readonly marketing: readonly string[];
+  readonly transactional: readonly string[];
+}): SesAdminService {
+  return {
+    ...okSesAdmin(),
+    getConfigurationSetEventDestinations: (name) =>
+      Effect.succeed([
+        {
+          enabled: true,
+          eventTypes: name === "marketing-set" ? events.marketing : events.transactional,
+          matchingTopicArn: "arn:aws:sns:us-east-1:123456789012:nusend-test",
+          name: "sns",
+        },
+      ]),
+  };
+}
 
 function okSesAdmin(): SesAdminService {
   return {

@@ -23,8 +23,6 @@ import {
   type DeviceAuthorizationStartResponse,
   type DeviceAuthorizationTokenResponse,
   type ListApiKeysResponse,
-  type MailingDetailResponse,
-  type MailingsListResponse,
   type MeResponse,
   type RotateApiKeyResponse,
 } from "@nusend/api-contract";
@@ -130,14 +128,14 @@ export class NusendApi {
   }
 
   listMailings(query: { readonly limit?: string; readonly offset?: string }) {
-    return this.http.request<MailingsListResponse>({
+    return this.http.request({
       path: withQuery(routes.mailings.list, query),
       schema: MailingsListResponseSchema,
     });
   }
 
   getMailing(id: string) {
-    return this.http.request<MailingDetailResponse>({
+    return this.http.request({
       path: routes.mailings.byId(id),
       schema: MailingDetailResponseSchema,
     });

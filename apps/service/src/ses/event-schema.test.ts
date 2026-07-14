@@ -42,4 +42,56 @@ describe("decodeSesEvent", () => {
 
     expect(event.eventType).toBe("Unknown");
   });
+
+  it.each([
+    ["Bounce without bounce", { eventType: "Bounce" }],
+    ["Bounce with complaint", { complaint: complaintBlock(), eventType: "Bounce" }],
+    ["Bounce with no bounced recipients", { bounce: bounceBlock([]), eventType: "Bounce" }],
+    ["Complaint without complaint", { eventType: "Complaint" }],
+    ["Complaint with bounce", { bounce: bounceBlock(), eventType: "Complaint" }],
+    [
+      "Complaint with no complained recipients",
+      { complaint: complaintBlock([]), eventType: "Complaint" },
+    ],
+  ])("rejects %s as a retryable reputation payload error", async (_label, event) => {
+    const failure = await Effect.runPromise(
+      decodeSesEvent(JSON.stringify({ ...event, mail: mailBlock() })).pipe(
+        Effect.match({ onFailure: (error) => error, onSuccess: () => null }),
+      ),
+    );
+
+    expect(failure).toMatchObject({ _tag: "SesOperationsRetryablePayloadError" });
+    expect(failure).not.toMatchObject({ _tag: "SesOperationsMalformedError" });
+  });
+
+  it("keeps structurally malformed SES JSON distinct from retryable reputation mismatches", async () => {
+    const failure = await Effect.runPromise(
+      decodeSesEvent("{}").pipe(
+        Effect.match({ onFailure: (error) => error, onSuccess: () => null }),
+      ),
+    );
+
+    expect(failure).toMatchObject({ _tag: "SesOperationsMalformedError" });
+    expect(failure).not.toMatchObject({ _tag: "SesOperationsRetryablePayloadError" });
+  });
 });
+
+function mailBlock() {
+  return { destination: ["user@example.com"], messageId: "ses_1" };
+}
+
+function bounceBlock(
+  bouncedRecipients: readonly { readonly emailAddress: string }[] = [
+    { emailAddress: "user@example.com" },
+  ],
+) {
+  return { bounceType: "Permanent", bouncedRecipients };
+}
+
+function complaintBlock(
+  complainedRecipients: readonly { readonly emailAddress: string }[] = [
+    { emailAddress: "user@example.com" },
+  ],
+) {
+  return { complainedRecipients };
+}

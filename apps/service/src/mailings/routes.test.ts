@@ -529,7 +529,14 @@ describe("mailings read routes", () => {
         expect(listBody).toMatchObject({
           items: [
             {
-              counts: { failed: 1, queued: 1, sending: 1, sent: 2, suppressed: 1 },
+              counts: {
+                ambiguous: 1,
+                failed: 1,
+                queued: 1,
+                sending: 1,
+                sent: 2,
+                suppressed: 1,
+              },
               id: "mailing_1",
               subject: "Newest",
             },
@@ -558,7 +565,14 @@ describe("mailings read routes", () => {
         ).not.toThrow();
         expect(detailBody).toMatchObject({
           mailing: {
-            counts: { failed: 1, queued: 1, sending: 1, sent: 2, suppressed: 1 },
+            counts: {
+              ambiguous: 1,
+              failed: 1,
+              queued: 1,
+              sending: 1,
+              sent: 2,
+              suppressed: 1,
+            },
             html: "<p>private body</p>",
             id: "mailing_1",
             text: "plain private body",
@@ -595,7 +609,7 @@ async function seedMailingsReadScenario(runtime: TestRuntime): Promise<void> {
          VALUES ('mailing_2', 'marketing', 'scheduled', NULL, 'Older', '<p>older</p>', NULL, NULL, '2026-07-10T12:00:00.000Z', '2026-07-08T12:00:00.000Z', '2026-07-08T12:00:00.000Z');`,
       );
 
-      const statuses = ["queued", "sending", "sent", "sent", "failed", "suppressed"];
+      const statuses = ["queued", "sending", "sent", "sent", "failed", "suppressed", "ambiguous"];
       yield* Effect.forEach(statuses, (status, index) =>
         db.run(
           `mailingsReadTest:delivery:${index}`,

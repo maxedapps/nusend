@@ -66,7 +66,7 @@ export type RunSesSimulatorResult = {
   readonly mailingId: string | null;
   readonly recipientEmail: string;
   readonly runId: string;
-  readonly status: "failed" | "sent" | "timed_out" | "validated";
+  readonly status: "ambiguous" | "failed" | "sent" | "timed_out" | "validated";
 };
 
 export function runSesSimulator(
@@ -146,9 +146,13 @@ function runSimulatorBody(input: {
     while ((yield* currentIso) < deadline) {
       yield* runSendWorkerOnce({ batchSize: 1, mode: "once", workerId: input.options.workerId });
       const delivery = deliveryId ? yield* loadDeliveryStatus(deliveryId) : null;
-      if (delivery?.status === "sent" || delivery?.status === "failed") {
+      if (
+        delivery?.status === "sent" ||
+        delivery?.status === "failed" ||
+        delivery?.status === "ambiguous"
+      ) {
         if (input.options.mode === "send_acceptance") {
-          const status = delivery.status === "sent" ? "sent" : "failed";
+          const status = delivery.status;
           yield* finishSimulatorRun(input.runId, status, delivery.lastError);
           return {
             deliveryId,
@@ -260,7 +264,7 @@ function updateSimulatorRun(
 
 function finishSimulatorRun(
   runId: string,
-  status: "failed" | "sent" | "timed_out" | "validated",
+  status: "ambiguous" | "failed" | "sent" | "timed_out" | "validated",
   errorMessage: string | null,
 ): Effect.Effect<void, DatabaseError, DatabaseService> {
   return Effect.gen(function* () {

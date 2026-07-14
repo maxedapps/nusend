@@ -1,10 +1,15 @@
 import { Effect, Redacted } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { Database } from "../services/database.ts";
-import { makeAttemptLimiter } from "./attempt-limiter.ts";
-import { createDeviceAuthorizationRoutes } from "./routes.ts";
-import { DeviceAuthorizations } from "./service.ts";
+import { ApiKeys } from "../api-keys/service.ts";
+import { Database, type DatabaseService } from "../services/database.ts";
+import { IdGenerator } from "../services/ids.ts";
+import { makeAttemptLimiter, type AttemptLimiter } from "./attempt-limiter.ts";
+import {
+  createDeviceAuthorizationRoutes,
+  makeDefaultDeviceAuthorizationRouteLimiters,
+} from "./routes.ts";
+import { DeviceAuthorizations, makeDeviceAuthorizationsService } from "./service.ts";
 import { hashDeviceAuthCode, normalizeUserCode } from "./token.ts";
 import { makeTestRuntime, withTestApp, type TestRuntime } from "../testing/layers.ts";
 
@@ -60,6 +65,9 @@ describe("device authorization routes", () => {
           intervalSeconds: 5,
           status: "authorization_pending",
         });
+        const firstPoll = await readPollState(runtime, start.userCode);
+        expect(firstPoll.pollCount).toBe(1);
+        expect(firstPoll.lastPollAt).not.toBeNull();
 
         const slowDownResponse = await app.fetch(
           jsonRequest("http://localhost/api/device-authorizations/token", {
@@ -71,12 +79,27 @@ describe("device authorization routes", () => {
           intervalSeconds: 10,
           status: "slow_down",
         });
+        expect(await readPollState(runtime, start.userCode)).toEqual(firstPoll);
+
+        await ageLastPoll(runtime);
+        const agedPoll = await readPollState(runtime, start.userCode);
+        const laterPendingResponse = await app.fetch(
+          jsonRequest("http://localhost/api/device-authorizations/token", {
+            deviceCode: start.deviceCode,
+          }),
+        );
+        await expect(laterPendingResponse.json()).resolves.toEqual({
+          intervalSeconds: 5,
+          status: "authorization_pending",
+        });
+        const laterPoll = await readPollState(runtime, start.userCode);
+        expect(laterPoll.pollCount).toBe(agedPoll.pollCount + 1);
+        expect(laterPoll.lastPollAt).not.toBe(agedPoll.lastPollAt);
 
         await approve(runtime, start.userCode, "user_1");
         await expect(approve(runtime, start.userCode, "user_2")).rejects.toThrow();
         expect(await readApprovedUser(runtime)).toBe("user_1");
         await expect(deny(runtime, start.userCode)).rejects.toThrow();
-        await ageLastPoll(runtime);
 
         const approvedResponse = await app.fetch(
           jsonRequest("http://localhost/api/device-authorizations/token", {
@@ -104,6 +127,97 @@ describe("device authorization routes", () => {
         );
         expect(secondResponse.status).toBe(200);
         await expect(secondResponse.json()).resolves.toEqual({ status: "expired_token" });
+      },
+    );
+  });
+
+  it("keeps early slow_down outside a write transaction", async () => {
+    const runtime = makeTestRuntime({
+      ids: ["device_1"],
+      realApiKeys: true,
+      realDeviceAuthorizations: true,
+    });
+    try {
+      const [db, apiKeys, ids] = await runtime.runPromise(
+        Effect.all([Database, ApiKeys, IdGenerator] as const),
+      );
+      let transactionCalls = 0;
+      const instrumentedDb: DatabaseService = {
+        ...db,
+        transaction: (work) => {
+          transactionCalls += 1;
+          return db.transaction(work);
+        },
+      };
+      const deviceAuthorizations = makeDeviceAuthorizationsService({
+        apiKeys,
+        db: instrumentedDb,
+        hashSecret: testDeviceAuthSecret,
+        ids,
+      });
+      const started = await runtime.runPromise(
+        deviceAuthorizations.start({
+          baseUrl: "http://localhost",
+          clientName: "instrumented",
+          permissions: { contacts: ["read"] },
+          requesterFingerprint: "198.51.100.10",
+        }),
+      );
+
+      transactionCalls = 0;
+      await expect(
+        runtime.runPromise(deviceAuthorizations.token(started.deviceCode)),
+      ).resolves.toEqual({
+        intervalSeconds: 5,
+        status: "authorization_pending",
+      });
+      expect(transactionCalls).toBe(1);
+
+      transactionCalls = 0;
+      await expect(
+        runtime.runPromise(deviceAuthorizations.token(started.deviceCode)),
+      ).resolves.toEqual({
+        intervalSeconds: 10,
+        status: "slow_down",
+      });
+      expect(transactionCalls).toBe(0);
+    } finally {
+      await runtime.dispose();
+    }
+  });
+
+  it("consumes an approved grant exactly once across concurrent token polls", async () => {
+    await withTestApp(
+      {
+        ids: ["device_1", "key_1", "key_2"],
+        realApiKeys: true,
+        realDeviceAuthorizations: true,
+      },
+      async (app, runtime) => {
+        await seedUser(runtime);
+        const started = await startDevice(app, "concurrent-consumption");
+        await approve(runtime, started.userCode, "user_1");
+
+        const responses = await Promise.all([
+          app.fetch(
+            jsonRequest("http://localhost/api/device-authorizations/token", {
+              deviceCode: started.deviceCode,
+            }),
+          ),
+          app.fetch(
+            jsonRequest("http://localhost/api/device-authorizations/token", {
+              deviceCode: started.deviceCode,
+            }),
+          ),
+        ]);
+        const outcomes = await Promise.all(
+          responses.map((response) => response.json() as Promise<{ status: string }>),
+        );
+        expect(outcomes.map((outcome) => outcome.status).sort()).toEqual([
+          "approved",
+          "expired_token",
+        ]);
+        expect(await countApiKeys(runtime)).toBe(1);
       },
     );
   });
@@ -241,6 +355,76 @@ describe("device authorization routes", () => {
     );
   });
 
+  it("counts only active, unconsumed, undenied rows at the fingerprint ceiling", async () => {
+    await withTestApp(
+      {
+        realApiKeys: true,
+        realDeviceAuthorizations: true,
+      },
+      async (app, runtime) => {
+        await seedUser(runtime);
+        await insertPendingAuthorizations(runtime, {
+          count: 5,
+          fingerprintFor: () => "198.51.100.40",
+          prefix: "fingerprint",
+        });
+        await setAuthorizationState(runtime, "fingerprint_0", "approved");
+
+        const request = (clientName: string) =>
+          app.fetch(
+            jsonRequest(
+              "http://localhost/api/device-authorizations",
+              { clientName, permissions: { contacts: ["read"] } },
+              "untrusted, 198.51.100.40",
+            ),
+          );
+
+        expect((await request("approved-still-counts")).status).toBe(429);
+        await setAuthorizationState(runtime, "fingerprint_1", "denied");
+        expect((await request("denied-frees-slot")).status).toBe(201);
+        await setAuthorizationState(runtime, "fingerprint_2", "consumed");
+        expect((await request("consumed-frees-slot")).status).toBe(201);
+        await setAuthorizationState(runtime, "fingerprint_3", "expired");
+        expect((await request("expired-frees-slot")).status).toBe(201);
+      },
+    );
+  });
+
+  it("counts only active, unconsumed, undenied rows at the global ceiling", async () => {
+    await withTestApp(
+      {
+        realApiKeys: true,
+        realDeviceAuthorizations: true,
+      },
+      async (app, runtime) => {
+        await seedUser(runtime);
+        await insertPendingAuthorizations(runtime, {
+          count: 30,
+          fingerprintFor: (index) => `198.51.100.${index + 1}`,
+          prefix: "global",
+        });
+        await setAuthorizationState(runtime, "global_0", "approved");
+
+        const request = (clientName: string, address: string) =>
+          app.fetch(
+            jsonRequest(
+              "http://localhost/api/device-authorizations",
+              { clientName, permissions: { contacts: ["read"] } },
+              address,
+            ),
+          );
+
+        expect((await request("approved-still-counts", "203.0.113.1")).status).toBe(429);
+        await setAuthorizationState(runtime, "global_1", "denied");
+        expect((await request("denied-frees-slot", "203.0.113.2")).status).toBe(201);
+        await setAuthorizationState(runtime, "global_2", "consumed");
+        expect((await request("consumed-frees-slot", "203.0.113.3")).status).toBe(201);
+        await setAuthorizationState(runtime, "global_3", "expired");
+        expect((await request("expired-frees-slot", "203.0.113.4")).status).toBe(201);
+      },
+    );
+  });
+
   it("stores only a masked user-code preview", async () => {
     await withTestApp(
       { ids: ["device_1"], realApiKeys: true, realDeviceAuthorizations: true },
@@ -287,6 +471,58 @@ describe("device authorization routes", () => {
     );
   });
 
+  it("pins the exact production start and token rate boundaries", () => {
+    const limiters = makeDefaultDeviceAuthorizationRouteLimiters(() => 1_000);
+
+    expectAllowedAttempts(limiters.startSource, "source", 10);
+    expect(limiters.startSource.attempt("source")).toEqual({
+      kind: "Limited",
+      reason: "rate",
+      retryAfterMs: 15 * 60_000,
+    });
+
+    expectAllowedAttempts(limiters.globalStart, "global", 60);
+    expect(limiters.globalStart.attempt("global")).toEqual({
+      kind: "Limited",
+      reason: "rate",
+      retryAfterMs: 15 * 60_000,
+    });
+
+    expectAllowedAttempts(limiters.tokenSource, "source", 120);
+    expect(limiters.tokenSource.attempt("source")).toEqual({
+      kind: "Limited",
+      reason: "rate",
+      retryAfterMs: 60_000,
+    });
+
+    expectAllowedAttempts(limiters.globalToken, "global", 600);
+    expect(limiters.globalToken.attempt("global")).toEqual({
+      kind: "Limited",
+      reason: "rate",
+      retryAfterMs: 60_000,
+    });
+  });
+
+  it("pins the exact production start and token source-key capacities", () => {
+    const start = makeDefaultDeviceAuthorizationRouteLimiters(() => 1_000).startSource;
+    expectDistinctKeysAllowed(start, "start", 128);
+    expect(start.diagnostics()).toEqual({ activeKeys: 128 });
+    expect(start.attempt("start-over-capacity")).toEqual({
+      kind: "Limited",
+      reason: "capacity",
+      retryAfterMs: 15 * 60_000,
+    });
+
+    const token = makeDefaultDeviceAuthorizationRouteLimiters(() => 1_000).tokenSource;
+    expectDistinctKeysAllowed(token, "token", 1_024);
+    expect(token.diagnostics()).toEqual({ activeKeys: 1_024 });
+    expect(token.attempt("token-over-capacity")).toEqual({
+      kind: "Limited",
+      reason: "capacity",
+      retryAfterMs: 60_000,
+    });
+  });
+
   it("enforces the per-source route ceiling while another trusted last hop still succeeds", async () => {
     const runtime = makeTestRuntime({
       ids: ["device_a", "device_b", "device_c"],
@@ -295,9 +531,19 @@ describe("device authorization routes", () => {
     });
     try {
       const routes = createDeviceAuthorizationRoutes({
-        globalStartRateLimiter: makeAttemptLimiter({ max: 100, windowMs: 60_000 }),
+        globalStartRateLimiter: makeAttemptLimiter({
+          max: 100,
+          maxEntries: 1,
+          now: () => 1_000,
+          windowMs: 60_000,
+        }),
         runtime,
-        startRateLimiter: makeAttemptLimiter({ max: 2, windowMs: 60_000 }),
+        startRateLimiter: makeAttemptLimiter({
+          max: 2,
+          maxEntries: 128,
+          now: () => 1_000,
+          windowMs: 60_000,
+        }),
       });
       const make = (forwardedFor: string) =>
         jsonRequest(
@@ -310,6 +556,7 @@ describe("device authorization routes", () => {
       expect((await routes.fetch(make("rotated, 1.2.3.4"))).status).toBe(201);
       const limited = await routes.fetch(make("untrusted, 1.2.3.4"));
       expect(limited.status).toBe(429);
+      expect(limited.headers.get("retry-after")).toBe("60");
       await expect(limited.json()).resolves.toEqual({
         error: {
           code: "rate_limited",
@@ -330,9 +577,19 @@ describe("device authorization routes", () => {
     });
     try {
       const routes = createDeviceAuthorizationRoutes({
-        globalStartRateLimiter: makeAttemptLimiter({ max: 2, windowMs: 60_000 }),
+        globalStartRateLimiter: makeAttemptLimiter({
+          max: 2,
+          maxEntries: 1,
+          now: () => 1_000,
+          windowMs: 60_000,
+        }),
         runtime,
-        startRateLimiter: makeAttemptLimiter({ max: 100, windowMs: 60_000 }),
+        startRateLimiter: makeAttemptLimiter({
+          max: 100,
+          maxEntries: 128,
+          now: () => 1_000,
+          windowMs: 60_000,
+        }),
       });
       const make = (address: string) =>
         jsonRequest(
@@ -345,11 +602,120 @@ describe("device authorization routes", () => {
       expect((await routes.fetch(make("2.2.2.2"))).status).toBe(201);
       const limited = await routes.fetch(make("3.3.3.3"));
       expect(limited.status).toBe(429);
+      expect(limited.headers.get("retry-after")).toBe("60");
       await expect(limited.json()).resolves.toEqual({
         error: {
           code: "rate_limited",
           message: "Too many device authorization requests. Try again later.",
         },
+      });
+    } finally {
+      await runtime.dispose();
+    }
+  });
+
+  it("enforces token source and global ceilings before database access", async () => {
+    const runtime = makeTestRuntime({
+      realApiKeys: true,
+      realDeviceAuthorizations: true,
+    });
+    try {
+      const routes = createDeviceAuthorizationRoutes({
+        globalTokenRateLimiter: makeAttemptLimiter({
+          max: 4,
+          maxEntries: 1,
+          now: () => 1_000,
+          windowMs: 60_000,
+        }),
+        runtime,
+        tokenRateLimiter: makeAttemptLimiter({
+          max: 2,
+          maxEntries: 1_024,
+          now: () => 1_000,
+          windowMs: 60_000,
+        }),
+      });
+      const make = (forwardedFor: string) =>
+        jsonRequest("http://localhost/token", { deviceCode: "unknown" }, forwardedFor);
+
+      expect((await routes.fetch(make("untrusted, 1.2.3.4"))).status).toBe(200);
+      expect((await routes.fetch(make("rotated, 1.2.3.4"))).status).toBe(200);
+
+      const sourceLimited = await routes.fetch(make("untrusted, 1.2.3.4"));
+      expect(sourceLimited.status).toBe(429);
+      expect(sourceLimited.headers.get("retry-after")).toBe("60");
+      await expect(sourceLimited.json()).resolves.toEqual({
+        error: {
+          code: "rate_limited",
+          message: "Too many device authorization requests. Try again later.",
+        },
+      });
+
+      // The source-rejected request consumed global capacity, while an
+      // independent second source still had its own source allowance.
+      expect((await routes.fetch(make("untrusted, 5.6.7.8"))).status).toBe(200);
+      const globalLimited = await routes.fetch(make("untrusted, 9.10.11.12"));
+      expect(globalLimited.status).toBe(429);
+      expect(globalLimited.headers.get("retry-after")).toBe("60");
+      await expect(globalLimited.json()).resolves.toEqual({
+        error: {
+          code: "rate_limited",
+          message: "Too many device authorization requests. Try again later.",
+        },
+      });
+    } finally {
+      await runtime.dispose();
+    }
+  });
+
+  it("does not mutate a token row when source capacity rejects the route", async () => {
+    const runtime = makeTestRuntime({
+      ids: ["device_1"],
+      realApiKeys: true,
+      realDeviceAuthorizations: true,
+    });
+    const globalLimiter = makeAttemptLimiter({
+      max: 1,
+      maxEntries: 1,
+      now: () => 1_000,
+      windowMs: 60_000,
+    });
+    const sourceLimiter = makeAttemptLimiter({
+      max: 120,
+      maxEntries: 1,
+      now: () => 1_000,
+      windowMs: 60_000,
+    });
+    expect(sourceLimiter.attempt("occupied-source")).toEqual({ kind: "Allowed" });
+
+    try {
+      const start = await startAuthorization(runtime, "direct");
+      const before = await readPollState(runtime, start.userCode);
+      const routes = createDeviceAuthorizationRoutes({
+        globalTokenRateLimiter: globalLimiter,
+        runtime,
+        tokenRateLimiter: sourceLimiter,
+      });
+
+      const response = await routes.fetch(
+        jsonRequest(
+          "http://localhost/token",
+          { deviceCode: start.deviceCode },
+          "untrusted, rejected-source",
+        ),
+      );
+      expect(response.status).toBe(429);
+      expect(response.headers.get("retry-after")).toBe("60");
+      await expect(response.json()).resolves.toEqual({
+        error: {
+          code: "rate_limited",
+          message: "Too many device authorization requests. Try again later.",
+        },
+      });
+      expect(await readPollState(runtime, start.userCode)).toEqual(before);
+      expect(globalLimiter.attempt("global")).toMatchObject({
+        kind: "Limited",
+        reason: "rate",
       });
     } finally {
       await runtime.dispose();
@@ -466,6 +832,18 @@ describe("device authorization routes", () => {
   });
 });
 
+function expectAllowedAttempts(limiter: AttemptLimiter, key: string, count: number): void {
+  for (let index = 0; index < count; index += 1) {
+    expect(limiter.attempt(key)).toEqual({ kind: "Allowed" });
+  }
+}
+
+function expectDistinctKeysAllowed(limiter: AttemptLimiter, prefix: string, count: number): void {
+  for (let index = 0; index < count; index += 1) {
+    expect(limiter.attempt(`${prefix}-${index}`)).toEqual({ kind: "Allowed" });
+  }
+}
+
 function runSequential(
   start: number,
   end: number,
@@ -498,6 +876,20 @@ async function startDevice(
   );
   expect(response.status).toBe(201);
   return (await response.json()) as { deviceCode: string; userCode: string };
+}
+
+async function startAuthorization(runtime: TestRuntime, requesterFingerprint: string) {
+  return await runtime.runPromise(
+    Effect.gen(function* () {
+      const deviceAuthorizations = yield* DeviceAuthorizations;
+      return yield* deviceAuthorizations.start({
+        baseUrl: "http://localhost",
+        clientName: "cli",
+        permissions: { contacts: ["read"] },
+        requesterFingerprint,
+      });
+    }),
+  );
 }
 
 async function approve(runtime: TestRuntime, userCode: string, userId: string): Promise<void> {
@@ -549,6 +941,41 @@ async function readAuthorizationState(
   );
 }
 
+async function readPollState(
+  runtime: TestRuntime,
+  userCode: string,
+): Promise<{ lastPollAt: string | null; pollCount: number }> {
+  return await runtime.runPromise(
+    Effect.gen(function* () {
+      const db = yield* Database;
+      const row = yield* db.get<{ last_poll_at: string | null; poll_count: number }>(
+        "deviceAuthTest:readPollState",
+        `SELECT last_poll_at, poll_count
+         FROM device_authorizations
+         WHERE user_code_hash = $userCodeHash;`,
+        { userCodeHash: userCodeHash(userCode) },
+      );
+      return {
+        lastPollAt: row?.last_poll_at ?? null,
+        pollCount: row?.poll_count ?? 0,
+      };
+    }),
+  );
+}
+
+async function countApiKeys(runtime: TestRuntime): Promise<number> {
+  return await runtime.runPromise(
+    Effect.gen(function* () {
+      const db = yield* Database;
+      const row = yield* db.get<{ count: number }>(
+        "deviceAuthTest:countApiKeys",
+        "SELECT COUNT(*) AS count FROM api_keys;",
+      );
+      return row?.count ?? 0;
+    }),
+  );
+}
+
 async function readApprovedUser(runtime: TestRuntime): Promise<string | null> {
   return await runtime.runPromise(
     Effect.gen(function* () {
@@ -559,6 +986,68 @@ async function readApprovedUser(runtime: TestRuntime): Promise<string | null> {
       );
       return row?.approved_by_user_id ?? null;
     }),
+  );
+}
+
+async function insertPendingAuthorizations(
+  runtime: TestRuntime,
+  input: {
+    readonly count: number;
+    readonly fingerprintFor: (index: number) => string;
+    readonly prefix: string;
+  },
+): Promise<void> {
+  await runtime.runPromise(
+    Effect.gen(function* () {
+      const db = yield* Database;
+      for (let index = 0; index < input.count; index += 1) {
+        const id = `${input.prefix}_${index}`;
+        yield* db.run(
+          "deviceAuthTest:insertPending",
+          `INSERT INTO device_authorizations (
+            id, device_code_hash, user_code_hash, user_code_preview,
+            requested_permissions_json, client_name, expires_at,
+            requester_fingerprint_hash, created_at
+          ) VALUES (
+            $id, $deviceCodeHash, $userCodeHash, 'AB••-••YZ',
+            '{"contacts":["read"]}', 'fixture', '2999-01-01T00:00:00.000Z',
+            $requesterFingerprintHash, '2026-07-13T00:00:00.000Z'
+          );`,
+          {
+            deviceCodeHash: `device-${id}`,
+            id,
+            requesterFingerprintHash: hashDeviceAuthCode(
+              input.fingerprintFor(index),
+              testDeviceAuthSecret,
+            ),
+            userCodeHash: `user-${id}`,
+          },
+        );
+      }
+    }),
+  );
+}
+
+async function setAuthorizationState(
+  runtime: TestRuntime,
+  id: string,
+  state: "approved" | "consumed" | "denied" | "expired",
+): Promise<void> {
+  const assignment = {
+    approved: "approved_at = '2026-07-13T00:00:00.000Z', approved_by_user_id = 'user_1'",
+    consumed:
+      "approved_at = '2026-07-13T00:00:00.000Z', approved_by_user_id = 'user_1', consumed_at = '2026-07-13T00:00:00.000Z'",
+    denied: "denied_at = '2026-07-13T00:00:00.000Z'",
+    expired: "expires_at = '2000-01-01T00:00:00.000Z'",
+  }[state];
+  await runtime.runPromise(
+    Effect.flatMap(Database, (db) =>
+      db.run(
+        "deviceAuthTest:setAuthorizationState",
+        `UPDATE device_authorizations SET ${assignment} WHERE id = $id;`,
+        { id },
+      ),
+    ),
   );
 }
 

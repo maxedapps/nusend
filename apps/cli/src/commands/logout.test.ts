@@ -3,8 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { updateCredentials, updateLoginState } from "../config/local-state.js";
 import { credentialsPath } from "../config/paths.js";
-import { saveConfig } from "../config/profiles.js";
+import { updateConfig } from "../config/profiles.js";
 import { FileCredentialStore } from "../credentials/file-store.js";
 import { runCli } from "../main.js";
 
@@ -115,19 +116,79 @@ describe("logout command", () => {
     await expect(store.read("default")).resolves.toBeNull();
   });
 
+  it("preserves an unrelated credential written while logout waits for the shared lock", async () => {
+    const env = await tempEnv();
+    const store = new FileCredentialStore(env);
+    await store.write("default", { apiKey: "nusend_default", apiKeyId: "key_1" });
+    vi.spyOn(console, "log").mockImplementation(() => undefined);
+    let signalAcquired!: () => void;
+    let releaseWriter!: () => void;
+    const acquired = new Promise<void>((resolve) => {
+      signalAcquired = resolve;
+    });
+    const release = new Promise<void>((resolve) => {
+      releaseWriter = resolve;
+    });
+    const writer = updateCredentials(
+      (current) => ({
+        credentials: {
+          ...(current.credentials ?? {}),
+          unrelated: { apiKey: "nusend_unrelated" },
+        },
+      }),
+      env,
+      {
+        afterLockAcquired: async () => {
+          signalAcquired();
+          await release;
+        },
+      },
+    );
+    await acquired;
+    let signalSnapshotContended!: () => void;
+    const snapshotContended = new Promise<void>((resolve) => {
+      signalSnapshotContended = resolve;
+    });
+    const logout = runCli(["logout"], env, {
+      afterLocalStateContention: async () => signalSnapshotContended(),
+      now: Date.now,
+      sleep: async () => undefined,
+    });
+    await snapshotContended;
+    releaseWriter();
+
+    await Promise.all([writer, logout]);
+
+    await expect(store.read("default")).resolves.toBeNull();
+    await expect(store.read("unrelated")).resolves.toMatchObject({
+      apiKey: "nusend_unrelated",
+    });
+  });
+
   it("revokes remotely before deleting locally", async () => {
     const env = await tempEnv();
-    await saveConfig(
-      { activeProfile: "default", profiles: { default: { baseUrl: "https://mail.example.com" } } },
+    await updateConfig(
+      () => ({
+        activeProfile: "default",
+        profiles: { default: { baseUrl: "https://mail.example.com" } },
+      }),
       env,
     );
     const store = new FileCredentialStore(env);
     await store.write("default", { apiKey: "nusend_test", apiKeyId: "key_1" });
-    const fetchMock = vi.fn(
-      async (_input: Request | URL | string, _init?: RequestInit) =>
-        new Response(null, { status: 204 }),
-    );
+    const events: string[] = [];
+    const fetchMock = vi.fn(async (_input: Request | URL | string, _init?: RequestInit) => {
+      events.push("remote-revoke");
+      return new Response(null, { status: 204 });
+    });
     globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const originalDelete = FileCredentialStore.prototype.delete;
+    vi.spyOn(FileCredentialStore.prototype, "delete").mockImplementation(
+      async function (this: FileCredentialStore, profile) {
+        events.push("local-delete");
+        return originalDelete.call(this, profile);
+      },
+    );
     vi.spyOn(console, "log").mockImplementation(() => undefined);
 
     await expect(runCli(["logout", "--revoke"], env)).resolves.toEqual({ exitCode: 0 });
@@ -137,7 +198,79 @@ describe("logout command", () => {
       "https://mail.example.com/api/api-keys/key_1",
     );
     expect(init?.method).toBe("DELETE");
+    expect(events).toEqual(["remote-revoke", "local-delete"]);
     await expect(store.read("default")).resolves.toBeNull();
+  });
+
+  it("waits for a coherent snapshot before revoke network work", async () => {
+    const env = await tempEnv();
+    let releaseLogin!: () => void;
+    const loginGate = new Promise<void>((resolve) => {
+      releaseLogin = resolve;
+    });
+    let signalCredentialRenamed!: () => void;
+    const credentialRenamed = new Promise<void>((resolve) => {
+      signalCredentialRenamed = resolve;
+    });
+    let signalSnapshotContended!: () => void;
+    const snapshotContended = new Promise<void>((resolve) => {
+      signalSnapshotContended = resolve;
+    });
+    let mutation: Promise<void> | undefined;
+    try {
+      await updateLoginState(
+        {
+          baseUrl: "https://old.example.com",
+          credential: { apiKey: "nusend_old", apiKeyId: "old_key" },
+          profile: "default",
+        },
+        env,
+      );
+      mutation = updateLoginState(
+        {
+          baseUrl: "https://new.example.com",
+          credential: { apiKey: "nusend_new", apiKeyId: "new_key" },
+          profile: "default",
+        },
+        env,
+        {
+          afterRename: async (destination) => {
+            if (destination !== credentialsPath(env)) return;
+            signalCredentialRenamed();
+            await loginGate;
+          },
+        },
+      );
+      await credentialRenamed;
+      const fetchMock = vi.fn(
+        async (_input: Request | URL | string, _init?: RequestInit) =>
+          new Response(null, { status: 204 }),
+      );
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+      vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const command = runCli(["logout", "--revoke"], env, {
+        afterLocalStateContention: async () => signalSnapshotContended(),
+        now: Date.now,
+        sleep: async () => undefined,
+      });
+
+      await snapshotContended;
+      const requestsBeforeLoginRelease = fetchMock.mock.calls.length;
+      releaseLogin();
+      await mutation;
+      await expect(command).resolves.toEqual({ exitCode: 0 });
+
+      expect(requestsBeforeLoginRelease).toBe(0);
+      const [input, init] = fetchMock.mock.calls[0] ?? [];
+      expect(input instanceof URL ? input.toString() : String(input)).toBe(
+        "https://new.example.com/api/api-keys/new_key",
+      );
+      expect(new Headers(init?.headers).get("x-api-key")).toBe("nusend_new");
+      await expect(new FileCredentialStore(env).read("default")).resolves.toBeNull();
+    } finally {
+      releaseLogin();
+      await mutation?.catch(() => undefined);
+    }
   });
 
   it("deletes locally when revoke setup lacks a base URL", async () => {
@@ -155,8 +288,11 @@ describe("logout command", () => {
 
   it("deletes locally and warns when remote revocation fails", async () => {
     const env = await tempEnv();
-    await saveConfig(
-      { activeProfile: "default", profiles: { default: { baseUrl: "https://mail.example.com" } } },
+    await updateConfig(
+      () => ({
+        activeProfile: "default",
+        profiles: { default: { baseUrl: "https://mail.example.com" } },
+      }),
       env,
     );
     const store = new FileCredentialStore(env);
@@ -178,8 +314,11 @@ describe("logout command", () => {
 
   it("emits a JSON warning envelope when revocation fails in --json mode", async () => {
     const env = await tempEnv();
-    await saveConfig(
-      { activeProfile: "default", profiles: { default: { baseUrl: "https://mail.example.com" } } },
+    await updateConfig(
+      () => ({
+        activeProfile: "default",
+        profiles: { default: { baseUrl: "https://mail.example.com" } },
+      }),
       env,
     );
     const store = new FileCredentialStore(env);

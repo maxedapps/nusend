@@ -16,6 +16,17 @@ describe("driver parity", () => {
     const nodeSnapshot = await runDriverParityCycle(
       DatabaseNodeLive(":memory:", { migrate: false }),
     );
+    expect(nodeSnapshot).toMatchObject({
+      suppressions: [
+        {
+          createdAt: "2026-07-01T00:00:00.000Z",
+          email: "user@example.com",
+          id: "sup_1",
+          reason: "unsubscribe",
+          scope: "marketing",
+        },
+      ],
+    });
 
     const result = runBunScenario(
       `

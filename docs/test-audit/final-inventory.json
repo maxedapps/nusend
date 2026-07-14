@@ -3,16 +3,16 @@
   "snapshot": "final",
   "identityAlgorithm": "sha256-json-tuple-v1",
   "report": {
-    "command": "pnpm exec vitest run --reporter=json --outputFile=.progress/final-review-test-quality-final.json",
-    "collectedAt": "2026-07-11T00:34:14.394Z",
+    "command": "pnpm exec vitest run --reporter=json --outputFile=.progress/selected-production-fixes-final.json",
+    "collectedAt": "2026-07-13T16:40:30.117Z",
     "vitestVersion": "4.1.9",
     "nodeVersion": "v26.1.0",
     "pnpmVersion": "11.9.0",
-    "localPath": ".progress/final-review-test-quality-final.json",
-    "sha256": "483ef42402f179707531e01e73c279bb10e5be51ad9538816eb47974f31b225b",
+    "localPath": ".progress/selected-production-fixes-final.json",
+    "sha256": "487b30245fdf2c06664c475743bc493f66be6b77680e12daf2cd0601a250a1cd",
     "success": true,
-    "declaredFiles": 75,
-    "declaredTests": 615
+    "declaredFiles": 79,
+    "declaredTests": 692
   },
   "tests": [
     {
@@ -208,15 +208,15 @@
       "occurrence": 0
     },
     {
-      "id": "373d7ed44b6dd5ab0589420e5666807803bf75dd535f5c314d158e7cea0860ed",
+      "id": "b725bc64d618f6063a59c137a9a0a7af9226a661a8edc45e7b4c240f93b26b05",
       "tuple": [
         "vitest-json-v1",
         "apps/cli/src/commands/login-order.test.ts",
-        "login write ordering stores the credential strictly before writing config",
+        "login write ordering renames the credential strictly before config in one shared mutation",
         0
       ],
       "file": "apps/cli/src/commands/login-order.test.ts",
-      "fullName": "login write ordering stores the credential strictly before writing config",
+      "fullName": "login write ordering renames the credential strictly before config in one shared mutation",
       "occurrence": 0
     },
     {
@@ -244,6 +244,18 @@
       "occurrence": 0
     },
     {
+      "id": "9c88aa1d7a3a0f6b69ff4eec9b7ed8b9c2f186694a610d2ac7d8b2ea7b40c930",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/cli/src/commands/login.test.ts",
+        "login command accepts approval from a token request that began before local expiry",
+        0
+      ],
+      "file": "apps/cli/src/commands/login.test.ts",
+      "fullName": "login command accepts approval from a token request that began before local expiry",
+      "occurrence": 0
+    },
+    {
       "id": "3347d704caa240ed42954134612ddf26cff754094dfd7d738f7f58eebbec2c8a",
       "tuple": [
         "vitest-json-v1",
@@ -253,6 +265,30 @@
       ],
       "file": "apps/cli/src/commands/login.test.ts",
       "fullName": "login command does not print the raw approved key in human output",
+      "occurrence": 0
+    },
+    {
+      "id": "b606759b049e4c335c6025ec4059203806d9e1227541ed4a1ff42ca8107f56b8",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/cli/src/commands/login.test.ts",
+        "login command expires during a bounded sleep without a post-expiry token request",
+        0
+      ],
+      "file": "apps/cli/src/commands/login.test.ts",
+      "fullName": "login command expires during a bounded sleep without a post-expiry token request",
+      "occurrence": 0
+    },
+    {
+      "id": "b998dc7030cace3ed591856cfa8d3b5a7bd725983fa2820ed0bccaa8aaa84846",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/cli/src/commands/login.test.ts",
+        "login command expires locally before the first poll without a token request",
+        0
+      ],
+      "file": "apps/cli/src/commands/login.test.ts",
+      "fullName": "login command expires locally before the first poll without a token request",
       "occurrence": 0
     },
     {
@@ -301,6 +337,18 @@
       ],
       "file": "apps/cli/src/commands/login.test.ts",
       "fullName": "login command preserves a profile written concurrently during the device-approval wait",
+      "occurrence": 0
+    },
+    {
+      "id": "be6dabb116b7f3681be7a253419ebf755a58e2f1104e7f1d19d1d5a9e2dea81d",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/cli/src/commands/login.test.ts",
+        "login command rejects an invalid protocol expiry before polling without exposing its value",
+        0
+      ],
+      "file": "apps/cli/src/commands/login.test.ts",
+      "fullName": "login command rejects an invalid protocol expiry before polling without exposing its value",
       "occurrence": 0
     },
     {
@@ -424,6 +472,18 @@
       "occurrence": 0
     },
     {
+      "id": "ff42a31f85ea7f600ccf8a61d11a2670f1a3a31b80373a97f1d1d89970a087f5",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/cli/src/commands/logout.test.ts",
+        "logout command preserves an unrelated credential written while logout waits for the shared lock",
+        0
+      ],
+      "file": "apps/cli/src/commands/logout.test.ts",
+      "fullName": "logout command preserves an unrelated credential written while logout waits for the shared lock",
+      "occurrence": 0
+    },
+    {
       "id": "94cdcec6234e311f1142528d4c0b51a419453a223200e2bdcdd646cdeb9b555d",
       "tuple": [
         "vitest-json-v1",
@@ -448,6 +508,18 @@
       "occurrence": 0
     },
     {
+      "id": "3bd5c572c6a8db4660d707ac91cbf27f861539b4b6f99511072b85e616366a47",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/cli/src/commands/logout.test.ts",
+        "logout command waits for a coherent snapshot before revoke network work",
+        0
+      ],
+      "file": "apps/cli/src/commands/logout.test.ts",
+      "fullName": "logout command waits for a coherent snapshot before revoke network work",
+      "occurrence": 0
+    },
+    {
       "id": "2297940f1799417277390a17c1eabe8afe006aaaa8269fa81d516c180a8046c4",
       "tuple": [
         "vitest-json-v1",
@@ -460,6 +532,18 @@
       "occurrence": 0
     },
     {
+      "id": "890970073c269106c695635903a94d868d8581931af494a4675aab13c334a1d5",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/cli/src/commands/mailings.test.ts",
+        "mailings commands decodes an old five-count service as zero ambiguity",
+        0
+      ],
+      "file": "apps/cli/src/commands/mailings.test.ts",
+      "fullName": "mailings commands decodes an old five-count service as zero ambiguity",
+      "occurrence": 0
+    },
+    {
       "id": "8370fc66bb5cbcca65a13cd096a38c954e44da59c06ae2e3029569233027a95c",
       "tuple": [
         "vitest-json-v1",
@@ -469,6 +553,234 @@
       ],
       "file": "apps/cli/src/commands/mailings.test.ts",
       "fullName": "mailings commands prints full detail as JSON but omits HTML in human mode",
+      "occurrence": 0
+    },
+    {
+      "id": "1d19a0205fb6555b9291c8aaa0e5788e00f89119d713559ecb8e6d59f81f9bc8",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/cli/src/config/local-state.test.ts",
+        "CLI local-state lock blocks publication while an active protocol mutex owns a missing lock path",
+        0
+      ],
+      "file": "apps/cli/src/config/local-state.test.ts",
+      "fullName": "CLI local-state lock blocks publication while an active protocol mutex owns a missing lock path",
+      "occurrence": 0
+    },
+    {
+      "id": "6f37e1b3fecdf5bb1298323f7348288adcb9294ae7efdbfcf9133bc2a5f4d75c",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/cli/src/config/local-state.test.ts",
+        "CLI local-state lock coordinates overlapping credential subprocess writers without dropping either map",
+        0
+      ],
+      "file": "apps/cli/src/config/local-state.test.ts",
+      "fullName": "CLI local-state lock coordinates overlapping credential subprocess writers without dropping either map",
+      "occurrence": 0
+    },
+    {
+      "id": "56499d7e6a528a0b5f63d64769e4758e82f5a0b8dfc44c8d38a6b760587ebe2e",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/cli/src/config/local-state.test.ts",
+        "CLI local-state lock coordinates overlapping profile subprocess writers without dropping either map",
+        0
+      ],
+      "file": "apps/cli/src/config/local-state.test.ts",
+      "fullName": "CLI local-state lock coordinates overlapping profile subprocess writers without dropping either map",
+      "occurrence": 0
+    },
+    {
+      "id": "94b83f09f38d1114822441e67e6281f649b29a71ce132eeff3feb3a0be21492b",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/cli/src/config/local-state.test.ts",
+        "CLI local-state lock fails closed for a dead-owner mutex while the canonical lock is missing",
+        0
+      ],
+      "file": "apps/cli/src/config/local-state.test.ts",
+      "fullName": "CLI local-state lock fails closed for a dead-owner mutex while the canonical lock is missing",
+      "occurrence": 0
+    },
+    {
+      "id": "ce1a504595d37dcec6db21884c9c29149f647219deef17dbd97ee8ccb30d4fea",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/cli/src/config/local-state.test.ts",
+        "CLI local-state lock fails closed for a foreign-host lock",
+        0
+      ],
+      "file": "apps/cli/src/config/local-state.test.ts",
+      "fullName": "CLI local-state lock fails closed for a foreign-host lock",
+      "occurrence": 0
+    },
+    {
+      "id": "2f68849778a6e112a845962688b65d7f325c668199ec1836b30151890afce3ce",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/cli/src/config/local-state.test.ts",
+        "CLI local-state lock fails closed for a malformed lock",
+        0
+      ],
+      "file": "apps/cli/src/config/local-state.test.ts",
+      "fullName": "CLI local-state lock fails closed for a malformed lock",
+      "occurrence": 0
+    },
+    {
+      "id": "463764bf6a23c4c16c800a7970dec339fe69356f6d300bdad543266f7082f87e",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/cli/src/config/local-state.test.ts",
+        "CLI local-state lock fails closed for a malformed-owner mutex while the canonical lock is missing",
+        0
+      ],
+      "file": "apps/cli/src/config/local-state.test.ts",
+      "fullName": "CLI local-state lock fails closed for a malformed-owner mutex while the canonical lock is missing",
+      "occurrence": 0
+    },
+    {
+      "id": "b84968a2eb514b814579fd40735c981a9cdc19e2bb824a10823bd4053b490f40",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/cli/src/config/local-state.test.ts",
+        "CLI local-state lock fails closed for a missing-owner mutex while the canonical lock is missing",
+        0
+      ],
+      "file": "apps/cli/src/config/local-state.test.ts",
+      "fullName": "CLI local-state lock fails closed for a missing-owner mutex while the canonical lock is missing",
+      "occurrence": 0
+    },
+    {
+      "id": "638709bbad23724c985a0ac384d5a63f714fe37bdfe5c4c2393ef0358d60eb34",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/cli/src/config/local-state.test.ts",
+        "CLI local-state lock fails closed for a young-dead lock",
+        0
+      ],
+      "file": "apps/cli/src/config/local-state.test.ts",
+      "fullName": "CLI local-state lock fails closed for a young-dead lock",
+      "occurrence": 0
+    },
+    {
+      "id": "455d2cbc3c1df4806c776343fe93387b270722dc1701177c8076d6e09097c5f1",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/cli/src/config/local-state.test.ts",
+        "CLI local-state lock fails closed with operator guidance for an orphaned reaper mutex",
+        0
+      ],
+      "file": "apps/cli/src/config/local-state.test.ts",
+      "fullName": "CLI local-state lock fails closed with operator guidance for an orphaned reaper mutex",
+      "occurrence": 0
+    },
+    {
+      "id": "b57df657e61f1f4a59adefaed462ab6e12bd1128df5d045454ab2f64ee1f6383",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/cli/src/config/local-state.test.ts",
+        "CLI local-state lock keeps directory and local-state files private on Unix",
+        0
+      ],
+      "file": "apps/cli/src/config/local-state.test.ts",
+      "fullName": "CLI local-state lock keeps directory and local-state files private on Unix",
+      "occurrence": 0
+    },
+    {
+      "id": "06af3b1c2a4d1bdd1090633077c513ce91c092dad54792f72d65549badff9ad3",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/cli/src/config/local-state.test.ts",
+        "CLI local-state lock never deletes a replacement created after atomic release rename",
+        0
+      ],
+      "file": "apps/cli/src/config/local-state.test.ts",
+      "fullName": "CLI local-state lock never deletes a replacement created after atomic release rename",
+      "occurrence": 0
+    },
+    {
+      "id": "24e2e19e2dea99d293aad8e50fd26f8d9ebd85bef26cdd665534a82a42f6d375",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/cli/src/config/local-state.test.ts",
+        "CLI local-state lock never steals a live owner and returns the stable contention error after the production timeout",
+        0
+      ],
+      "file": "apps/cli/src/config/local-state.test.ts",
+      "fullName": "CLI local-state lock never steals a live owner and returns the stable contention error after the production timeout",
+      "occurrence": 0
+    },
+    {
+      "id": "fafb2a1f5ea5b11e75a478b6c9c3fce94ff8e201c188c1b21fead015eda30cba",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/cli/src/config/local-state.test.ts",
+        "CLI local-state lock preserves a reaper tombstone when mutex release fails",
+        0
+      ],
+      "file": "apps/cli/src/config/local-state.test.ts",
+      "fullName": "CLI local-state lock preserves a reaper tombstone when mutex release fails",
+      "occurrence": 0
+    },
+    {
+      "id": "8fed4ba3b4d5953c5a73a4fc41177e22b306243b49e99db202ec649cb2d1e6d9",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/cli/src/config/local-state.test.ts",
+        "CLI local-state lock preserves readable old JSON and removes the temp when failure occurs before rename",
+        0
+      ],
+      "file": "apps/cli/src/config/local-state.test.ts",
+      "fullName": "CLI local-state lock preserves readable old JSON and removes the temp when failure occurs before rename",
+      "occurrence": 0
+    },
+    {
+      "id": "0ce2e06d2154a5e0ed9146caa19514d93af2dd73cf5dda4eacac296345a58b5e",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/cli/src/config/local-state.test.ts",
+        "CLI local-state lock recovers a sufficiently old dead same-host owner and cleans candidates/tombstones",
+        0
+      ],
+      "file": "apps/cli/src/config/local-state.test.ts",
+      "fullName": "CLI local-state lock recovers a sufficiently old dead same-host owner and cleans candidates/tombstones",
+      "occurrence": 0
+    },
+    {
+      "id": "548ae9bc2ff63e559ac52c66cbd9babcc2b114ec812fed3559b99bacc018bf95",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/cli/src/config/local-state.test.ts",
+        "CLI local-state lock restores an unfamiliar replacement introduced after release serialization",
+        0
+      ],
+      "file": "apps/cli/src/config/local-state.test.ts",
+      "fullName": "CLI local-state lock restores an unfamiliar replacement introduced after release serialization",
+      "occurrence": 0
+    },
+    {
+      "id": "a2416ec89eb2f573759cf438868c1dbd3c99e48e7609470924323d4ca7242324",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/cli/src/config/local-state.test.ts",
+        "CLI local-state lock returns release ownership after post-link candidate cleanup fails and later cleans it",
+        0
+      ],
+      "file": "apps/cli/src/config/local-state.test.ts",
+      "fullName": "CLI local-state lock returns release ownership after post-link candidate cleanup fails and later cleans it",
+      "occurrence": 0
+    },
+    {
+      "id": "0e4d21462c78222b6966a8d947f7e33bf04a3e63441a438c932051b738e76bfe",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/cli/src/config/local-state.test.ts",
+        "CLI local-state lock serializes same-profile login state so the last lock owner wins both files",
+        0
+      ],
+      "file": "apps/cli/src/config/local-state.test.ts",
+      "fullName": "CLI local-state lock serializes same-profile login state so the last lock owner wins both files",
       "occurrence": 0
     },
     {
@@ -640,6 +952,18 @@
       "occurrence": 0
     },
     {
+      "id": "538c298ef3f481e17e33d628ca8e4567bc6019d54a7a9c52f0dc97dee102cd25",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/cli/src/main.test.ts",
+        "runCli does not acquire local state for help or version",
+        0
+      ],
+      "file": "apps/cli/src/main.test.ts",
+      "fullName": "runCli does not acquire local state for help or version",
+      "occurrence": 0
+    },
+    {
       "id": "62ae3500067c21a84d969a670a26f04c1562c9aab117a886a07349c5a1c7e2fe",
       "tuple": [
         "vitest-json-v1",
@@ -709,6 +1033,18 @@
       ],
       "file": "apps/cli/src/main.test.ts",
       "fullName": "runCli formats usage errors consistently in human and JSON modes",
+      "occurrence": 0
+    },
+    {
+      "id": "4e1e319db50bc663f2c99e4cf0174564f560dbd06353d482244645ee46753500",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/cli/src/main.test.ts",
+        "runCli keeps NUSEND_API_KEY precedence independent of malformed file state",
+        0
+      ],
+      "file": "apps/cli/src/main.test.ts",
+      "fullName": "runCli keeps NUSEND_API_KEY precedence independent of malformed file state",
       "occurrence": 0
     },
     {
@@ -1144,6 +1480,18 @@
       "occurrence": 0
     },
     {
+      "id": "8173a3c3fe9eb9afcffea2fd15184be01b75bdc227f6cb87fcb88a43a098b768",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/cli/src/main.test.ts",
+        "runCli waits for a coherent config/credential snapshot before authenticated network work",
+        0
+      ],
+      "file": "apps/cli/src/main.test.ts",
+      "fullName": "runCli waits for a coherent config/credential snapshot before authenticated network work",
+      "occurrence": 0
+    },
+    {
       "id": "31cb57e840377576aa10a47b0dfc56bc46a449139536d2c686eaee7e89ac2b7c",
       "tuple": [
         "vitest-json-v1",
@@ -1516,6 +1864,42 @@
       "occurrence": 0
     },
     {
+      "id": "36f19d9288cca13dfc716316ccb66e2752198a9d60a05fb77056aa49938aa657",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/aws/readiness.test.ts",
+        "runSesReadinessChecks accepts base SES events when optional tracking is not configured",
+        0
+      ],
+      "file": "apps/service/src/aws/readiness.test.ts",
+      "fullName": "runSesReadinessChecks accepts base SES events when optional tracking is not configured",
+      "occurrence": 0
+    },
+    {
+      "id": "db9e54fcafd9ad039d33c4736a86aeec54067bf3032e2646f5ee04a5c87e18b6",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/aws/readiness.test.ts",
+        "runSesReadinessChecks accepts configured CLICK when the marketing destination publishes click events",
+        0
+      ],
+      "file": "apps/service/src/aws/readiness.test.ts",
+      "fullName": "runSesReadinessChecks accepts configured CLICK when the marketing destination publishes click events",
+      "occurrence": 0
+    },
+    {
+      "id": "dec7d97f934cde33515ca042644a18cd3112f74d23c7e53bbdeab19baf42671b",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/aws/readiness.test.ts",
+        "runSesReadinessChecks does not apply configured marketing tracking requirements to transactional readiness",
+        0
+      ],
+      "file": "apps/service/src/aws/readiness.test.ts",
+      "fullName": "runSesReadinessChecks does not apply configured marketing tracking requirements to transactional readiness",
+      "occurrence": 0
+    },
+    {
       "id": "ba7216129ec0c73c9d9a7e37e84c0bb1f5b4f4c5443cf5fb5bd38b7d5fcc2211",
       "tuple": [
         "vitest-json-v1",
@@ -1576,6 +1960,18 @@
       "occurrence": 0
     },
     {
+      "id": "bb25cc9e406740f1b50149c3d322d00b5a4a6c826c3cf64ed03c027032a9d35a",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/aws/readiness.test.ts",
+        "runSesReadinessChecks requires only OPEN when marketing open tracking is configured",
+        0
+      ],
+      "file": "apps/service/src/aws/readiness.test.ts",
+      "fullName": "runSesReadinessChecks requires only OPEN when marketing open tracking is configured",
+      "occurrence": 0
+    },
+    {
       "id": "0e9a2b0e7eca63402a46234ff25ca6abbfaa36a4a92893890ea3cef0f89a8008",
       "tuple": [
         "vitest-json-v1",
@@ -1585,6 +1981,18 @@
       ],
       "file": "apps/service/src/aws/readiness.test.ts",
       "fullName": "runSesReadinessChecks returns ok for configured fake AWS resources",
+      "occurrence": 0
+    },
+    {
+      "id": "22ef47d633528e350e6b1b8964e67dc556cd0ae546e77068ae0afc85d0366e0e",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/aws/readiness.test.ts",
+        "runSesReadinessChecks surfaces all-invalid tracking input as an actionable readiness error",
+        0
+      ],
+      "file": "apps/service/src/aws/readiness.test.ts",
+      "fullName": "runSesReadinessChecks surfaces all-invalid tracking input as an actionable readiness error",
       "occurrence": 0
     },
     {
@@ -2080,6 +2488,18 @@
       "occurrence": 0
     },
     {
+      "id": "781fe5395873cde20a23bd31de89fd2f9be3feaf9152e319b28099bead1e4980",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/config.test.ts",
+        "sesOperationsConfig accepts blank tracking events as disabled without a config issue",
+        0
+      ],
+      "file": "apps/service/src/config.test.ts",
+      "fullName": "sesOperationsConfig accepts blank tracking events as disabled without a config issue",
+      "occurrence": 0
+    },
+    {
       "id": "73bc5b43d327706715953aedf40c09216d58eafdd3dd8ac5c333224b072ef51e",
       "tuple": [
         "vitest-json-v1",
@@ -2101,6 +2521,18 @@
       ],
       "file": "apps/service/src/config.test.ts",
       "fullName": "sesOperationsConfig loads incomplete SES setup as structured readiness data",
+      "occurrence": 0
+    },
+    {
+      "id": "d3f26349c1c729d0d419262764ba9a74a93d2c2058bdf79a137a04b111a0f2ca",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/config.test.ts",
+        "sesOperationsConfig reports all-invalid tracking events instead of treating tracking as disabled",
+        0
+      ],
+      "file": "apps/service/src/config.test.ts",
+      "fullName": "sesOperationsConfig reports all-invalid tracking events instead of treating tracking as disabled",
       "occurrence": 0
     },
     {
@@ -2488,6 +2920,18 @@
       "occurrence": 0
     },
     {
+      "id": "42cdd7b24f6e57f4ca614ad941f9b9497db24f47ad4c9bc07a1e970806564f71",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/db/migrate.integration.test.ts",
+        "migration runner converts only proven historical ambiguity, repairs exact suppressions, and preserves the graph through UP/DOWN/re-UP",
+        0
+      ],
+      "file": "apps/service/src/db/migrate.integration.test.ts",
+      "fullName": "migration runner converts only proven historical ambiguity, repairs exact suppressions, and preserves the graph through UP/DOWN/re-UP",
+      "occurrence": 0
+    },
+    {
       "id": "c823f1ef699e81db99a1aee3963a3532d42dcd860f1a481fb724e0d70f78bc21",
       "tuple": [
         "vitest-json-v1",
@@ -2764,27 +3208,39 @@
       "occurrence": 0
     },
     {
-      "id": "04448020cb37be6d36e598cd532faca301ca9c14277d922d38682ab71224fa3b",
+      "id": "05eb1451f06c9c955c0b3e78089c47fb9f3ba1eb647f7cb59f033070e7e151a5",
       "tuple": [
         "vitest-json-v1",
         "apps/service/src/device-auth/attempt-limiter.test.ts",
-        "device authorization attempt limiter locks after the configured failures and unlocks after the window",
+        "device authorization attempt limiter atomically records allowed attempts and returns the exact rate-limit retry",
         0
       ],
       "file": "apps/service/src/device-auth/attempt-limiter.test.ts",
-      "fullName": "device authorization attempt limiter locks after the configured failures and unlocks after the window",
+      "fullName": "device authorization attempt limiter atomically records allowed attempts and returns the exact rate-limit retry",
       "occurrence": 0
     },
     {
-      "id": "3c5ff9ff3cea4e2457919e89c26774869d68f8af4ec7ddf1b1a4887cb02c249f",
+      "id": "0f43a23d3c3071df1c58fde45c3863a10cffafa8cc101077e3d4c47040460d8d",
       "tuple": [
         "vitest-json-v1",
         "apps/service/src/device-auth/attempt-limiter.test.ts",
-        "device authorization attempt limiter tracks failures independently by user",
+        "device authorization attempt limiter fails closed at key capacity without exceeding the key or timestamp bounds",
         0
       ],
       "file": "apps/service/src/device-auth/attempt-limiter.test.ts",
-      "fullName": "device authorization attempt limiter tracks failures independently by user",
+      "fullName": "device authorization attempt limiter fails closed at key capacity without exceeding the key or timestamp bounds",
+      "occurrence": 0
+    },
+    {
+      "id": "381e03b07e2996a9ecffeca9b30875a23940d303889f83082b2535b20e60e0eb",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/device-auth/attempt-limiter.test.ts",
+        "device authorization attempt limiter globally reclaims stale unrelated keys before admitting a new key",
+        0
+      ],
+      "file": "apps/service/src/device-auth/attempt-limiter.test.ts",
+      "fullName": "device authorization attempt limiter globally reclaims stale unrelated keys before admitting a new key",
       "occurrence": 0
     },
     {
@@ -2800,6 +3256,42 @@
       "occurrence": 0
     },
     {
+      "id": "22542c3cd20c1ecbb1e37a899148e3ada92d01983bf83a809579cc86abb189d6",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/device-auth/routes.test.ts",
+        "device authorization routes consumes an approved grant exactly once across concurrent token polls",
+        0
+      ],
+      "file": "apps/service/src/device-auth/routes.test.ts",
+      "fullName": "device authorization routes consumes an approved grant exactly once across concurrent token polls",
+      "occurrence": 0
+    },
+    {
+      "id": "865a7040ed029f84b5fc0b1c3d7aed7fec2298692eb21fa0c11197baaf90ea51",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/device-auth/routes.test.ts",
+        "device authorization routes counts only active, unconsumed, undenied rows at the fingerprint ceiling",
+        0
+      ],
+      "file": "apps/service/src/device-auth/routes.test.ts",
+      "fullName": "device authorization routes counts only active, unconsumed, undenied rows at the fingerprint ceiling",
+      "occurrence": 0
+    },
+    {
+      "id": "d52478b0aa2ebd6244ba1721ce55e588dc67604d4938f66360d6d49e30c40d67",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/device-auth/routes.test.ts",
+        "device authorization routes counts only active, unconsumed, undenied rows at the global ceiling",
+        0
+      ],
+      "file": "apps/service/src/device-auth/routes.test.ts",
+      "fullName": "device authorization routes counts only active, unconsumed, undenied rows at the global ceiling",
+      "occurrence": 0
+    },
+    {
       "id": "80247b2e51ffbe805564a83b0952a3e2418acb04ab3afa83745cdd48544c02cc",
       "tuple": [
         "vitest-json-v1",
@@ -2809,6 +3301,18 @@
       ],
       "file": "apps/service/src/device-auth/routes.test.ts",
       "fullName": "device authorization routes delivers an approved key even when polled faster than the interval",
+      "occurrence": 0
+    },
+    {
+      "id": "37b5ca0b097cda2c89271c99bf66e33a87b8ddcfc81ad9128f1e545f608f11e5",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/device-auth/routes.test.ts",
+        "device authorization routes does not mutate a token row when source capacity rejects the route",
+        0
+      ],
+      "file": "apps/service/src/device-auth/routes.test.ts",
+      "fullName": "device authorization routes does not mutate a token row when source capacity rejects the route",
       "occurrence": 0
     },
     {
@@ -2845,6 +3349,54 @@
       ],
       "file": "apps/service/src/device-auth/routes.test.ts",
       "fullName": "device authorization routes enforces the process-local global route ceiling across distinct sources",
+      "occurrence": 0
+    },
+    {
+      "id": "03ae7d8ee48af980156cefb681cc901786e599fc855a249b06fb650a32d87f59",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/device-auth/routes.test.ts",
+        "device authorization routes enforces token source and global ceilings before database access",
+        0
+      ],
+      "file": "apps/service/src/device-auth/routes.test.ts",
+      "fullName": "device authorization routes enforces token source and global ceilings before database access",
+      "occurrence": 0
+    },
+    {
+      "id": "9bc489f6c38dea0f9c587045f36199313cc2fd0a4726ef50d85f4bb3ef04d067",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/device-auth/routes.test.ts",
+        "device authorization routes keeps early slow_down outside a write transaction",
+        0
+      ],
+      "file": "apps/service/src/device-auth/routes.test.ts",
+      "fullName": "device authorization routes keeps early slow_down outside a write transaction",
+      "occurrence": 0
+    },
+    {
+      "id": "ce448950ffc3dad5e908f567b7706546dc84e8bf35f52e92eede26687096efa7",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/device-auth/routes.test.ts",
+        "device authorization routes pins the exact production start and token rate boundaries",
+        0
+      ],
+      "file": "apps/service/src/device-auth/routes.test.ts",
+      "fullName": "device authorization routes pins the exact production start and token rate boundaries",
+      "occurrence": 0
+    },
+    {
+      "id": "18b60aeb0132407fc0fed5ce2aa487202b113046cf1b38778513b30b8f2b4c76",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/device-auth/routes.test.ts",
+        "device authorization routes pins the exact production start and token source-key capacities",
+        0
+      ],
+      "file": "apps/service/src/device-auth/routes.test.ts",
+      "fullName": "device authorization routes pins the exact production start and token source-key capacities",
       "occurrence": 0
     },
     {
@@ -3172,6 +3724,30 @@
       "occurrence": 0
     },
     {
+      "id": "b5edf94b174c514bb848940318551122ec9c3300ee806879b2c544ea01079966",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/lists/routes.test.ts",
+        "lists routes blocks deletion of a scheduled mailing list and preserves policy and queue rows",
+        0
+      ],
+      "file": "apps/service/src/lists/routes.test.ts",
+      "fullName": "lists routes blocks deletion of a scheduled mailing list and preserves policy and queue rows",
+      "occurrence": 0
+    },
+    {
+      "id": "371fcff7f789dc5307ee40cdc17cabb3475cd2dc9a49d606fa4ba84e9d91670e",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/lists/routes.test.ts",
+        "lists routes blocks deletion of a sending mailing list and preserves policy and queue rows",
+        0
+      ],
+      "file": "apps/service/src/lists/routes.test.ts",
+      "fullName": "lists routes blocks deletion of a sending mailing list and preserves policy and queue rows",
+      "occurrence": 0
+    },
+    {
       "id": "c9c54366a7b73175be6743ed4ebe33bf13eb9736849254c7adfd6ce9d71178ae",
       "tuple": [
         "vitest-json-v1",
@@ -3181,6 +3757,18 @@
       ],
       "file": "apps/service/src/lists/routes.test.ts",
       "fullName": "lists routes creates, lists, reads, updates, and deletes lists with counts",
+      "occurrence": 0
+    },
+    {
+      "id": "aa750eb3bb4446c4099d6e01f86a56f4f08c37d536aa9f24e29a32e8d69c3dea",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/lists/routes.test.ts",
+        "lists routes deletes a completed mailing list while its retained unsubscribe token stays effective",
+        0
+      ],
+      "file": "apps/service/src/lists/routes.test.ts",
+      "fullName": "lists routes deletes a completed mailing list while its retained unsubscribe token stays effective",
       "occurrence": 0
     },
     {
@@ -4552,6 +5140,18 @@
       "occurrence": 0
     },
     {
+      "id": "7e44e08ad7c57ab288cb99666cfb8193ba18f499a3249b7a61fcc45e629149aa",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/queue/runner.test.ts",
+        "send queue runner keeps dead queue history after late proof promotes an ambiguous delivery",
+        0
+      ],
+      "file": "apps/service/src/queue/runner.test.ts",
+      "fullName": "send queue runner keeps dead queue history after late proof promotes an ambiguous delivery",
+      "occurrence": 0
+    },
+    {
       "id": "1861288b32a24871af62e7cc591dae6c536aac7571d54db6d329bf72a9b6e291",
       "tuple": [
         "vitest-json-v1",
@@ -4612,15 +5212,51 @@
       "occurrence": 0
     },
     {
-      "id": "16cd2b19ef91969bca9e127df717855f3d2818ebc0016becaa1869978d5f277d",
+      "id": "7cbcbf7979300cac2a50a36e5b37c66882fb6f0e761782c253cfe775226a53ee",
       "tuple": [
         "vitest-json-v1",
         "apps/service/src/sending/attempts.test.ts",
-        "send attempt outcome recording does not mark completed attempts as stale ambiguous",
+        "send attempt outcome recording allows only terminal supersession when a newer attempt exists",
         0
       ],
       "file": "apps/service/src/sending/attempts.test.ts",
-      "fullName": "send attempt outcome recording does not mark completed attempts as stale ambiguous",
+      "fullName": "send attempt outcome recording allows only terminal supersession when a newer attempt exists",
+      "occurrence": 0
+    },
+    {
+      "id": "b8e7485caf7141074b045995510dee6b17a0bd2f67e467b1d006a0c4cba6a6fe",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/sending/attempts.test.ts",
+        "send attempt outcome recording does not attach late MessageId proof to an incompatible terminal delivery",
+        0
+      ],
+      "file": "apps/service/src/sending/attempts.test.ts",
+      "fullName": "send attempt outcome recording does not attach late MessageId proof to an incompatible terminal delivery",
+      "occurrence": 0
+    },
+    {
+      "id": "5fb9e92ffd12509aaa976417efba1445c78063f225a02a2f7d02714efb3b70a5",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/sending/attempts.test.ts",
+        "send attempt outcome recording does not overwrite a conflicting MessageId on an ambiguous exact attempt",
+        0
+      ],
+      "file": "apps/service/src/sending/attempts.test.ts",
+      "fullName": "send attempt outcome recording does not overwrite a conflicting MessageId on an ambiguous exact attempt",
+      "occurrence": 0
+    },
+    {
+      "id": "32f5dbfd04b2bbcfc8ffc4130c968a3d3d9d55f70490ccbf48d8a02a7e592a33",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/sending/attempts.test.ts",
+        "send attempt outcome recording does not promote a permanently suppressed delivery from a started attempt",
+        0
+      ],
+      "file": "apps/service/src/sending/attempts.test.ts",
+      "fullName": "send attempt outcome recording does not promote a permanently suppressed delivery from a started attempt",
       "occurrence": 0
     },
     {
@@ -4636,6 +5272,18 @@
       "occurrence": 0
     },
     {
+      "id": "90147a168e2d142429478534ea002fcb299b7447bfeadf227488e17423bbf0e7",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/sending/attempts.test.ts",
+        "send attempt outcome recording fails stale marking when a completed attempt leaves the delivery nonterminal",
+        0
+      ],
+      "file": "apps/service/src/sending/attempts.test.ts",
+      "fullName": "send attempt outcome recording fails stale marking when a completed attempt leaves the delivery nonterminal",
+      "occurrence": 0
+    },
+    {
       "id": "7899dc103d13f74afcdc51adbf492ca7a65849778a5e4358e3010789784af472",
       "tuple": [
         "vitest-json-v1",
@@ -4648,27 +5296,39 @@
       "occurrence": 0
     },
     {
-      "id": "76eb75df853273f80cfdecd1d8cd8e4dc6235a2f59e2730ee511e79080f85b29",
+      "id": "a06d298b9e902005b8a650ad5dc615d638b2ab60c45e24e3d4491d080bd4486d",
       "tuple": [
         "vitest-json-v1",
         "apps/service/src/sending/attempts.test.ts",
-        "send attempt outcome recording preserves the message id (not the status) on late success after stale ambiguity resolution",
+        "send attempt outcome recording is idempotent after reconciling exact late MessageId evidence",
         0
       ],
       "file": "apps/service/src/sending/attempts.test.ts",
-      "fullName": "send attempt outcome recording preserves the message id (not the status) on late success after stale ambiguity resolution",
+      "fullName": "send attempt outcome recording is idempotent after reconciling exact late MessageId evidence",
       "occurrence": 0
     },
     {
-      "id": "670c962d01bc9dae8c3b761ff00d756034b55d4daa88b0491b3693835a5a6e39",
+      "id": "403e5cbf224fbe2cad11a1a69b517c06fb47c047ecd52d5006afad1bfeaa33c7",
       "tuple": [
         "vitest-json-v1",
         "apps/service/src/sending/attempts.test.ts",
-        "send attempt outcome recording preserves the message id (not the status) when the attempt is started but the delivery is terminal",
+        "send attempt outcome recording reconciles late exact-attempt MessageId evidence to succeeded and sent",
         0
       ],
       "file": "apps/service/src/sending/attempts.test.ts",
-      "fullName": "send attempt outcome recording preserves the message id (not the status) when the attempt is started but the delivery is terminal",
+      "fullName": "send attempt outcome recording reconciles late exact-attempt MessageId evidence to succeeded and sent",
+      "occurrence": 0
+    },
+    {
+      "id": "14d5702f2d356a37f5036d41db8de965400919527dc1cac38fff7f7a362eb9b4",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/sending/attempts.test.ts",
+        "send attempt outcome recording rolls back the first paired write when the delivery write is not applied",
+        0
+      ],
+      "file": "apps/service/src/sending/attempts.test.ts",
+      "fullName": "send attempt outcome recording rolls back the first paired write when the delivery write is not applied",
       "occurrence": 0
     },
     {
@@ -4777,6 +5437,18 @@
       ],
       "file": "apps/service/src/sending/process-delivery.test.ts",
       "fullName": "processSendDeliveryJob fails non-scalar vars without calling transport",
+      "occurrence": 0
+    },
+    {
+      "id": "5fc5af43b0273d60394209ef7cd741e35601602759627201555b7c576fe433f2",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/sending/process-delivery.test.ts",
+        "processSendDeliveryJob fails the owned job instead of completing it on incompatible nonterminal read-back",
+        0
+      ],
+      "file": "apps/service/src/sending/process-delivery.test.ts",
+      "fullName": "processSendDeliveryJob fails the owned job instead of completing it on incompatible nonterminal read-back",
       "occurrence": 0
     },
     {
@@ -5236,6 +5908,42 @@
       "occurrence": 0
     },
     {
+      "id": "9452c1871596268cae97acd1e065aa5ba9285337753d71ea8dac580f5d6a8fe5",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/sending/worker-crash.integration.test.ts",
+        "file-backed send crash and reconciliation boundaries kills after dispatch, reclaims without redispatch, and accepts late exact proof",
+        0
+      ],
+      "file": "apps/service/src/sending/worker-crash.integration.test.ts",
+      "fullName": "file-backed send crash and reconciliation boundaries kills after dispatch, reclaims without redispatch, and accepts late exact proof",
+      "occurrence": 0
+    },
+    {
+      "id": "84febe7c96b323ff30acd7a942a37daa5a6619f9d73239d59e5312cf64ee6d3e",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/sending/worker-crash.integration.test.ts",
+        "file-backed send crash and reconciliation boundaries overlaps independent transactions with 'race-stale' acquiring first",
+        0
+      ],
+      "file": "apps/service/src/sending/worker-crash.integration.test.ts",
+      "fullName": "file-backed send crash and reconciliation boundaries overlaps independent transactions with 'race-stale' acquiring first",
+      "occurrence": 0
+    },
+    {
+      "id": "98e302b1dcea2cc742d9bcffe01526fc215644a1397c60e7c7f9b06fa5bcbd25",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/sending/worker-crash.integration.test.ts",
+        "file-backed send crash and reconciliation boundaries overlaps independent transactions with 'race-success' acquiring first",
+        0
+      ],
+      "file": "apps/service/src/sending/worker-crash.integration.test.ts",
+      "fullName": "file-backed send crash and reconciliation boundaries overlaps independent transactions with 'race-success' acquiring first",
+      "occurrence": 0
+    },
+    {
       "id": "564ee6809546884eae3f4f21697faf8a72499feffadf32fdba8731066eb17548",
       "tuple": [
         "vitest-json-v1",
@@ -5668,6 +6376,18 @@
       "occurrence": 0
     },
     {
+      "id": "6daa353916b4ddeaf30b6bfd5e942f0a886af64d7862f0a00f84bf046b606321",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/ses/event-schema.test.ts",
+        "decodeSesEvent keeps structurally malformed SES JSON distinct from retryable reputation mismatches",
+        0
+      ],
+      "file": "apps/service/src/ses/event-schema.test.ts",
+      "fullName": "decodeSesEvent keeps structurally malformed SES JSON distinct from retryable reputation mismatches",
+      "occurrence": 0
+    },
+    {
       "id": "337f560e78b8d450037decc013dbd99a9cc97cb02ca00c6b9e1b9348af87065c",
       "tuple": [
         "vitest-json-v1",
@@ -5677,6 +6397,78 @@
       ],
       "file": "apps/service/src/ses/event-schema.test.ts",
       "fullName": "decodeSesEvent maps authentic unknown event names to Unknown",
+      "occurrence": 0
+    },
+    {
+      "id": "921a7ccdec17febd062e912205e4a9313777d1b769a37312e94af8ec927f9b6b",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/ses/event-schema.test.ts",
+        "decodeSesEvent rejects Bounce with complaint as a retryable reputation payload error",
+        0
+      ],
+      "file": "apps/service/src/ses/event-schema.test.ts",
+      "fullName": "decodeSesEvent rejects Bounce with complaint as a retryable reputation payload error",
+      "occurrence": 0
+    },
+    {
+      "id": "0d982648d1f7c00f24dde7c0af08cb1d1786eae87b4394b93cea7b36efe069ed",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/ses/event-schema.test.ts",
+        "decodeSesEvent rejects Bounce with no bounced recipients as a retryable reputation payload error",
+        0
+      ],
+      "file": "apps/service/src/ses/event-schema.test.ts",
+      "fullName": "decodeSesEvent rejects Bounce with no bounced recipients as a retryable reputation payload error",
+      "occurrence": 0
+    },
+    {
+      "id": "255be9bf310660123fe9aa1b9935584b931c0cb1b1a2f21acedace59d396fb53",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/ses/event-schema.test.ts",
+        "decodeSesEvent rejects Bounce without bounce as a retryable reputation payload error",
+        0
+      ],
+      "file": "apps/service/src/ses/event-schema.test.ts",
+      "fullName": "decodeSesEvent rejects Bounce without bounce as a retryable reputation payload error",
+      "occurrence": 0
+    },
+    {
+      "id": "c06753e4574aaa5927966e21d5f3a1b21639424b2e59b53e2eda6d9f4f2ab926",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/ses/event-schema.test.ts",
+        "decodeSesEvent rejects Complaint with bounce as a retryable reputation payload error",
+        0
+      ],
+      "file": "apps/service/src/ses/event-schema.test.ts",
+      "fullName": "decodeSesEvent rejects Complaint with bounce as a retryable reputation payload error",
+      "occurrence": 0
+    },
+    {
+      "id": "ea326773ce2456f199d830a0e3588ffd242739406db68bb7132162651f8f17ba",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/ses/event-schema.test.ts",
+        "decodeSesEvent rejects Complaint with no complained recipients as a retryable reputation payload error",
+        0
+      ],
+      "file": "apps/service/src/ses/event-schema.test.ts",
+      "fullName": "decodeSesEvent rejects Complaint with no complained recipients as a retryable reputation payload error",
+      "occurrence": 0
+    },
+    {
+      "id": "2b484cae51fd0d90a2cbe2da1976a3ca1e786dc31aea0801fa94c165b9887198",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/ses/event-schema.test.ts",
+        "decodeSesEvent rejects Complaint without complaint as a retryable reputation payload error",
+        0
+      ],
+      "file": "apps/service/src/ses/event-schema.test.ts",
+      "fullName": "decodeSesEvent rejects Complaint without complaint as a retryable reputation payload error",
       "occurrence": 0
     },
     {
@@ -5713,6 +6505,18 @@
       ],
       "file": "apps/service/src/ses/process-event.test.ts",
       "fullName": "handleSesSnsRequest falls back to SES message ID when delivery tag email mismatches",
+      "occurrence": 0
+    },
+    {
+      "id": "1b51ceb9827b433416e15af2101d468d6d4886ac9bb8a2b760baafaf238f09ae",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/ses/process-event.test.ts",
+        "handleSesSnsRequest promotes a manual global suppression through bounce to complaint without rewriting identity",
+        0
+      ],
+      "file": "apps/service/src/ses/process-event.test.ts",
+      "fullName": "handleSesSnsRequest promotes a manual global suppression through bounce to complaint without rewriting identity",
       "occurrence": 0
     },
     {
@@ -5881,6 +6685,18 @@
       ],
       "file": "apps/service/src/ses/simulator.test.ts",
       "fullName": "runSesSimulator finalizes simulator runs as failed when create mailing fails with a typed error",
+      "occurrence": 0
+    },
+    {
+      "id": "6736d088e4cef8839d6145dd887605f6ad5f2298e17a57bfcb7eb220c0a2cb75",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/ses/simulator.test.ts",
+        "runSesSimulator records send acceptance ambiguity without timing out or retrying",
+        0
+      ],
+      "file": "apps/service/src/ses/simulator.test.ts",
+      "fullName": "runSesSimulator records send acceptance ambiguity without timing out or retrying",
       "occurrence": 0
     },
     {
@@ -6424,6 +7240,54 @@
       "occurrence": 0
     },
     {
+      "id": "768dab6a52d18f8061fdf9b11b05a990228c3e58e26c4ebb148fcf447fa3f1af",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/ses/webhook-routes.test.ts",
+        "SES webhook routes returns empty 503 and reuses one unprocessed audit for verified Bounce with complaint",
+        0
+      ],
+      "file": "apps/service/src/ses/webhook-routes.test.ts",
+      "fullName": "SES webhook routes returns empty 503 and reuses one unprocessed audit for verified Bounce with complaint",
+      "occurrence": 0
+    },
+    {
+      "id": "feaace22aa3b6f5cecb49651a8f432af04d330fa1f968e16dc01a9c90ca6031d",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/ses/webhook-routes.test.ts",
+        "SES webhook routes returns empty 503 and reuses one unprocessed audit for verified Bounce without bounce",
+        0
+      ],
+      "file": "apps/service/src/ses/webhook-routes.test.ts",
+      "fullName": "SES webhook routes returns empty 503 and reuses one unprocessed audit for verified Bounce without bounce",
+      "occurrence": 0
+    },
+    {
+      "id": "784fcf8a735bee0b3fb4e8bcd211ac158b786d08cec51c0c884706e402790d64",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/ses/webhook-routes.test.ts",
+        "SES webhook routes returns empty 503 and reuses one unprocessed audit for verified Complaint with bounce",
+        0
+      ],
+      "file": "apps/service/src/ses/webhook-routes.test.ts",
+      "fullName": "SES webhook routes returns empty 503 and reuses one unprocessed audit for verified Complaint with bounce",
+      "occurrence": 0
+    },
+    {
+      "id": "eb102607c7dbe7846ad36d827d28105fa67d07428d0a1897b05736b687b72098",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/ses/webhook-routes.test.ts",
+        "SES webhook routes returns empty 503 and reuses one unprocessed audit for verified Complaint without complaint",
+        0
+      ],
+      "file": "apps/service/src/ses/webhook-routes.test.ts",
+      "fullName": "SES webhook routes returns empty 503 and reuses one unprocessed audit for verified Complaint without complaint",
+      "occurrence": 0
+    },
+    {
       "id": "a1083a0e4161118f7bed27c710bf1d83fa18ac2e654e8aeb4532f39a4f8d8825",
       "tuple": [
         "vitest-json-v1",
@@ -6493,6 +7357,54 @@
       ],
       "file": "apps/service/src/suppressions/routes.test.ts",
       "fullName": "suppressions routes returns existing duplicate suppressions without rewriting automated reasons",
+      "occurrence": 0
+    },
+    {
+      "id": "c55e0ee8dc034b8ca11d5f49a5069fd44dfbff49ec998d67195a98c54c0ae9e5",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/suppressions/suppression-list-race.integration.test.ts",
+        "file-backed suppression and list write races keeps automated suppression protected with deletion-first commit ordering",
+        0
+      ],
+      "file": "apps/service/src/suppressions/suppression-list-race.integration.test.ts",
+      "fullName": "file-backed suppression and list write races keeps automated suppression protected with deletion-first commit ordering",
+      "occurrence": 0
+    },
+    {
+      "id": "e490c893132e882da2e3185c01bca11d9d8727dda3273c8302121a8a8b0c142c",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/suppressions/suppression-list-race.integration.test.ts",
+        "file-backed suppression and list write races keeps automated suppression protected with promotion-first commit ordering",
+        0
+      ],
+      "file": "apps/service/src/suppressions/suppression-list-race.integration.test.ts",
+      "fullName": "file-backed suppression and list write races keeps automated suppression protected with promotion-first commit ordering",
+      "occurrence": 0
+    },
+    {
+      "id": "d881091e8c017f72a41a5dc264efb1980a05d714684dd85f71084f236dbf1a1e",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/suppressions/suppression-list-race.integration.test.ts",
+        "file-backed suppression and list write races keeps list-backed mailing state valid with creation-first commit ordering",
+        0
+      ],
+      "file": "apps/service/src/suppressions/suppression-list-race.integration.test.ts",
+      "fullName": "file-backed suppression and list write races keeps list-backed mailing state valid with creation-first commit ordering",
+      "occurrence": 0
+    },
+    {
+      "id": "917c2e4667fd9bb606128bb925d51956633b5af04bf2fbfb916f5ebef6e58201",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/suppressions/suppression-list-race.integration.test.ts",
+        "file-backed suppression and list write races keeps list-backed mailing state valid with deletion-first commit ordering",
+        0
+      ],
+      "file": "apps/service/src/suppressions/suppression-list-race.integration.test.ts",
+      "fullName": "file-backed suppression and list write races keeps list-backed mailing state valid with deletion-first commit ordering",
       "occurrence": 0
     },
     {
@@ -6757,6 +7669,18 @@
       ],
       "file": "e2e/cli-stdout.e2e.test.ts",
       "fullName": "CLI stdout does not truncate large piped --json output and exits cleanly",
+      "occurrence": 0
+    },
+    {
+      "id": "3be99ad8a12bdb4fa813a9d35fe56fc46b7242def67147c13c87aec5cc155c0c",
+      "tuple": [
+        "vitest-json-v1",
+        "packages/api-contract/src/mailings/schema.test.ts",
+        "MailingCountsSchema decodes old five-count wire payloads with a required ambiguous zero",
+        0
+      ],
+      "file": "packages/api-contract/src/mailings/schema.test.ts",
+      "fullName": "MailingCountsSchema decodes old five-count wire payloads with a required ambiguous zero",
       "occurrence": 0
     },
     {

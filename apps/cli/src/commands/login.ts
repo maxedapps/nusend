@@ -3,7 +3,8 @@ import type { PermissionSet } from "@nusend/api-contract/permissions";
 
 import { NusendHttpClient } from "../client/http.js";
 import { NusendApi } from "../client/nusend-api.js";
-import { loadConfig, normalizeBaseUrl, saveConfig } from "../config/profiles.js";
+import { updateLoginState } from "../config/local-state.js";
+import { normalizeBaseUrl } from "../config/profiles.js";
 import { printJson } from "../output/format.js";
 import {
   commandPositionals,
@@ -26,6 +27,10 @@ export async function runLoginCommand(args: string[], context: CommandContext): 
     new NusendHttpClient({ baseUrl, timeoutMs: httpTimeoutMsFromEnv(context.env) }),
   );
   const started = await api.startDeviceAuthorization({ clientName: name, permissions });
+  const expiresAt = Date.parse(started.expiresAt);
+  if (!Number.isFinite(expiresAt)) {
+    throw new Error("Device authorization response contained an invalid expiration timestamp.");
+  }
 
   if (context.options.json) {
     console.error(
@@ -48,7 +53,8 @@ export async function runLoginCommand(args: string[], context: CommandContext): 
   await pollUntilApproved(
     api,
     started.deviceCode,
-    started.intervalSeconds * 1000,
+    started.intervalSeconds,
+    expiresAt,
     baseUrl,
     context,
   );
@@ -57,55 +63,76 @@ export async function runLoginCommand(args: string[], context: CommandContext): 
 async function pollUntilApproved(
   api: NusendApi,
   deviceCode: string,
-  intervalMs: number,
+  initialIntervalSeconds: number,
+  expiresAt: number,
   baseUrl: string,
   context: CommandContext,
 ): Promise<void> {
-  await sleep(clampPollInterval(intervalMs, context.env));
-  const polled = await api.pollDeviceAuthorization(deviceCode);
-  if (polled.status === "approved") {
-    const profile = selectedProfile(context);
-    await context.store.write(profile, {
-      apiKey: polled.apiKey.key,
-      apiKeyId: polled.apiKey.id,
-      createdAt: polled.apiKey.createdAt,
-      preview: polled.apiKey.preview,
-    });
-    // Re-read the config immediately before merging: the device approval wait can
-    // take minutes, during which another `login` for a different profile may have
-    // written the file. Merging into the process-start snapshot would drop it.
-    const current = await loadConfig(context.env);
-    await saveConfig(
-      {
-        activeProfile: current.activeProfile ?? profile,
-        profiles: { ...(current.profiles ?? {}), [profile]: { baseUrl } },
-      },
-      context.env,
-    );
+  let intervalMs = safePollIntervalMs(initialIntervalSeconds);
 
-    if (context.options.json) {
-      printJson({
-        profile,
-        stored: true,
-        apiKey: { id: polled.apiKey.id, preview: polled.apiKey.preview },
-      });
-    } else {
-      console.log(`Logged in as profile ${profile} with key ${polled.apiKey.preview}.`);
+  while (true) {
+    const beforeSleep = context.runtime.now();
+    assertNotLocallyExpired(beforeSleep, expiresAt);
+    // eslint-disable-next-line no-await-in-loop -- protocol polling must remain sequential.
+    await context.runtime.sleep(Math.min(intervalMs, expiresAt - beforeSleep));
+
+    // A token request is never started at or after local expiry. Once started,
+    // the server remains authoritative and an approved response is accepted.
+    assertNotLocallyExpired(context.runtime.now(), expiresAt);
+    // eslint-disable-next-line no-await-in-loop -- each response determines the next poll.
+    const polled = await api.pollDeviceAuthorization(deviceCode);
+    if (polled.status === "approved") {
+      const profile = selectedProfile(context);
+      // eslint-disable-next-line no-await-in-loop -- approval terminates the loop after persistence.
+      await updateLoginState(
+        {
+          baseUrl,
+          credential: {
+            apiKey: polled.apiKey.key,
+            apiKeyId: polled.apiKey.id,
+            createdAt: polled.apiKey.createdAt,
+            preview: polled.apiKey.preview,
+          },
+          profile,
+        },
+        context.env,
+      );
+
+      if (context.options.json) {
+        printJson({
+          profile,
+          stored: true,
+          apiKey: { id: polled.apiKey.id, preview: polled.apiKey.preview },
+        });
+      } else {
+        console.log(`Logged in as profile ${profile} with key ${polled.apiKey.preview}.`);
+      }
+      return;
     }
-    return;
+    if (polled.status === "authorization_pending" || polled.status === "slow_down") {
+      intervalMs = safePollIntervalMs(polled.intervalSeconds);
+      continue;
+    }
+    if (polled.status === "access_denied") {
+      throw new UsageError("Device authorization denied.", 3);
+    }
+    if (polled.status === "expired_token") {
+      throw new UsageError("Device authorization expired.", 3);
+    }
+    if (polled.status === "invalid_grant") {
+      throw new UsageError("Device code not recognized by the server.", 3);
+    }
   }
-  if (polled.status === "authorization_pending" || polled.status === "slow_down") {
-    return pollUntilApproved(api, deviceCode, polled.intervalSeconds * 1000, baseUrl, context);
-  }
-  if (polled.status === "access_denied") {
-    throw new UsageError("Device authorization denied.", 3);
-  }
-  if (polled.status === "expired_token") {
-    throw new UsageError("Device authorization expired.", 3);
-  }
-  if (polled.status === "invalid_grant") {
-    throw new UsageError("Device code not recognized by the server.", 3);
-  }
+}
+
+function assertNotLocallyExpired(now: number, expiresAt: number): void {
+  if (now >= expiresAt) throw new UsageError("Device authorization expired.", 3);
+}
+
+function safePollIntervalMs(intervalSeconds: number): number {
+  const milliseconds = intervalSeconds * 1_000;
+  if (!Number.isFinite(milliseconds)) return 1_000;
+  return Math.max(1_000, Math.ceil(milliseconds));
 }
 
 function normalizeLoginBaseUrl(value: string): string {
@@ -125,15 +152,4 @@ function defaultLoginPermissions(): PermissionSet {
     operations: ["read"],
     suppressions: ["read", "write"],
   };
-}
-
-function clampPollInterval(intervalMs: number, env: NodeJS.ProcessEnv): number {
-  const raw = env.NUSEND_LOGIN_POLL_INTERVAL_MS;
-  if (raw === undefined) return intervalMs;
-  const clamp = Number(raw);
-  return Number.isFinite(clamp) && clamp >= 0 ? Math.min(intervalMs, clamp) : intervalMs;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

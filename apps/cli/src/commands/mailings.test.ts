@@ -28,7 +28,25 @@ describe("mailings commands", () => {
     ).resolves.toEqual({ exitCode: 0 });
 
     expect(log.mock.calls.flat().join("\n")).toContain("mailing_1\tcompleted\ttransactional");
+    expect(log.mock.calls.flat().join("\n")).toContain("2/4");
+    expect(log.mock.calls.flat().join("\n")).toContain("ambiguous=1");
+  });
+
+  it("decodes an old five-count service as zero ambiguity", async () => {
+    globalThis.fetch = vi.fn(async () => {
+      const item = mailingListItem();
+      const { ambiguous: _omitted, ...oldCounts } = item.counts;
+      return Response.json({
+        items: [{ ...item, counts: oldCounts }],
+        pagination: { limit: 50, nextOffset: null, offset: 0 },
+      });
+    }) as unknown as typeof fetch;
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+    await expect(runCli(["mailings", "list"], cliEnv())).resolves.toEqual({ exitCode: 0 });
+
     expect(log.mock.calls.flat().join("\n")).toContain("2/3");
+    expect(log.mock.calls.flat().join("\n")).not.toContain("ambiguous=");
   });
 
   it("prints full detail as JSON but omits HTML in human mode", async () => {
@@ -48,6 +66,7 @@ describe("mailings commands", () => {
 
     await runCli(["mailings", "get", "mailing_1"], cliEnv());
     expect(log.mock.calls.flat().join("\n")).not.toContain("secret body");
+    expect(log.mock.calls.flat().join("\n")).toContain("ambiguous=1");
 
     log.mockClear();
     await runCli(["--json", "mailings", "get", "mailing_1"], cliEnv());
@@ -64,7 +83,7 @@ function cliEnv(): NodeJS.ProcessEnv {
 
 function mailingListItem() {
   return {
-    counts: { failed: 0, queued: 1, sending: 0, sent: 2, suppressed: 0 },
+    counts: { ambiguous: 1, failed: 0, queued: 1, sending: 0, sent: 2, suppressed: 0 },
     createdAt: "2026-07-09T00:00:00.000Z",
     id: "mailing_1",
     listId: null,

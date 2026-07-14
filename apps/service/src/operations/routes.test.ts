@@ -71,7 +71,7 @@ async function seedOperationsData(runtime: TestRuntime): Promise<void> {
            created_at, updated_at
          ) VALUES (
            'delivery_2', 'mailing_1', 'user2@example.com', 'contact_2', '{"secret":"vars2"}',
-           'failed', NULL, 'ambiguous provider outcome',
+           'ambiguous', NULL, 'ambiguous provider outcome',
            '2026-07-03T12:00:02.000Z', '2026-07-03T12:00:05.000Z'
          );`,
       );
@@ -104,7 +104,7 @@ async function seedOperationsData(runtime: TestRuntime): Promise<void> {
            created_at, updated_at
          ) VALUES (
            'delivery_attempt_only_issue', 'mailing_1', 'attempt-only@example.com', NULL, NULL,
-           'queued', NULL, NULL,
+           'ambiguous', NULL, NULL,
            '2026-07-03T12:00:00.500Z', '2026-07-03T12:00:00.700Z'
          );`,
       );
@@ -312,6 +312,7 @@ describe("operations routes", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
       deliveries: {
+        ambiguous: 0,
         failed: 0,
         queued: 0,
         sending: 0,
@@ -339,8 +340,9 @@ describe("operations routes", () => {
       expect(response.status).toBe(200);
       await expect(response.json()).resolves.toEqual({
         deliveries: {
-          failed: 1,
-          queued: 3,
+          ambiguous: 2,
+          failed: 0,
+          queued: 2,
           sending: 0,
           sent: 1,
           suppressed: 0,
@@ -389,7 +391,7 @@ describe("operations routes", () => {
             kind: "delivery",
             message: "ambiguous provider outcome",
             relatedId: "mailing_1",
-            status: "failed",
+            status: "ambiguous",
             updatedAt: "2026-07-03T12:00:05.000Z",
           },
           {
@@ -407,6 +409,14 @@ describe("operations routes", () => {
             relatedId: "delivery_2",
             status: "failed",
             updatedAt: "2026-07-03T12:00:04.000Z",
+          },
+          {
+            id: "delivery_attempt_only_issue",
+            kind: "delivery",
+            message: null,
+            relatedId: "mailing_1",
+            status: "ambiguous",
+            updatedAt: "2026-07-03T12:00:00.700Z",
           },
           {
             id: "attempt_5",
@@ -462,6 +472,15 @@ describe("operations routes", () => {
     await fetchWithSeededData("/deliveries?status=sent", async (response) => {
       expect(response.status).toBe(200);
       await expect(response.json()).resolves.toMatchObject({ items: [{ id: "delivery_1" }] });
+    });
+
+    await fetchWithSeededData("/deliveries?status=ambiguous", async (response) => {
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as { items: Array<{ id: string }> };
+      expect(body.items.map((item) => item.id)).toEqual([
+        "delivery_2",
+        "delivery_attempt_only_issue",
+      ]);
     });
 
     await fetchWithSeededData("/deliveries?issue=failed_or_ambiguous", async (response) => {
@@ -537,7 +556,7 @@ describe("operations routes", () => {
           lastError: "ambiguous provider outcome",
           mailingId: "mailing_1",
           sesMessageId: null,
-          status: "failed",
+          status: "ambiguous",
           updatedAt: "2026-07-03T12:00:05.000Z",
         },
         job: {

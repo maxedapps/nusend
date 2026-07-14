@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { Database } from "../services/database.ts";
 import { fakeUnsubscribeConfig, withTestApp, type FakeAuthBehavior } from "../testing/layers.ts";
+import { signUnsubscribeToken } from "../unsubscribe/token.ts";
 
 function listRequest(
   path: string,
@@ -154,6 +155,175 @@ describe("lists routes", () => {
       );
       expect(suppressionCount?.count).toBe(0);
     });
+  });
+
+  it.each(["scheduled", "sending"] as const)(
+    "blocks deletion of a %s mailing list and preserves policy and queue rows",
+    async (mailingState) => {
+      await withTestApp({ auth: { session: { userId: "user_1" } } }, async (app, runtime) => {
+        await runtime.runPromise(
+          Effect.gen(function* () {
+            const db = yield* Database;
+            yield* db.run(
+              "test:active-list",
+              "INSERT INTO lists (id, name, created_at) VALUES ('list_active', 'Active', '2026-07-03T12:00:00.000Z');",
+            );
+            yield* db.run(
+              "test:active-list-suppression",
+              `INSERT INTO suppressions (id, email, scope, list_id, reason, created_at)
+               VALUES ('supp_active', 'blocked@example.com', 'list', 'list_active', 'manual', '2026-07-03T12:00:00.000Z');`,
+            );
+            yield* db.run(
+              "test:active-mailing",
+              `INSERT INTO mailings (
+                 id, purpose, state, subject, html, list_id, scheduled_at, created_at, updated_at
+               ) VALUES (
+                 'mailing_active', 'marketing', $mailingState, 'Subject', '<p>Body</p>',
+                 'list_active', '2026-07-03T12:00:00.000Z', '2026-07-03T12:00:00.000Z',
+                 '2026-07-03T12:00:00.000Z'
+               );`,
+              { mailingState },
+            );
+            yield* db.run(
+              "test:active-delivery",
+              `INSERT INTO deliveries (
+                 id, mailing_id, email, status, created_at, updated_at
+               ) VALUES (
+                 'delivery_active', 'mailing_active', 'user@example.com', 'queued',
+                 '2026-07-03T12:00:00.000Z', '2026-07-03T12:00:00.000Z'
+               );`,
+            );
+            yield* db.run(
+              "test:active-job",
+              `INSERT INTO jobs (id, state, run_at, delivery_id, created_at, updated_at)
+               VALUES (
+                 'job_active', 'queued', '2026-07-03T12:00:00.000Z', 'delivery_active',
+                 '2026-07-03T12:00:00.000Z', '2026-07-03T12:00:00.000Z'
+               );`,
+            );
+          }),
+        );
+
+        const response = await app.fetch(
+          new Request("http://localhost/api/lists/list_active", { method: "DELETE" }),
+        );
+        expect(response.status).toBe(409);
+        await expect(response.json()).resolves.toEqual({
+          error: {
+            code: "conflict",
+            message: "List cannot be deleted while non-completed mailings reference it.",
+          },
+        });
+
+        const preserved = await runtime.runPromise(
+          Effect.flatMap(Database, (db) =>
+            db.get(
+              "test:active-rows-preserved",
+              `SELECT lists.id AS listId, mailings.list_id AS mailingListId,
+                      suppressions.id AS suppressionId, deliveries.status AS deliveryStatus,
+                      jobs.id AS jobId
+               FROM lists
+               INNER JOIN mailings ON mailings.list_id = lists.id
+               INNER JOIN suppressions ON suppressions.list_id = lists.id
+               INNER JOIN deliveries ON deliveries.mailing_id = mailings.id
+               INNER JOIN jobs ON jobs.delivery_id = deliveries.id
+               WHERE lists.id = 'list_active';`,
+            ),
+          ),
+        );
+        expect(preserved).toEqual({
+          deliveryStatus: "queued",
+          jobId: "job_active",
+          listId: "list_active",
+          mailingListId: "list_active",
+          suppressionId: "supp_active",
+        });
+      });
+    },
+  );
+
+  it("deletes a completed mailing list while its retained unsubscribe token stays effective", async () => {
+    await withTestApp(
+      {
+        auth: { session: { userId: "user_1" } },
+        unsubscribe: Option.some(fakeUnsubscribeConfig()),
+      },
+      async (app, runtime) => {
+        const token = await runtime.runPromise(
+          Effect.gen(function* () {
+            const db = yield* Database;
+            yield* db.run(
+              "test:completed-list",
+              "INSERT INTO lists (id, name, created_at) VALUES ('list_completed', 'Completed', '2026-07-03T12:00:00.000Z');",
+            );
+            yield* db.run(
+              "test:completed-list-suppression",
+              `INSERT INTO suppressions (id, email, scope, list_id, reason, created_at)
+               VALUES ('supp_completed', 'other@example.com', 'list', 'list_completed', 'manual', '2026-07-03T12:00:00.000Z');`,
+            );
+            yield* db.run(
+              "test:completed-mailing",
+              `INSERT INTO mailings (
+                 id, purpose, state, subject, html, list_id, scheduled_at, created_at, updated_at
+               ) VALUES (
+                 'mailing_completed', 'marketing', 'completed', 'Subject', '<p>Body</p>',
+                 'list_completed', '2026-07-03T12:00:00.000Z', '2026-07-03T12:00:00.000Z',
+                 '2026-07-03T12:00:00.000Z'
+               );`,
+            );
+            yield* db.run(
+              "test:completed-delivery",
+              `INSERT INTO deliveries (
+                 id, mailing_id, email, status, created_at, updated_at
+               ) VALUES (
+                 'delivery_completed', 'mailing_completed', 'user@example.com', 'sent',
+                 '2026-07-03T12:00:00.000Z', '2026-07-03T12:00:00.000Z'
+               );`,
+            );
+            return signUnsubscribeToken(
+              "delivery_completed",
+              fakeUnsubscribeConfig().currentSecret,
+            );
+          }),
+        );
+
+        const deleted = await app.fetch(
+          new Request("http://localhost/api/lists/list_completed", { method: "DELETE" }),
+        );
+        expect(deleted.status).toBe(204);
+
+        const unsubscribed = await app.fetch(
+          new Request(`http://localhost/unsubscribe/${token}`, {
+            body: new URLSearchParams({ confirm: "unsubscribe" }),
+            headers: { "content-type": "application/x-www-form-urlencoded" },
+            method: "POST",
+          }),
+        );
+        expect(unsubscribed.status).toBe(200);
+
+        const rows = await runtime.runPromise(
+          Effect.flatMap(Database, (db) =>
+            db.get(
+              "test:completed-list-results",
+              `SELECT mailings.list_id AS mailingListId,
+                      (SELECT count(*) FROM lists WHERE id = 'list_completed') AS listCount,
+                      (SELECT count(*) FROM suppressions WHERE id = 'supp_completed') AS listSuppressionCount,
+                      (SELECT reason FROM suppressions
+                       WHERE email = 'user@example.com' COLLATE NOCASE
+                         AND scope = 'marketing' AND list_id IS NULL) AS retainedTokenReason
+               FROM mailings
+               WHERE id = 'mailing_completed';`,
+            ),
+          ),
+        );
+        expect(rows).toEqual({
+          listCount: 0,
+          listSuppressionCount: 0,
+          mailingListId: null,
+          retainedTokenReason: "unsubscribe",
+        });
+      },
+    );
   });
 
   it("rejects a contact import that exceeds the cap", async () => {

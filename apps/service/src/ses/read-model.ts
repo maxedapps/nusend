@@ -59,7 +59,7 @@ const SimulatorRunRow = Schema.Struct({
   recipientEmail: Schema.String,
   scenario: Schema.String,
   startedAt: Schema.String,
-  status: Schema.String,
+  status: Schema.Literals(["started", "sent", "validated", "failed", "timed_out", "ambiguous"]),
   targetBaseUrl: Schema.NullOr(Schema.String),
 });
 

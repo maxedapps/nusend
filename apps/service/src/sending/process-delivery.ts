@@ -12,6 +12,7 @@ import type { IdGeneratorService } from "../services/ids.ts";
 import type { UnsubscribeConfigService } from "../unsubscribe/config.ts";
 import { buildUnsubscribeUrl } from "../unsubscribe/url.ts";
 import {
+  type AttemptWriteResult,
   recordAmbiguousFailure,
   recordPermanentFailure,
   recordRetryableFailure,
@@ -47,7 +48,7 @@ export function processSendDeliveryJob(
         yield* recordStaleSendingAsAmbiguous({
           deliveryId: context.delivery.id,
           errorMessage: "Delivery was left sending by a previous attempt; outcome is ambiguous.",
-        });
+        }).pipe(Effect.flatMap(handleAttemptWriteResult));
       }
       return;
     }
@@ -68,7 +69,7 @@ export function processSendDeliveryJob(
           deliveryId: context.delivery.id,
           errorMessage: policy.message,
           status: policy.status,
-        });
+        }).pipe(Effect.flatMap(handleAttemptWriteResult));
         return;
       }
       if (policy.kind === "BlockRetryable") {
@@ -76,7 +77,7 @@ export function processSendDeliveryJob(
           attemptId: attempt.attemptId,
           deliveryId: context.delivery.id,
           errorMessage: policy.message,
-        });
+        }).pipe(Effect.flatMap(handleAttemptWriteResult));
         return yield* Effect.fail(new SendProcessorError({ message: policy.message }));
       }
 
@@ -91,7 +92,7 @@ export function processSendDeliveryJob(
           attemptId: attempt.attemptId,
           deliveryId: context.delivery.id,
           errorMessage: message,
-        });
+        }).pipe(Effect.flatMap(handleAttemptWriteResult));
         return yield* Effect.fail(new SendProcessorError({ message }));
       }
 
@@ -103,7 +104,7 @@ export function processSendDeliveryJob(
           attemptId: attempt.attemptId,
           deliveryId: context.delivery.id,
           errorMessage: causeMessage(renderedExit.cause),
-        });
+        }).pipe(Effect.flatMap(handleAttemptWriteResult));
         return;
       }
 
@@ -113,7 +114,7 @@ export function processSendDeliveryJob(
           attemptId: attempt.attemptId,
           deliveryId: context.delivery.id,
           errorMessage: causeMessage(preparedExit.cause),
-        });
+        }).pipe(Effect.flatMap(handleAttemptWriteResult));
         return;
       }
 
@@ -126,7 +127,7 @@ export function processSendDeliveryJob(
           attemptId: attempt.attemptId,
           deliveryId: context.delivery.id,
           messageId: sendExit.value.messageId,
-        });
+        }).pipe(Effect.flatMap(handleAttemptWriteResult));
         return;
       }
 
@@ -137,21 +138,21 @@ export function processSendDeliveryJob(
             attemptId: attempt.attemptId,
             deliveryId: context.delivery.id,
             errorMessage: failure.message,
-          });
+          }).pipe(Effect.flatMap(handleAttemptWriteResult));
           return;
         case "ambiguous":
           yield* recordAmbiguousFailure({
             attemptId: attempt.attemptId,
             deliveryId: context.delivery.id,
             errorMessage: failure.message,
-          });
+          }).pipe(Effect.flatMap(handleAttemptWriteResult));
           return;
         case "retryable":
           yield* recordRetryableFailure({
             attemptId: attempt.attemptId,
             deliveryId: context.delivery.id,
             errorMessage: failure.message,
-          });
+          }).pipe(Effect.flatMap(handleAttemptWriteResult));
           return yield* Effect.fail(new SendProcessorError({ message: failure.message }));
       }
     });
@@ -165,6 +166,7 @@ export function processSendDeliveryJob(
           deliveryId: context.delivery.id,
           errorMessage: message,
         }).pipe(
+          Effect.flatMap(handleAttemptWriteResult),
           Effect.andThen(Effect.fail(new SendProcessorError({ message }))),
           // If the reset write also fails (database genuinely down), surface the
           // original error; the delivery stays `sending` and is resolved as
@@ -174,6 +176,16 @@ export function processSendDeliveryJob(
       }),
     );
   });
+}
+
+function handleAttemptWriteResult(result: AttemptWriteResult): Effect.Effect<void> {
+  switch (result) {
+    case "Recorded":
+    case "Reconciled":
+    case "AlreadyRecorded":
+    case "SupersededTerminal":
+      return Effect.void;
+  }
 }
 
 function causeMessage(cause: Cause.Cause<unknown>): string {

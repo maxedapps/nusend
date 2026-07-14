@@ -12,7 +12,7 @@ import type {
 } from "../services/email-transport.ts";
 import { IdGenerator, type IdGeneratorService } from "../services/ids.ts";
 import type { UnsubscribeConfigService } from "../unsubscribe/config.ts";
-import { markReleasedDeadJobDeliveryAmbiguous } from "../sending/attempts.ts";
+import { reconcileDeadJobDelivery } from "../sending/attempts.ts";
 import { processSendDeliveryJob } from "../sending/process-delivery.ts";
 import { addMillisecondsIso, currentIso, subtractDaysIso } from "../lib/iso-time.ts";
 import {
@@ -82,7 +82,7 @@ export function runSendWorkerOnce(
       if (job.state !== "dead") continue;
       result.dead += 1;
       const message = job.lastError ?? "Expired send-delivery job reached max attempts.";
-      yield* markReleasedDeadJobDeliveryAmbiguous({
+      yield* reconcileDeadJobDelivery({
         deliveryId: job.deliveryId,
         errorMessage: message,
       });
@@ -116,7 +116,7 @@ export function runSendWorkerOnce(
         }).pipe(
           Effect.flatMap((failedJob) =>
             failedJob.state === "dead"
-              ? markReleasedDeadJobDeliveryAmbiguous({
+              ? reconcileDeadJobDelivery({
                   deliveryId: job.deliveryId,
                   errorMessage: failedJob.lastError ?? message,
                 }).pipe(Effect.as("dead" as const))
@@ -159,8 +159,9 @@ export function runSendWorkerOnce(
 }
 
 // Repairs dead jobs whose delivery is still non-terminal (a crash between the
-// release-to-dead commit and the post-release reconciliation). Idempotent: the
-// underlying helpers no-op once the delivery is terminal.
+// release-to-dead commit and the post-release reconciliation). Queued deliveries
+// had no in-flight provider call and become failed; sending deliveries with a
+// started attempt become ambiguous. Terminal deliveries are safe no-ops.
 function reconcileOrphanedDeadJobs(): Effect.Effect<void, DatabaseError, DatabaseService> {
   return Effect.gen(function* () {
     const db = yield* Database;
@@ -173,7 +174,7 @@ function reconcileOrphanedDeadJobs(): Effect.Effect<void, DatabaseError, Databas
     );
 
     for (const orphan of orphans) {
-      yield* markReleasedDeadJobDeliveryAmbiguous({
+      yield* reconcileDeadJobDelivery({
         deliveryId: orphan.deliveryId,
         errorMessage: orphan.lastError ?? "Dead send-delivery job reached max attempts.",
       });

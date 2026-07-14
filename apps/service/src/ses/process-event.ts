@@ -4,11 +4,13 @@ import { DatabaseError } from "../errors.ts";
 import { currentIso } from "../lib/iso-time.ts";
 import { Database, type DatabaseService } from "../services/database.ts";
 import { IdGenerator, type IdGeneratorService } from "../services/ids.ts";
+import { upsertAutomatedSuppression } from "../suppressions/write.ts";
 import { SesOperationsConfig, type SesOperationsConfigService } from "./config.ts";
 import {
   SesOperationsDisabledError,
   SesOperationsForbiddenError,
   SesOperationsMalformedError,
+  SesOperationsRetryablePayloadError,
   SnsConfirmationError,
   type SesWebhookError,
 } from "./errors.ts";
@@ -91,7 +93,7 @@ function handleNotification(
   envelope: VerifiedSnsEnvelope,
 ): Effect.Effect<
   void,
-  SesOperationsMalformedError | DatabaseError,
+  SesOperationsMalformedError | SesOperationsRetryablePayloadError | DatabaseError,
   DatabaseService | IdGeneratorService
 > {
   return Effect.gen(function* () {
@@ -373,7 +375,7 @@ function insertEventRow(
   row: EventRowSeed,
   index: number,
   now: string,
-): Effect.Effect<void, DatabaseError, IdGeneratorService> {
+): Effect.Effect<void, DatabaseError, DatabaseService | IdGeneratorService> {
   return Effect.gen(function* () {
     const normalizedEmail = row.email?.trim().toLowerCase() || null;
     // A suppression is only written when there is a normalized recipient email
@@ -433,18 +435,13 @@ function insertEventRow(
 
     if (row.shouldSuppressReason && normalizedEmail) {
       const suppressionId = yield* idGenerator.next;
-      yield* db.run(
-        "ses:suppression:insert",
-        `INSERT INTO suppressions (id, email, scope, list_id, reason, created_at)
-         VALUES ($id, $email, 'all', NULL, $reason, $createdAt)
-         ON CONFLICT(email, scope) WHERE list_id IS NULL DO NOTHING;`,
-        {
-          createdAt: now,
-          email: normalizedEmail,
-          id: suppressionId,
-          reason: row.shouldSuppressReason,
-        },
-      );
+      yield* upsertAutomatedSuppression({
+        createdAt: now,
+        email: normalizedEmail,
+        id: suppressionId,
+        reason: row.shouldSuppressReason,
+        scope: "all",
+      });
       yield* Effect.logInfo("ses suppression recorded", {
         reason: row.shouldSuppressReason,
         scope: "all",

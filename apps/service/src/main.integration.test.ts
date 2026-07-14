@@ -139,7 +139,7 @@ describe.sequential("real Bun service entrypoints", () => {
       const rollback = spawnSync("bun", ["src/db/migrate.ts", "down"], {
         cwd: serviceRoot,
         encoding: "utf8",
-        env: fixture.env,
+        env: { ...fixture.env, NUSEND_CONFIRM_DESTRUCTIVE_ROLLBACK: "1" },
       });
       expect(rollback.status, `${rollback.stdout}\n${rollback.stderr}`).toBe(0);
 

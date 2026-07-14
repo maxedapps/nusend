@@ -41,6 +41,11 @@ describe("unsubscribeByToken", () => {
           delivery?.id ?? "missing",
           fakeUnsubscribeConfig().currentSecret,
         );
+        yield* db.run(
+          "test:manual-marketing-suppression",
+          `INSERT INTO suppressions (id, email, scope, list_id, reason, created_at)
+           VALUES ('supp_manual', 'USER@example.com', 'marketing', NULL, 'manual', '2026-07-01T00:00:00.000Z');`,
+        );
 
         const first = yield* unsubscribeByToken(token, "one-click");
         const second = yield* unsubscribeByToken(token, "human");
@@ -50,7 +55,9 @@ describe("unsubscribeByToken", () => {
           second,
           suppressions: yield* db.all(
             "assert:suppressions",
-            "SELECT lower(email) AS email, scope, list_id AS listId, reason FROM suppressions;",
+            `SELECT id, lower(email) AS email, scope, list_id AS listId, reason,
+                    created_at AS createdAt
+             FROM suppressions;`,
           ),
         };
       }),
@@ -60,7 +67,14 @@ describe("unsubscribeByToken", () => {
     expect(result.first).toMatchObject({ kind: "Success", appliedMarketingUnsubscribe: true });
     expect(result.second).toMatchObject({ kind: "Success", appliedMarketingUnsubscribe: true });
     expect(result.suppressions).toEqual([
-      { email: "user@example.com", listId: null, reason: "unsubscribe", scope: "marketing" },
+      {
+        createdAt: "2026-07-01T00:00:00.000Z",
+        email: "user@example.com",
+        id: "supp_manual",
+        listId: null,
+        reason: "unsubscribe",
+        scope: "marketing",
+      },
     ]);
   });
 

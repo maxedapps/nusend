@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { Database } from "../services/database.ts";
 import { fakeUnsubscribeConfig, withTestApp, type FakeAuthBehavior } from "../testing/layers.ts";
+import { upsertAutomatedSuppression } from "./write.ts";
 
 function suppressionRequest(
   path: string,
@@ -231,12 +232,22 @@ describe("suppressions routes", () => {
                VALUES ('manual_1', 'manual@example.com', 'all', NULL, 'manual', '2026-07-03T12:00:00.000Z');`,
             ),
             db.run(
-              "test:complaint",
+              "test:promotable",
               `INSERT INTO suppressions (id, email, scope, list_id, reason, created_at)
-               VALUES ('complaint_1', 'complaint@example.com', 'all', NULL, 'complaint', '2026-07-03T12:00:00.000Z');`,
+               VALUES ('promoted_1', 'promoted@example.com', 'all', NULL, 'manual', '2026-07-03T12:00:00.000Z');`,
             ),
           ]),
         ),
+      );
+
+      await runtime.runPromise(
+        upsertAutomatedSuppression({
+          createdAt: "2026-07-04T00:00:00.000Z",
+          email: "Promoted@Example.com",
+          id: "ignored_automated_id",
+          reason: "complaint",
+          scope: "all",
+        }),
       );
 
       expect(
@@ -248,7 +259,7 @@ describe("suppressions routes", () => {
       ).toBe(204);
 
       const conflict = await app.fetch(
-        new Request("http://localhost/api/suppressions/complaint_1", { method: "DELETE" }),
+        new Request("http://localhost/api/suppressions/promoted_1", { method: "DELETE" }),
       );
       expect(conflict.status).toBe(409);
       await expect(conflict.json()).resolves.toEqual({

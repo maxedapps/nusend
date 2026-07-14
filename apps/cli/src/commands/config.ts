@@ -1,5 +1,6 @@
 import { chmod, mkdir } from "node:fs/promises";
 
+import { withLocalStateLock } from "../config/local-state.js";
 import { configDirectory, configPath, credentialsPath } from "../config/paths.js";
 import { printJson } from "../output/format.js";
 import { UsageError, type CommandContext } from "./context.js";
@@ -19,11 +20,13 @@ export async function runConfigCommand(
     return;
   }
 
-  const directory = configDirectory(context.env);
-  await mkdir(directory, { mode: 0o700, recursive: true });
-  await chmod(directory, 0o700);
-  await chmodIfPresent(configPath(context.env), 0o600);
-  await chmodIfPresent(credentialsPath(context.env), 0o600);
+  await withLocalStateLock(context.env, async () => {
+    const directory = configDirectory(context.env);
+    await mkdir(directory, { mode: 0o700, recursive: true });
+    await chmod(directory, 0o700);
+    await chmodIfPresent(configPath(context.env), 0o600);
+    await chmodIfPresent(credentialsPath(context.env), 0o600);
+  });
 
   if (context.options.json) printJson({ repaired: true });
   else console.log("Repaired Nusend config permissions.");

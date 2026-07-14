@@ -16,16 +16,17 @@
       "declaredTests": 490
     },
     "final": {
-      "command": "pnpm exec vitest run --reporter=json --outputFile=.progress/final-review-test-quality-final.json",
-      "collectedAt": "2026-07-11T00:34:14.394Z",
+      "command": "pnpm exec vitest run --reporter=json --outputFile=.progress/selected-production-fixes-final.json",
+      "collectedAt": "2026-07-13T16:40:30.117Z",
       "vitestVersion": "4.1.9",
       "nodeVersion": "v26.1.0",
       "pnpmVersion": "11.9.0",
-      "localPath": ".progress/final-review-test-quality-final.json",
-      "sha256": "483ef42402f179707531e01e73c279bb10e5be51ad9538816eb47974f31b225b",
+      "bunVersion": "1.3.14",
+      "localPath": ".progress/selected-production-fixes-final.json",
+      "sha256": "487b30245fdf2c06664c475743bc493f66be6b77680e12daf2cd0601a250a1cd",
       "success": true,
-      "declaredFiles": 75,
-      "declaredTests": 615,
+      "declaredFiles": 79,
+      "declaredTests": 692,
       "status": "final-frozen"
     }
   },
@@ -36,7 +37,7 @@
     },
     "final": {
       "path": "docs/test-audit/final-inventory.json",
-      "sha256": "5fa324c012bc0780a38cc5757abb96526db22f7d4467b59e7a090b72024a1672",
+      "sha256": "5a7788b952f5c6e9ee02f38f2ed042ae43e5d7e4b9701e0da6d15736bf5d473e",
       "status": "final-frozen"
     }
   },
@@ -191,15 +192,16 @@
       "rationale": "Shared request-capture helper; three reporter-distinct cases preserving every method, URL, and PATCH body assertion."
     },
     {
-      "id": "retain-373d7ed44b6d",
-      "operation": "retain",
+      "id": "b725bc64d618f6063a59c137a9a0a7af9226a661a8edc45e7b4c240f93b26b05",
+      "operation": "rewrite",
       "from": ["373d7ed44b6dd5ab0589420e5666807803bf75dd535f5c314d158e7cea0860ed"],
-      "to": ["373d7ed44b6dd5ab0589420e5666807803bf75dd535f5c314d158e7cea0860ed"],
-      "invariant": "Credential persistence completes before profile configuration is written, preventing a profile that points at a missing secret.",
-      "boundary": "runCli/runMain composition with production parser/client/command code and mocked fetch/console",
-      "limitation": "Fetch and console are test doubles; verifies production composition but not a live remote service.",
+      "to": ["b725bc64d618f6063a59c137a9a0a7af9226a661a8edc45e7b4c240f93b26b05"],
+      "invariant": "After device approval, the credential file reaches its atomic rename hook before the configuration file does.",
+      "boundary": "The full `runCli` login path uses real temporary files and the real `updateLoginState`, wrapped only to observe its pre-rename hooks; fetch and console are doubles.",
+      "limitation": "The two observed destinations prove rename order but do not independently count lock acquisitions, so the single-lock aspect is inferred from the current `updateLoginState` implementation.",
       "wiring": "apps/cli/src/commands/login.ts#runLoginCommand",
-      "evidence": "apps/cli/src/commands/login-order.test.ts; apps/cli/src/commands/login.ts:runLoginCommand; apps/cli/src/credentials/store.ts:CredentialStore"
+      "evidence": "`apps/cli/src/commands/login-order.test.ts` asserts `events` equals `[credentialsPath(env), configPath(env)]`; `updateLoginState` performs both `writeAtomicJson` calls inside one `withLocalStateLock` in `apps/cli/src/config/local-state.ts`.",
+      "rationale": "High-value and stronger than the removed test because it observes the actual atomic-file rename boundary reached through login, rather than merely method-call ordering. It directly protects credential-first crash behavior, although the shared-lock claim remains structurally inferred."
     },
     {
       "id": "retain-3347d704caa2",
@@ -1770,11 +1772,12 @@
       "operation": "retain",
       "from": ["73bc5b43d327706715953aedf40c09216d58eafdd3dd8ac5c333224b072ef51e"],
       "to": ["73bc5b43d327706715953aedf40c09216d58eafdd3dd8ac5c333224b072ef51e"],
-      "invariant": "SES operations variables load region, topic allowlist, tracking events/domain, and issue data without requiring sender/from configuration, allowing readiness inspection before send setup is complete.",
+      "invariant": "SES operations variables load independently of complete send setup, normalize operational inputs, retain supported tracking events, and report unsupported nonblank tracking tokens.",
       "boundary": "production Effect Config graph with in-memory ConfigProvider; no process startup",
       "limitation": "Synthetic environment map; does not prove real process boot or deployment environment injection.",
       "wiring": "apps/service/src/config.ts#serviceConfig/sendingConfig/sesOperationsConfig/unsubscribeConfig",
-      "evidence": "apps/service/src/config.test.ts; apps/service/src/config.ts:serviceConfig/sendingConfig/sesOperationsConfig/unsubscribeConfig"
+      "evidence": "apps/service/src/config.test.ts:268-290 exercises the production Effect Config graph with mixed valid/invalid tracking input and verifies normalized region, URL/topic data, retained valid values, and an actionable issue.",
+      "rationale": "High-value mixed-input contract strengthened after independent review: valid events survive while invalid tokens remain visible, without requiring sender configuration."
     },
     {
       "id": "retain-5ae15cc473c7",
@@ -2382,26 +2385,28 @@
       "evidence": "`apps/service/src/device-auth/activate-routes.test.ts:279`; meaningful assertions include `expect(response.status).toBe(200);`; `await expect(response.text()).resolves.toContain(`; `expect(locked.status).toBe(403);`; `await expect(locked.text()).resolves.toContain(\"Too many attempts. Try again later.\");`."
     },
     {
-      "id": "retain-04448020cb37",
-      "operation": "retain",
+      "id": "05eb1451f06c9c955c0b3e78089c47fb9f3ba1eb647f7cb59f033070e7e151a5",
+      "operation": "rewrite",
       "from": ["04448020cb37be6d36e598cd532faca301ca9c14277d922d38682ab71224fa3b"],
-      "to": ["04448020cb37be6d36e598cd532faca301ca9c14277d922d38682ab71224fa3b"],
-      "invariant": "After the configured number of failed authorization attempts, the limiter blocks the key until TestClock advances beyond the window, then permits it again.",
-      "boundary": "Direct limiter calls with deterministic time; proves per-instance key/window accounting, not coordination across service processes.",
-      "limitation": "In-process boundary; external/runtime limits are stated in the boundary record.",
-      "wiring": "apps/service/src/device-auth/attempt-limiter.ts#createDeviceAuthorizationAttemptLimiter",
-      "evidence": "`apps/service/src/device-auth/attempt-limiter.test.ts:6`; meaningful assertions include `expect(limiter.isLocked(\"user_1\")).toBe(false);`; `expect(limiter.isLocked(\"user_1\")).toBe(true);`; `expect(limiter.isLocked(\"user_1\")).toBe(false);`."
+      "to": ["05eb1451f06c9c955c0b3e78089c47fb9f3ba1eb647f7cb59f033070e7e151a5"],
+      "invariant": "Two admitted timestamps fill one key's window; rejected calls do not extend it, retry duration decreases exactly with time, and admission resumes at expiry.",
+      "boundary": "Direct synchronous production limiter with an injected millisecond clock.",
+      "limitation": "Despite the atomicity wording, no concurrent callers are exercised; mutation safety is inferred from the single-call API. Internal timestamp count is also observed indirectly.",
+      "wiring": "apps/service/src/device-auth/attempt-limiter.ts#makeAttemptLimiter",
+      "evidence": "apps/service/src/device-auth/attempt-limiter.test.ts:6-33 checks admission, exact 100/60 ms retries, rejection non-mutation, and boundary expiry.",
+      "rationale": "Stronger than the removed lock/unlock case because it protects exact retry semantics and rejection non-extension, while retaining the old window behavior."
     },
     {
-      "id": "retain-3c5ff9ff3cea",
-      "operation": "retain",
+      "id": "0f43a23d3c3071df1c58fde45c3863a10cffafa8cc101077e3d4c47040460d8d",
+      "operation": "rewrite",
       "from": ["3c5ff9ff3cea4e2457919e89c26774869d68f8af4ec7ddf1b1a4887cb02c249f"],
-      "to": ["3c5ff9ff3cea4e2457919e89c26774869d68f8af4ec7ddf1b1a4887cb02c249f"],
-      "invariant": "Failure counts are keyed by user: exhausting one user’s allowance does not block a second user’s authorization attempts.",
-      "boundary": "Direct limiter calls with deterministic time; proves per-instance key/window accounting, not coordination across service processes.",
-      "limitation": "In-process boundary; external/runtime limits are stated in the boundary record.",
-      "wiring": "apps/service/src/device-auth/attempt-limiter.ts#createDeviceAuthorizationAttemptLimiter",
-      "evidence": "`apps/service/src/device-auth/attempt-limiter.test.ts:19`; meaningful assertions include `expect(limiter.isLocked(\"user_1\")).toBe(true);`; `expect(limiter.isLocked(\"user_2\")).toBe(false);`."
+      "to": ["0f43a23d3c3071df1c58fde45c3863a10cffafa8cc101077e3d4c47040460d8d"],
+      "invariant": "At two active keys, a third key is denied with the earliest safe retry; repeated denials add neither a key nor enough timestamps to bypass the per-key ceiling.",
+      "boundary": "Direct production limiter using tiny configured key and attempt capacities.",
+      "limitation": "Diagnostics expose only active key count, so the timestamp bound is inferred from subsequent decisions rather than asserted directly.",
+      "wiring": "apps/service/src/device-auth/attempt-limiter.ts#makeAttemptLimiter",
+      "evidence": "apps/service/src/device-auth/attempt-limiter.test.ts:35-61 checks two independent keys, capacity retry, stable key count, and later per-key limiting.",
+      "rationale": "Broadens the removed key-independence case into a fail-closed memory-capacity test while still demonstrating independent key accounting."
     },
     {
       "id": "retain-9335e8b33476",
@@ -3686,15 +3691,16 @@
       "evidence": "`apps/service/src/queue/runner.test.ts:400` test declaration/table plus its state assertions; production wiring named above was traced from the imported symbol into its caller."
     },
     {
-      "id": "retain-16cd2b19ef91",
-      "operation": "retain",
+      "id": "90147a168e2d142429478534ea002fcb299b7447bfeadf227488e17423bbf0e7",
+      "operation": "rewrite",
       "from": ["16cd2b19ef91969bca9e127df717855f3d2818ebc0016becaa1869978d5f277d"],
-      "to": ["16cd2b19ef91969bca9e127df717855f3d2818ebc0016becaa1869978d5f277d"],
-      "invariant": "Stale-sending repair does not overwrite an already succeeded attempt or its message id, even while the delivery remains `sending`.",
-      "boundary": "Real SQLite conditional-update state assertions; synthetic interleaving, not concurrent connections.",
-      "limitation": "Deterministic local dependencies bound this row; it does not independently establish hosted, live-provider, or cross-process behavior.",
-      "wiring": "apps/service/src/sending/attempts.ts#recordRetryableFailure/recordSendSuccess/recordStaleSendingAsAmbiguous.",
-      "evidence": "`apps/service/src/sending/attempts.test.ts:224` test declaration/table plus its state assertions; production wiring named above was traced from the imported symbol into its caller."
+      "to": ["90147a168e2d142429478534ea002fcb299b7447bfeadf227488e17423bbf0e7"],
+      "invariant": "Stale-worker reconciliation must reject a nonterminal delivery whose latest attempt is already succeeded, rather than relabeling proven success as ambiguous or silently accepting the inconsistent pair.",
+      "boundary": "The production stale-state transaction runs against migrated in-memory SQLite with a succeeded attempt and deliberately inconsistent sending delivery.",
+      "limitation": "The assertion checks failure generically rather than pinning the DatabaseError operation. The inconsistent state is seeded directly and no repair path is tested.",
+      "wiring": "apps/service/src/sending/attempts.ts#recordSendSuccess",
+      "evidence": "apps/service/src/sending/attempts.test.ts:450-496 expects a failed Exit and exact unchanged state, including the successful attempt's identifier and the delivery still marked sending. The guarded transition is at attempts.ts:272-362.",
+      "rationale": "A stronger rewrite than a simple no-op assertion: failure makes corruption visible and prevents success evidence from being downgraded."
     },
     {
       "id": "retain-f8f65f8d65d9",
@@ -3719,26 +3725,28 @@
       "evidence": "`apps/service/src/sending/attempts.test.ts:32` test declaration/table plus its state assertions; production wiring named above was traced from the imported symbol into its caller."
     },
     {
-      "id": "retain-76eb75df8532",
-      "operation": "retain",
+      "id": "403e5cbf224fbe2cad11a1a69b517c06fb47c047ecd52d5006afad1bfeaa33c7",
+      "operation": "rewrite",
       "from": ["76eb75df853273f80cfdecd1d8cd8e4dc6235a2f59e2730ee511e79080f85b29"],
-      "to": ["76eb75df853273f80cfdecd1d8cd8e4dc6235a2f59e2730ee511e79080f85b29"],
-      "invariant": "Late success after ambiguity records the provider message id on attempt and delivery as send evidence while preserving failed/ambiguous statuses and prior error.",
-      "boundary": "Real SQLite conditional-update state assertions; synthetic interleaving, not concurrent connections.",
-      "limitation": "Deterministic local dependencies bound this row; it does not independently establish hosted, live-provider, or cross-process behavior.",
-      "wiring": "apps/service/src/sending/attempts.ts#recordRetryableFailure/recordSendSuccess/recordStaleSendingAsAmbiguous.",
-      "evidence": "`apps/service/src/sending/attempts.test.ts:84` test declaration/table plus its state assertions; production wiring named above was traced from the imported symbol into its caller."
+      "to": ["403e5cbf224fbe2cad11a1a69b517c06fb47c047ecd52d5006afad1bfeaa33c7"],
+      "invariant": "Compatible evidence tied to the latest ambiguous attempt resolves the attempt to succeeded and the delivery to sent, clears both stored errors, and places the same provider identifier on both records.",
+      "boundary": "The production paired update and read-back execute in one real SQLite transaction using the standard test database layer.",
+      "limitation": "The proof is supplied directly rather than through SES reconciliation, and the test starts with an already-succeeded queue job without checking mailing refresh.",
+      "wiring": "apps/service/src/sending/attempts.ts#recordSendSuccess",
+      "evidence": "apps/service/src/sending/attempts.test.ts:84-134 establishes an ambiguous pair, invokes the real writer, and asserts all attempt, delivery, identifier, error, and job fields. Transactional updates are at attempts.ts:101-190.",
+      "rationale": "The rewrite fixes the prior unsafe expectation that late proof should preserve an ambiguous status. This is the central positive reconciliation case and has high regression value."
     },
     {
-      "id": "retain-670c962d01bc",
-      "operation": "retain",
+      "id": "b8e7485caf7141074b045995510dee6b17a0bd2f67e467b1d006a0c4cba6a6fe",
+      "operation": "rewrite",
       "from": ["670c962d01bc9dae8c3b761ff00d756034b55d4daa88b0491b3693835a5a6e39"],
-      "to": ["670c962d01bc9dae8c3b761ff00d756034b55d4daa88b0491b3693835a5a6e39"],
-      "invariant": "When `recordSendSuccess` runs after a delivery has already become failed, it writes `late-message-id` to both attempt and delivery as proof of provider acceptance while leaving the attempt started, delivery failed with its existing error, and job queued.",
-      "boundary": "Real SQLite conditional-update state assertions; synthetic interleaving, not concurrent connections.",
-      "limitation": "Deterministic local dependencies bound this row; it does not independently establish hosted, live-provider, or cross-process behavior.",
-      "wiring": "apps/service/src/sending/attempts.ts#recordRetryableFailure/recordSendSuccess/recordStaleSendingAsAmbiguous.",
-      "evidence": "`apps/service/src/sending/attempts.test.ts:180` test declaration/table plus its state assertions; production wiring named above was traced from the imported symbol into its caller."
+      "to": ["b8e7485caf7141074b045995510dee6b17a0bd2f67e467b1d006a0c4cba6a6fe"],
+      "invariant": "A late provider identifier associated with a still-started attempt must not be attached when the delivery has already been finalized as failed; error text, queue state, and both message-id fields remain unchanged.",
+      "boundary": "Production success recording executes transactionally over migrated in-memory SQLite with a manually established terminal delivery.",
+      "limitation": "It does not assert the returned classification. Its failed-delivery branch substantially overlaps identity `1c1b…`, which asserts the return value but fewer state fields.",
+      "wiring": "apps/service/src/sending/attempts.ts#recordSendSuccess",
+      "evidence": "apps/service/src/sending/attempts.test.ts:179-220 seeds a failed delivery plus started attempt, submits a late identifier, and compares attempt error/status/id, delivery error/status/id, and job state.",
+      "rationale": "The rewrite corrects the old implication that an identifier should be preserved on incompatible terminal state. Coverage is sound, but this case should ideally be consolidated with the failed row of the parameterized terminal test."
     },
     {
       "id": "retain-93d42c9a92c7",
@@ -6862,6 +6870,853 @@
       "wiring": "scripts/test-quality-audit/core.mjs#recordQualityErrors/validateManifestData",
       "evidence": "The F13 parameter fixture is placed in a quality field and must produce the generic-blanket diagnostic.",
       "rationale": "Added from final audit artifact 522da838 because F13 was reproducibly present in the reviewed manifest corpus."
+    },
+    {
+      "id": "9c88aa1d7a3a0f6b69ff4eec9b7ed8b9c2f186694a610d2ac7d8b2ea7b40c930",
+      "operation": "addition",
+      "to": ["9c88aa1d7a3a0f6b69ff4eec9b7ed8b9c2f186694a610d2ac7d8b2ea7b40c930"],
+      "invariant": "An approval response is accepted when its token request started before expiry, even if the injected clock crosses expiry while that request is in flight.",
+      "boundary": "Production login polling and response decoding run through `runCli` with mocked fetch, deterministic clock/sleep, and real temporary persistence.",
+      "limitation": "It covers only a late approved response, not late pending, denial, network failure, or a real delayed HTTP request.",
+      "wiring": "apps/cli/src/commands/login.ts#runLoginCommand",
+      "evidence": "`apps/cli/src/commands/login.test.ts` advances `now` to 2000 inside the sole token fetch after a pre-request check below the 1500 expiry, then asserts exit 0 and `tokenRequests === 1`; production checks expiry before, but not after, the request.",
+      "rationale": "High-value and distinct: it pins the intentional server-authoritative treatment of a request already in flight and prevents an erroneous post-response local-expiry rejection."
+    },
+    {
+      "id": "b606759b049e4c335c6025ec4059203806d9e1227541ed4a1ff42ca8107f56b8",
+      "operation": "addition",
+      "to": ["b606759b049e4c335c6025ec4059203806d9e1227541ed4a1ff42ca8107f56b8"],
+      "invariant": "When the next polling interval extends beyond expiry, sleep is clipped to the remaining 1500 milliseconds and expiry is raised before any token request.",
+      "boundary": "Production polling logic is exercised through `runCli` with mocked fetch and an injected clock/sleep implementation.",
+      "limitation": "The sleep is synchronous deterministic simulation; real timer drift, cancellation, and event-loop delay are not covered.",
+      "wiring": "apps/cli/src/commands/login.ts#runLoginCommand",
+      "evidence": "`apps/cli/src/commands/login.test.ts` asserts `sleeps` equals `[1500]`, authentication exit 3, and zero token requests; production sleeps `Math.min(intervalMs, expiresAt - beforeSleep)` then rechecks expiry.",
+      "rationale": "High-value and distinct from immediate expiry: it protects the transition where authorization expires during a bounded wait and prevents a post-expiry network request."
+    },
+    {
+      "id": "b998dc7030cace3ed591856cfa8d3b5a7bd725983fa2820ed0bccaa8aaa84846",
+      "operation": "addition",
+      "to": ["b998dc7030cace3ed591856cfa8d3b5a7bd725983fa2820ed0bccaa8aaa84846"],
+      "invariant": "If local time is already equal to the protocol expiry before waiting, login fails with authentication exit 3 without polling the token endpoint.",
+      "boundary": "The full login command runs with a decoded start response, mocked fetch, deterministic time, and a temporary local-state directory.",
+      "limitation": "It does not assert that sleep was also skipped or verify the exact error text, only the exit class and absence of token requests.",
+      "wiring": "apps/cli/src/commands/login.ts#runLoginCommand",
+      "evidence": "`apps/cli/src/commands/login.test.ts` supplies `now() === expiresAt === 1000`, expects `{ exitCode: 3 }`, and asserts `tokenRequests === 0`; production uses the inclusive `now >= expiresAt` check before sleep.",
+      "rationale": "High-value boundary test for inclusive expiry semantics; it is distinct from expiry reached during sleep."
+    },
+    {
+      "id": "be6dabb116b7f3681be7a253419ebf755a58e2f1104e7f1d19d1d5a9e2dea81d",
+      "operation": "addition",
+      "to": ["be6dabb116b7f3681be7a253419ebf755a58e2f1104e7f1d19d1d5a9e2dea81d"],
+      "invariant": "A non-date expiration string stops login before token polling, returns internal-error exit 1, and is absent from captured diagnostics.",
+      "boundary": "The start response passes through production HTTP schema decoding and `runMain` error rendering with mocked fetch/console.",
+      "limitation": "Failure specificity is weak: the test does not assert the stable invalid-expiration message or error code, so an unrelated early internal failure could satisfy most assertions.",
+      "wiring": "apps/cli/src/commands/login.ts#runLoginCommand",
+      "evidence": "`apps/cli/src/commands/login.test.ts` expects exit 1, `tokenRequests === 0`, and captured stderr not to contain `not-a-timestamp-secret`; production rejects non-finite `Date.parse` results with a fixed message.",
+      "rationale": "Material security and protocol-validation coverage, distinct from valid-but-expired timestamps, but it should assert the fixed diagnostic to avoid false-positive passing."
+    },
+    {
+      "id": "ff42a31f85ea7f600ccf8a61d11a2670f1a3a31b80373a97f1d1d89970a087f5",
+      "operation": "addition",
+      "to": ["ff42a31f85ea7f600ccf8a61d11a2670f1a3a31b80373a97f1d1d89970a087f5"],
+      "invariant": "A logout blocked behind another credential mutation removes only the selected profile after acquiring the lock and retains the other writer's newly committed profile.",
+      "boundary": "Real temporary credential files and production locking are used in one process; promises deliberately hold the writer lock while `runCli logout` begins.",
+      "limitation": "The overlap is same-process and hook-coordinated rather than separate OS processes; the delete spy signals method entry, not the exact lock-contention callback.",
+      "wiring": "apps/cli/src/commands/logout.ts#runLogoutCommand",
+      "evidence": "`apps/cli/src/commands/logout.test.ts` gates an `updateCredentials` owner, starts logout, then asserts `default` is absent while `unrelated` still contains `nusend_unrelated`; production delete reloads and transforms the credential map under the shared lock.",
+      "rationale": "High-value lost-update regression coverage and distinct from ordinary deletion or subprocess writer tests because it verifies the logout command's selected-key transform."
+    },
+    {
+      "id": "890970073c269106c695635903a94d868d8581931af494a4675aab13c334a1d5",
+      "operation": "addition",
+      "to": ["890970073c269106c695635903a94d868d8581931af494a4675aab13c334a1d5"],
+      "invariant": "A mailing list response lacking the newer ambiguity count decodes successfully, computes a three-delivery total, and omits the ambiguity annotation.",
+      "boundary": "The CLI parser, HTTP client, API-contract decoder, mailing command, and human formatter execute with mocked fetch/console.",
+      "limitation": "The service response is synthetic and only list/human output is covered; the API-contract suite separately tests the same decode default at the pure-schema boundary.",
+      "wiring": "apps/cli/src/commands/mailings.ts#runMailingsCommand",
+      "evidence": "`apps/cli/src/commands/mailings.test.ts` removes `ambiguous`, expects exit 0, output containing `2/3`, and no `ambiguous=`; `packages/api-contract/src/mailings/schema.ts` supplies decoding default zero.",
+      "rationale": "High-value despite schema-level overlap because it proves compatibility is wired through the actual CLI client and formatter rather than existing only in the contract package."
+    },
+    {
+      "id": "1d19a0205fb6555b9291c8aaa0e5788e00f89119d713559ecb8e6d59f81f9bc8",
+      "operation": "addition",
+      "to": ["1d19a0205fb6555b9291c8aaa0e5788e00f89119d713559ecb8e6d59f81f9bc8"],
+      "invariant": "A contender cannot publish the canonical lock while another publisher owns the protocol mutex, even though the canonical lock path is temporarily absent.",
+      "boundary": "Two concurrent production lock acquisitions use real local filesystem operations, with test hooks pausing the first publisher inside the mutex window.",
+      "limitation": "This is white-box, same-process orchestration and assumes local hard-link/rename semantics; it does not cover network filesystems or process death in the window.",
+      "wiring": "apps/cli/src/config/local-state.ts#acquireLocalStateLock",
+      "evidence": "`apps/cli/src/config/local-state.test.ts` observes mutex contention while `localStateLockPath` is ENOENT, later observes actual lock contention, releases both owners, and asserts no lock artifacts remain.",
+      "rationale": "High-value race regression: it directly protects the protocol gap that would otherwise permit simultaneous ownership."
+    },
+    {
+      "id": "6f37e1b3fecdf5bb1298323f7348288adcb9294ae7efdbfcf9133bc2a5f4d75c",
+      "operation": "addition",
+      "to": ["6f37e1b3fecdf5bb1298323f7348288adcb9294ae7efdbfcf9133bc2a5f4d75c"],
+      "invariant": "Two overlapping CLI subprocesses each add twenty credentials and the final file retains all forty exact secrets.",
+      "boundary": "Real Bun subprocesses coordinate through OS-visible files and production credential mutation/locking over a temporary local filesystem.",
+      "limitation": "It is Bun- and local-filesystem-specific, uses deterministic marker files to force contention, and does not test unsupported network mounts.",
+      "wiring": "apps/cli/src/config/local-state.ts#acquireLocalStateLock",
+      "evidence": "`apps/cli/src/config/local-state.test.ts` waits for the second subprocess's real EEXIST contention marker and then asserts every `first-*` and `second-*` credential via `FileCredentialStore.read`.",
+      "rationale": "High-value cross-process lost-update coverage, distinct from profile-map and selected-profile login mutations."
+    },
+    {
+      "id": "56499d7e6a528a0b5f63d64769e4758e82f5a0b8dfc44c8d38a6b760587ebe2e",
+      "operation": "addition",
+      "to": ["56499d7e6a528a0b5f63d64769e4758e82f5a0b8dfc44c8d38a6b760587ebe2e"],
+      "invariant": "Two overlapping CLI subprocesses each add twenty profiles and the final configuration retains all forty exact base URLs.",
+      "boundary": "Real Bun subprocesses and production profile mutation/locking operate over a temporary local filesystem with marker-controlled contention.",
+      "limitation": "The schedule is deliberately orchestrated and covers only cooperative Nusend writers on a supported local filesystem.",
+      "wiring": "apps/cli/src/config/local-state.ts#acquireLocalStateLock",
+      "evidence": "`apps/cli/src/config/local-state.test.ts` proves the second subprocess encountered lock contention, then checks forty profile keys and their identity-specific URLs.",
+      "rationale": "High-value and distinct from credential-map coverage because config decoding, destination path, and transform shape can regress independently."
+    },
+    {
+      "id": "94b83f09f38d1114822441e67e6281f649b29a71ce132eeff3feb3a0be21492b",
+      "operation": "addition",
+      "to": ["94b83f09f38d1114822441e67e6281f649b29a71ce132eeff3feb3a0be21492b"],
+      "invariant": "A protocol mutex owned by an old, dead same-host PID is treated as unsafe when no canonical lock exists, producing operator guidance rather than automatic takeover.",
+      "boundary": "Production mutex inspection uses a real directory/owner file and `process.kill(pid, 0)` classification with a short test timeout.",
+      "limitation": "The dead PID and owner record are synthetic, and the test does not attempt operator recovery.",
+      "wiring": "apps/cli/src/config/local-state.ts#acquireLocalStateLock",
+      "evidence": "The `dead-owner` row in `apps/cli/src/config/local-state.test.ts` expects `/reaper mutex.*operator/i` and confirms the canonical lock remains ENOENT.",
+      "rationale": "High-value fail-closed case distinct from missing or malformed mutex ownership because a structurally valid but dead owner could otherwise be incorrectly reaped."
+    },
+    {
+      "id": "ce1a504595d37dcec6db21884c9c29149f647219deef17dbd97ee8ccb30d4fea",
+      "operation": "addition",
+      "to": ["ce1a504595d37dcec6db21884c9c29149f647219deef17dbd97ee8ccb30d4fea"],
+      "invariant": "An old canonical lock attributed to another host is preserved and acquisition returns the stable contention error.",
+      "boundary": "Production lock parsing and recovery classification run against a real temporary lock file with a shortened timeout.",
+      "limitation": "The foreign hostname is synthetic and no shared multi-host filesystem is exercised.",
+      "wiring": "apps/cli/src/config/local-state.ts#acquireLocalStateLock",
+      "evidence": "The `foreign-host` table row in `apps/cli/src/config/local-state.test.ts` expects the contention message and asserts the lock file bytes are unchanged.",
+      "rationale": "High-value data-safety case: foreign-host liveness cannot be established locally, making it distinct from same-host dead-owner recovery."
+    },
+    {
+      "id": "2f68849778a6e112a845962688b65d7f325c668199ec1836b30151890afce3ce",
+      "operation": "addition",
+      "to": ["2f68849778a6e112a845962688b65d7f325c668199ec1836b30151890afce3ce"],
+      "invariant": "A canonical lock containing non-JSON data is neither deleted nor replaced, and acquisition fails with stable contention.",
+      "boundary": "Production owner parsing and contention behavior use a real malformed lock file with a short timeout.",
+      "limitation": "Only syntactically invalid JSON is supplied; structurally invalid valid JSON is not separately exercised at this canonical-lock boundary.",
+      "wiring": "apps/cli/src/config/local-state.ts#acquireLocalStateLock",
+      "evidence": "The `malformed` row in `apps/cli/src/config/local-state.test.ts` expects the contention error and exact preservation of `not-json`.",
+      "rationale": "High-value corruption-safety coverage and distinct from foreign or young valid owner records."
+    },
+    {
+      "id": "463764bf6a23c4c16c800a7970dec339fe69356f6d300bdad543266f7082f87e",
+      "operation": "addition",
+      "to": ["463764bf6a23c4c16c800a7970dec339fe69356f6d300bdad543266f7082f87e"],
+      "invariant": "A protocol mutex with malformed owner contents and no canonical lock blocks publication with operator guidance.",
+      "boundary": "Production mutex acquisition reads a real `owner.json` containing malformed data in a temporary mutex directory.",
+      "limitation": "Only malformed text is tested, and the branch is intentionally white-box protocol-state construction.",
+      "wiring": "apps/cli/src/config/local-state.ts#acquireLocalStateLock",
+      "evidence": "The `malformed-owner` row in `apps/cli/src/config/local-state.test.ts` writes `malformed`, expects `/reaper mutex.*operator/i`, and confirms no canonical lock appeared.",
+      "rationale": "High-value and distinct from the orphaned-reaper test because this state has no canonical owner to preserve and directly guards publication into an ambiguous mutex state."
+    },
+    {
+      "id": "b84968a2eb514b814579fd40735c981a9cdc19e2bb824a10823bd4053b490f40",
+      "operation": "addition",
+      "to": ["b84968a2eb514b814579fd40735c981a9cdc19e2bb824a10823bd4053b490f40"],
+      "invariant": "A persistent mutex directory lacking `owner.json` prevents canonical lock publication and ends with operator guidance.",
+      "boundary": "Production retry and timeout classification run against a real empty mutex directory with a 75-millisecond timeout.",
+      "limitation": "The shortened timeout does not model slow filesystem visibility; it only proves the persistent missing-owner state fails closed.",
+      "wiring": "apps/cli/src/config/local-state.ts#acquireLocalStateLock",
+      "evidence": "The `missing-owner` row in `apps/cli/src/config/local-state.test.ts` expects operator guidance and asserts the canonical lock remains ENOENT.",
+      "rationale": "High-value publication-window safety case, distinct because missing ownership is temporarily retryable rather than immediately malformed."
+    },
+    {
+      "id": "638709bbad23724c985a0ac384d5a63f714fe37bdfe5c4c2393ef0358d60eb34",
+      "operation": "addition",
+      "to": ["638709bbad23724c985a0ac384d5a63f714fe37bdfe5c4c2393ef0358d60eb34"],
+      "invariant": "A same-host lock whose PID is dead but whose age is below the publication grace period is preserved and treated as contended.",
+      "boundary": "Production dead-owner and age checks inspect a real owner file using current wall-clock time and an impossible PID.",
+      "limitation": "The test samples only a freshly created record, not values immediately on both sides of the exact one-second grace boundary.",
+      "wiring": "apps/cli/src/config/local-state.ts#acquireLocalStateLock",
+      "evidence": "The `young-dead` row in `apps/cli/src/config/local-state.test.ts` expects stable contention and exact lock-content preservation; production requires age at least `LOCAL_STATE_PUBLICATION_GRACE_MS` before reaping.",
+      "rationale": "High-value and distinct from old dead-owner recovery because it protects an incomplete-publication grace window from premature theft."
+    },
+    {
+      "id": "455d2cbc3c1df4806c776343fe93387b270722dc1701177c8076d6e09097c5f1",
+      "operation": "addition",
+      "to": ["455d2cbc3c1df4806c776343fe93387b270722dc1701177c8076d6e09097c5f1"],
+      "invariant": "A malformed reaper-mutex owner prevents recovery of an otherwise reapable dead canonical owner and leaves that canonical owner intact.",
+      "boundary": "Real lock and mutex artifacts feed production dead-owner recovery and mutex parsing with a shortened timeout.",
+      "limitation": "The corruption is synthetic and only the malformed-owner variant is combined with an existing dead canonical lock.",
+      "wiring": "apps/cli/src/config/local-state.ts#acquireLocalStateLock",
+      "evidence": "`apps/cli/src/config/local-state.test.ts` expects operator guidance and rereads the canonical lock token as `dead-token`.",
+      "rationale": "High-value preservation test: unlike missing-canonical mutex cases, it proves ambiguous reaper ownership cannot destroy an existing recoverable owner record."
+    },
+    {
+      "id": "b57df657e61f1f4a59adefaed462ab6e12bd1128df5d045454ab2f64ee1f6383",
+      "operation": "addition",
+      "to": ["b57df657e61f1f4a59adefaed462ab6e12bd1128df5d045454ab2f64ee1f6383"],
+      "invariant": "On Unix, the Nusend state directory is mode 0700 and configuration, credential, and canonical lock files are mode 0600.",
+      "boundary": "Real filesystem writes from production config, credential, and lock operations are inspected with `stat` in a temporary directory.",
+      "limitation": "The test returns without assertions on Windows and does not cover ACLs, ownership, inherited permissions, or hostile network filesystems.",
+      "wiring": "apps/cli/src/config/local-state.ts#acquireLocalStateLock",
+      "evidence": "`apps/cli/src/config/local-state.test.ts` masks each `stat().mode` with `0o777` and asserts 0700/0600 after production writes and lock acquisition.",
+      "rationale": "High-value secret-protection coverage with direct OS evidence; it is distinct from functional locking and atomicity tests."
+    },
+    {
+      "id": "06af3b1c2a4d1bdd1090633077c513ce91c092dad54792f72d65549badff9ad3",
+      "operation": "addition",
+      "to": ["06af3b1c2a4d1bdd1090633077c513ce91c092dad54792f72d65549badff9ad3"],
+      "invariant": "If another lock appears after the releasing owner has atomically moved its own lock to a tombstone, release removes only its tombstone and leaves the replacement canonical lock untouched.",
+      "boundary": "Production release serialization and real rename/unlink operations run with a hook inserting a replacement in the post-rename window.",
+      "limitation": "The external replacement is injected in-process rather than created by an uncooperative process, and release-error branches are not involved.",
+      "wiring": "apps/cli/src/config/local-state.ts#acquireLocalStateLock",
+      "evidence": "`apps/cli/src/config/local-state.test.ts` inserts token `window-replacement` in `afterReleaseRename`, then asserts that token remains and no tombstones remain.",
+      "rationale": "High-value ownership-safety race, distinct from unfamiliar content moved during the rename itself."
+    },
+    {
+      "id": "24e2e19e2dea99d293aad8e50fd26f8d9ebd85bef26cdd665534a82a42f6d375",
+      "operation": "addition",
+      "to": ["24e2e19e2dea99d293aad8e50fd26f8d9ebd85bef26cdd665534a82a42f6d375"],
+      "invariant": "A lock owned by the current live process is never reaped, remains byte-valid, and causes the production contention error only after approximately five seconds.",
+      "boundary": "Production acquisition uses real wall-clock sleeps, real PID liveness checks, and a real lock file.",
+      "limitation": "The wall-clock lower bound can be timing-sensitive under load, and the owner is the test process rather than a separate process.",
+      "wiring": "apps/cli/src/config/local-state.ts#acquireLocalStateLock",
+      "evidence": "`apps/cli/src/config/local-state.test.ts` expects the exact contention message, elapsed time at least 4900 milliseconds, and preservation of token `live-token`.",
+      "rationale": "High-value behavioral proof of the timeout and no-steal contract; it makes the separate constant-only timeout identity largely redundant."
+    },
+    {
+      "id": "fafb2a1f5ea5b11e75a478b6c9c3fce94ff8e201c188c1b21fead015eda30cba",
+      "operation": "addition",
+      "to": ["fafb2a1f5ea5b11e75a478b6c9c3fce94ff8e201c188c1b21fead015eda30cba"],
+      "invariant": "If reaper-mutex release fails after a dead canonical owner was moved, the canonical path remains absent while both the recovery tombstone and mutex are retained for operator repair.",
+      "boundary": "Production reaping and filesystem mutations execute with a test hook injecting failure immediately before mutex release.",
+      "limitation": "The failure comes from a hook rather than an actual unlink/rmdir permission or I/O error, and no subsequent repair workflow is tested.",
+      "wiring": "apps/cli/src/config/local-state.ts#acquireLocalStateLock",
+      "evidence": "`apps/cli/src/config/local-state.test.ts` expects operator guidance, canonical-lock ENOENT, exactly one `reap-tombstone`, and an existing reaper mutex.",
+      "rationale": "High-value rare-failure data preservation: deleting the tombstone here would lose the only recoverable owner record."
+    },
+    {
+      "id": "8fed4ba3b4d5953c5a73a4fc41177e22b306243b49e99db202ec649cb2d1e6d9",
+      "operation": "addition",
+      "to": ["8fed4ba3b4d5953c5a73a4fc41177e22b306243b49e99db202ec649cb2d1e6d9"],
+      "invariant": "A failure immediately before replacing configuration leaves the previous JSON readable and removes the newly written temporary file.",
+      "boundary": "Production locked mutation and atomic-file writer operate on real files, with a hook throwing at the pre-rename boundary.",
+      "limitation": "It does not simulate failure during write, fsync, rename, or directory sync, nor a process crash that bypasses `finally` cleanup.",
+      "wiring": "apps/cli/src/config/local-state.ts#acquireLocalStateLock",
+      "evidence": "`apps/cli/src/config/local-state.test.ts` injects `beforeRename`, expects the original `old` profile exactly, and asserts no `.tmp-` entries remain.",
+      "rationale": "High-value atomic-write failure coverage and distinct from lock ownership races."
+    },
+    {
+      "id": "0ce2e06d2154a5e0ed9146caa19514d93af2dd73cf5dda4eacac296345a58b5e",
+      "operation": "addition",
+      "to": ["0ce2e06d2154a5e0ed9146caa19514d93af2dd73cf5dda4eacac296345a58b5e"],
+      "invariant": "An old, dead, same-host canonical owner is reaped, a new lock can be acquired and released, and all candidate, tombstone, and mutex artifacts are removed.",
+      "boundary": "Production PID liveness detection, mutex serialization, hard-link publication, rename, and cleanup use real local filesystem operations.",
+      "limitation": "The dead owner uses an intentionally impossible PID and no actual crashed process or network filesystem.",
+      "wiring": "apps/cli/src/config/local-state.ts#acquireLocalStateLock",
+      "evidence": "`apps/cli/src/config/local-state.test.ts` seeds a ten-second-old same-host owner, acquires/releases successfully, then asserts canonical ENOENT and an empty lock-artifact list.",
+      "rationale": "High-value positive recovery path complementing the fail-closed foreign, malformed, young, and live-owner cases."
+    },
+    {
+      "id": "548ae9bc2ff63e559ac52c66cbd9babcc2b114ec812fed3559b99bacc018bf95",
+      "operation": "addition",
+      "to": ["548ae9bc2ff63e559ac52c66cbd9babcc2b114ec812fed3559b99bacc018bf95"],
+      "invariant": "If the canonical lock is replaced with an unfamiliar owner immediately before release rename, release restores that unfamiliar owner instead of deleting or overwriting it.",
+      "boundary": "Production serialized release uses real unlink, write, rename, hard-link restoration, and cleanup; a hook injects non-cooperative replacement.",
+      "limitation": "The mutation is white-box and same-process, and it covers successful exclusive restoration rather than the restoration-conflict error path.",
+      "wiring": "apps/cli/src/config/local-state.ts#acquireLocalStateLock",
+      "evidence": "`apps/cli/src/config/local-state.test.ts` installs token `replacement-token` in `beforeReleaseRename`, then asserts that token remains canonical and no tombstones remain.",
+      "rationale": "High-value ownership check distinct from the post-rename replacement race because here release initially moves an object it does not own and must restore it."
+    },
+    {
+      "id": "a2416ec89eb2f573759cf438868c1dbd3c99e48e7609470924323d4ca7242324",
+      "operation": "addition",
+      "to": ["a2416ec89eb2f573759cf438868c1dbd3c99e48e7609470924323d4ca7242324"],
+      "invariant": "Failure to remove a successfully published lock candidate does not discard acquisition ownership; the returned release later removes both canonical ownership and the deferred candidate.",
+      "boundary": "Production publication/release and real filesystem artifacts run with a hook throwing during candidate cleanup.",
+      "limitation": "The hook simulates cleanup failure rather than an actual unlink error, so OS-specific error codes and permissions are not covered.",
+      "wiring": "apps/cli/src/config/local-state.ts#acquireLocalStateLock",
+      "evidence": "`apps/cli/src/config/local-state.test.ts` observes one `.candidate-` after acquisition, invokes the returned release, then asserts canonical ENOENT and no lock artifacts.",
+      "rationale": "High-value failure-path coverage: it protects usable ownership and eventual cleanup after publication has already succeeded."
+    },
+    {
+      "id": "0e4d21462c78222b6966a8d947f7e33bf04a3e63441a438c932051b738e76bfe",
+      "operation": "addition",
+      "to": ["0e4d21462c78222b6966a8d947f7e33bf04a3e63441a438c932051b738e76bfe"],
+      "invariant": "Two contending login-state subprocesses targeting the same profile finish with both the base URL and credential from the second lock owner, never a mixed pair.",
+      "boundary": "Real Bun subprocesses call production `updateLoginState` over shared temporary config and credential files with forced lock contention.",
+      "limitation": "Ordering is deliberately controlled so the second process wins; process crashes between the two documented non-atomic renames are not exercised.",
+      "wiring": "apps/cli/src/config/local-state.ts#acquireLocalStateLock",
+      "evidence": "`apps/cli/src/config/local-state.test.ts` waits for real EEXIST contention and then asserts `shared.baseUrl === https://second.example.com` and credential `nusend_second`.",
+      "rationale": "High-value cross-file coherence coverage, distinct from independent profile-map and credential-map merge tests."
+    },
+    {
+      "id": "36f19d9288cca13dfc716316ccb66e2752198a9d60a05fb77056aa49938aa657",
+      "operation": "addition",
+      "to": ["36f19d9288cca13dfc716316ccb66e2752198a9d60a05fb77056aa49938aa657"],
+      "invariant": "With engagement tracking disabled, the four reputation and delivery-delay event types satisfy both marketing and transactional configuration-set readiness.",
+      "boundary": "Production readiness Effect with fake SES/SNS administration services and migrated in-memory SQLite.",
+      "limitation": "No AWS call is made; the assertions inspect only the two event-check statuses, not their details or the overall readiness status.",
+      "wiring": "apps/service/src/aws/readiness.ts#runSesReadinessChecks",
+      "evidence": "apps/service/src/aws/readiness.test.ts:103-115 exercises both configuration-set checks; apps/service/src/aws/readiness.ts:556 derives required event sets.",
+      "rationale": "Useful baseline proving optional OPEN/CLICK requirements are not accidentally made mandatory."
+    },
+    {
+      "id": "db9e54fcafd9ad039d33c4736a86aeec54067bf3032e2646f5ee04a5c87e18b6",
+      "operation": "addition",
+      "to": ["db9e54fcafd9ad039d33c4736a86aeec54067bf3032e2646f5ee04a5c87e18b6"],
+      "invariant": "When click tracking is enabled and CLICK reaches an allowlisted SNS topic, the marketing destination check remains healthy.",
+      "boundary": "Readiness logic with an injected configuration and deterministic SES destination summary.",
+      "limitation": "The positive status assertion could also pass if tracking configuration were ignored entirely; it gains value only beside the negative OPEN requirement test.",
+      "wiring": "apps/service/src/aws/readiness.ts#runSesReadinessChecks",
+      "evidence": "apps/service/src/aws/readiness.test.ts:133-146 supplies CLICK only to the marketing destination and checks its production readiness row.",
+      "rationale": "A worthwhile positive companion case, but weaker in isolation than the missing-event assertion."
+    },
+    {
+      "id": "dec7d97f934cde33515ca042644a18cd3112f74d23c7e53bbdeab19baf42671b",
+      "operation": "addition",
+      "to": ["dec7d97f934cde33515ca042644a18cd3112f74d23c7e53bbdeab19baf42671b"],
+      "invariant": "Marketing OPEN configuration does not enlarge the transactional configuration set's required event list.",
+      "boundary": "Production readiness classification using separate fake summaries for the two SES configuration sets.",
+      "limitation": "Both assertions are status-only and do not inspect required-event details; the case depends on the neighboring negative test to show tracking is actually enforced for marketing.",
+      "wiring": "apps/service/src/aws/readiness.ts#runSesReadinessChecks",
+      "evidence": "apps/service/src/aws/readiness.test.ts:148-164 leaves OPEN absent transactionally while requiring and supplying it for marketing.",
+      "rationale": "High-value scoping guard against blocking transactional readiness on marketing-only telemetry."
+    },
+    {
+      "id": "bb25cc9e406740f1b50149c3d322d00b5a4a6c826c3cf64ed03c027032a9d35a",
+      "operation": "addition",
+      "to": ["bb25cc9e406740f1b50149c3d322d00b5a4a6c826c3cf64ed03c027032a9d35a"],
+      "invariant": "Enabling only open tracking adds OPEN, but not CLICK, to the marketing destination deficit.",
+      "boundary": "Production readiness calculation over a fake destination carrying only baseline event types.",
+      "limitation": "It does not cover multiple destinations, disabled destinations, or topic mismatches.",
+      "wiring": "apps/service/src/aws/readiness.ts#runSesReadinessChecks",
+      "evidence": "apps/service/src/aws/readiness.test.ts:117-131 checks warning status, exact missing array, and operator message.",
+      "rationale": "Strongest readiness addition because it proves both selective enforcement and externally visible diagnostics."
+    },
+    {
+      "id": "381e03b07e2996a9ecffeca9b30875a23940d303889f83082b2535b20e60e0eb",
+      "operation": "addition",
+      "to": ["381e03b07e2996a9ecffeca9b30875a23940d303889f83082b2535b20e60e0eb"],
+      "invariant": "Global pruning removes an expired key before capacity evaluation, admits its replacement, and bases later capacity retry on the next surviving expiry.",
+      "boundary": "In-process limiter with two entries and deterministic boundary-time advancement.",
+      "limitation": "Does not model multiple processes or persistent rate state; all state is one JavaScript Map.",
+      "wiring": "apps/service/src/device-auth/attempt-limiter.ts#makeAttemptLimiter",
+      "evidence": "apps/service/src/device-auth/attempt-limiter.test.ts:63-84 expires only the oldest key and observes replacement plus the remaining 500 ms retry.",
+      "rationale": "High-value memory-safety regression guard for stale unrelated keys, distinct from per-key expiry."
+    },
+    {
+      "id": "22542c3cd20c1ecbb1e37a899148e3ada92d01983bf83a809579cc86abb189d6",
+      "operation": "addition",
+      "to": ["22542c3cd20c1ecbb1e37a899148e3ada92d01983bf83a809579cc86abb189d6"],
+      "invariant": "Two simultaneous polls of one approved authorization produce exactly one credential and one terminal expired response.",
+      "boundary": "Full Hono request path, real DeviceAuthorizations and ApiKeys services, transaction serialization, and migrated test SQLite.",
+      "limitation": "Concurrency is within one runtime and database connection; it does not exercise separate service processes.",
+      "wiring": "apps/service/src/device-auth/service.ts#makeDeviceAuthorizationsService",
+      "evidence": "apps/service/src/device-auth/routes.test.ts:189-223 runs Promise.all polls, checks the two statuses, and verifies one api_keys row.",
+      "rationale": "Strong data-safety coverage for single-use grants and duplicate credential prevention."
+    },
+    {
+      "id": "865a7040ed029f84b5fc0b1c3d7aed7fec2298692eb21fa0c11197baaf90ea51",
+      "operation": "addition",
+      "to": ["865a7040ed029f84b5fc0b1c3d7aed7fec2298692eb21fa0c11197baaf90ea51"],
+      "invariant": "For one fingerprint, approved-but-unconsumed rows consume capacity, while denial, consumption, and expiry each free a slot.",
+      "boundary": "HTTP start endpoint backed by real pending-row SQL and migrated SQLite fixtures.",
+      "limitation": "States are seeded and mutated directly in SQL rather than reached through every public approval/denial flow.",
+      "wiring": "apps/service/src/device-auth/service.ts#makeDeviceAuthorizationsService",
+      "evidence": "apps/service/src/device-auth/routes.test.ts:358-391 observes 429 at five active rows and 201 after each excluded state transition.",
+      "rationale": "High-value predicate test guarding the exact durable per-source capacity definition."
+    },
+    {
+      "id": "d52478b0aa2ebd6244ba1721ce55e588dc67604d4938f66360d6d49e30c40d67",
+      "operation": "addition",
+      "to": ["d52478b0aa2ebd6244ba1721ce55e588dc67604d4938f66360d6d49e30c40d67"],
+      "invariant": "Across all fingerprints, an approved unconsumed grant remains pending, whereas denied, consumed, and expired grants do not count toward thirty.",
+      "boundary": "Full start route over real global-count SQL with thirty database fixtures.",
+      "limitation": "Uses a single application runtime and direct fixture updates; distributed request pressure is not reproduced.",
+      "wiring": "apps/service/src/device-auth/service.ts#makeDeviceAuthorizationsService",
+      "evidence": "apps/service/src/device-auth/routes.test.ts:393-426 checks rejection at thirty and successful insertion as each excluded state frees space.",
+      "rationale": "Distinct from the fingerprint case because it protects the system-wide starvation ceiling."
+    },
+    {
+      "id": "37b5ca0b097cda2c89271c99bf66e33a87b8ddcfc81ad9128f1e545f608f11e5",
+      "operation": "addition",
+      "to": ["37b5ca0b097cda2c89271c99bf66e33a87b8ddcfc81ad9128f1e545f608f11e5"],
+      "invariant": "A source-capacity rejection occurs before token polling, leaving last_poll_at and poll_count unchanged even though the global limiter has consumed the request.",
+      "boundary": "Production token route with injected real limiter instances and a real authorization row.",
+      "limitation": "Database non-access is inferred from unchanged poll state rather than measured with an instrumented Database service.",
+      "wiring": "apps/service/src/device-auth/routes.ts#createDeviceAuthorizationRoutes",
+      "evidence": "apps/service/src/device-auth/routes.test.ts:671-723 compares poll state before/after 429 and confirms global capacity consumption.",
+      "rationale": "Strong ordering assertion preventing rejected unauthenticated traffic from mutating durable grant state."
+    },
+    {
+      "id": "03ae7d8ee48af980156cefb681cc901786e599fc855a249b06fb650a32d87f59",
+      "operation": "addition",
+      "to": ["03ae7d8ee48af980156cefb681cc901786e599fc855a249b06fb650a32d87f59"],
+      "invariant": "Token traffic hits the per-source threshold first and the process-global threshold across distinct sources, returning Retry-After before unknown-code lookup can respond.",
+      "boundary": "Production Hono route with deterministic injected source/global limiters and real runtime services.",
+      "limitation": "The test does not spy on database calls; precedence over the normal 200 invalid-grant response is the evidence for early enforcement.",
+      "wiring": "apps/service/src/device-auth/routes.ts#createDeviceAuthorizationRoutes",
+      "evidence": "apps/service/src/device-auth/routes.test.ts:617-669 checks two normal invalid-grant responses, source 429, another source success, then global 429.",
+      "rationale": "High-value abuse-control and execution-order coverage, not merely a limiter unit test."
+    },
+    {
+      "id": "9bc489f6c38dea0f9c587045f36199313cc2fd0a4726ef50d85f4bb3ef04d067",
+      "operation": "addition",
+      "to": ["9bc489f6c38dea0f9c587045f36199313cc2fd0a4726ef50d85f4bb3ef04d067"],
+      "invariant": "The first pending poll uses one write transaction, while an immediate slow-down response uses none.",
+      "boundary": "Direct production DeviceAuthorizations service with an instrumented transaction wrapper and real SQLite.",
+      "limitation": "This bypasses the HTTP route despite its reporter grouping, and transaction-call count is an implementation-sensitive performance assertion.",
+      "wiring": "apps/service/src/device-auth/service.ts#makeDeviceAuthorizationsService",
+      "evidence": "apps/service/src/device-auth/routes.test.ts:134-187 resets and checks transactionCalls around the two token invocations.",
+      "rationale": "Still high-value because unnecessary write-lock acquisition on frequent early polls would create avoidable contention."
+    },
+    {
+      "id": "ce448950ffc3dad5e908f567b7706546dc84e8bf35f52e92eede26687096efa7",
+      "operation": "addition",
+      "to": ["ce448950ffc3dad5e908f567b7706546dc84e8bf35f52e92eede26687096efa7"],
+      "invariant": "Default limits remain 10 and 60 starts per fifteen minutes, plus 120 and 600 token polls per minute, with exact retry windows.",
+      "boundary": "Direct construction of the production default limiter bundle at a fixed time.",
+      "limitation": "It does not send HTTP requests and substantially overlaps the generic limiter mechanics; its unique value is as a configuration canary.",
+      "wiring": "apps/service/src/device-auth/routes.ts#createDeviceAuthorizationRoutes",
+      "evidence": "apps/service/src/device-auth/routes.test.ts:474-504 exhausts all four defaults and checks the next decision exactly.",
+      "rationale": "Retain as a high-value production-policy pin despite repetitive loops."
+    },
+    {
+      "id": "18b60aeb0132407fc0fed5ce2aa487202b113046cf1b38778513b30b8f2b4c76",
+      "operation": "addition",
+      "to": ["18b60aeb0132407fc0fed5ce2aa487202b113046cf1b38778513b30b8f2b4c76"],
+      "invariant": "Default source maps admit exactly 128 start identities and 1,024 token identities, then fail closed for a new identity.",
+      "boundary": "Direct default-factory test using production limiter instances and deterministic time.",
+      "limitation": "No route is exercised, and diagnostics verify key count rather than memory consumption or per-key timestamp arrays.",
+      "wiring": "apps/service/src/device-auth/routes.ts#createDeviceAuthorizationRoutes",
+      "evidence": "apps/service/src/device-auth/routes.test.ts:506-524 fills each map, checks diagnostics, and asserts capacity retry.",
+      "rationale": "Useful bounded-memory configuration guard, complementary to the rate-boundary canary."
+    },
+    {
+      "id": "b5edf94b174c514bb848940318551122ec9c3300ee806879b2c544ea01079966",
+      "operation": "addition",
+      "to": ["b5edf94b174c514bb848940318551122ec9c3300ee806879b2c544ea01079966"],
+      "invariant": "Deleting a list referenced by a scheduled mailing returns conflict and preserves the list, suppression, delivery, and queued job graph.",
+      "boundary": "Authenticated production DELETE route over migrated SQLite with foreign keys and real list-write transaction.",
+      "limitation": "The scheduled and sending cases share identical assertions and one SQL predicate, making them structurally near-duplicates, though each pins a valid active state.",
+      "wiring": "apps/service/src/lists/write.ts#deleteList",
+      "evidence": "apps/service/src/lists/routes.test.ts:160-243 parameter row scheduled checks the 409 envelope and joined preserved graph.",
+      "rationale": "High-value policy and rollback coverage; retaining both active-state rows prevents accidental state-specific exclusions."
+    },
+    {
+      "id": "371fcff7f789dc5307ee40cdc17cabb3475cd2dc9a49d606fa4ba84e9d91670e",
+      "operation": "addition",
+      "to": ["371fcff7f789dc5307ee40cdc17cabb3475cd2dc9a49d606fa4ba84e9d91670e"],
+      "invariant": "A list supporting an in-progress mailing cannot be removed, and its policy and queue records survive the rejected request.",
+      "boundary": "Same full authenticated list route and real SQLite transaction, with mailing state set to sending.",
+      "limitation": "Near-duplicates the scheduled row and does not simulate a concurrently running worker.",
+      "wiring": "apps/service/src/lists/write.ts#deleteList",
+      "evidence": "apps/service/src/lists/routes.test.ts:160-243 parameter row sending verifies conflict plus all five retained identifiers/statuses.",
+      "rationale": "A valid state-enumeration canary, albeit low in incremental assertion diversity relative to the scheduled case."
+    },
+    {
+      "id": "aa750eb3bb4446c4099d6e01f86a56f4f08c37d536aa9f24e29a32e8d69c3dea",
+      "operation": "addition",
+      "to": ["aa750eb3bb4446c4099d6e01f86a56f4f08c37d536aa9f24e29a32e8d69c3dea"],
+      "invariant": "Removing a list after completion nulls the retained mailing reference and cascades list policy rows without invalidating the delivery-based unsubscribe token.",
+      "boundary": "Production list DELETE and unsubscribe POST routes, real token signing/verification, and migrated SQLite foreign-key actions.",
+      "limitation": "Uses a deterministic test secret and does not cover token rotation or expiry.",
+      "wiring": "apps/service/src/lists/write.ts#deleteList",
+      "evidence": "apps/service/src/lists/routes.test.ts:245-327 verifies 204, successful unsubscribe, absent list/list suppression, null mailing list_id, and new unsubscribe suppression.",
+      "rationale": "Excellent end-to-end regression coverage for historical unsubscribe safety after list lifecycle cleanup."
+    },
+    {
+      "id": "6daa353916b4ddeaf30b6bfd5e942f0a886af64d7862f0a00f84bf046b606321",
+      "operation": "addition",
+      "to": ["6daa353916b4ddeaf30b6bfd5e942f0a886af64d7862f0a00f84bf046b606321"],
+      "invariant": "JSON lacking required SES mail and event fields is classified as permanently malformed rather than as a retryable reputation-body inconsistency.",
+      "boundary": "Direct production Effect schema decoder.",
+      "limitation": "Only one malformed shape is sampled, and no HTTP status mapping is exercised here.",
+      "wiring": "apps/service/src/ses/event-schema.ts#decodeSesEvent",
+      "evidence": "apps/service/src/ses/event-schema.test.ts:62-72 asserts the malformed tag and excludes the retryable tag.",
+      "rationale": "High-value error-taxonomy guard because webhook retry behavior differs between these classes."
+    },
+    {
+      "id": "921a7ccdec17febd062e912205e4a9313777d1b769a37312e94af8ec927f9b6b",
+      "operation": "addition",
+      "to": ["921a7ccdec17febd062e912205e4a9313777d1b769a37312e94af8ec927f9b6b"],
+      "invariant": "A payload declaring Bounce while carrying a complaint body is treated as a retryable semantic mismatch.",
+      "boundary": "Direct decoder with structurally valid mail and complaint blocks.",
+      "limitation": "Checks error tags only, not the stable reason text; it shares the same assertion body as three matrix neighbors.",
+      "wiring": "apps/service/src/ses/event-schema.ts#decodeSesEvent",
+      "evidence": "apps/service/src/ses/event-schema.test.ts:46-60 parameter row for Bounce plus complaint.",
+      "rationale": "Not redundant: it covers the conflicting-body half of the Bounce branch rather than merely a missing block."
+    },
+    {
+      "id": "255be9bf310660123fe9aa1b9935584b931c0cb1b1a2f21acedace59d396fb53",
+      "operation": "addition",
+      "to": ["255be9bf310660123fe9aa1b9935584b931c0cb1b1a2f21acedace59d396fb53"],
+      "invariant": "A Bounce declaration without its required bounce object remains retryable rather than being collapsed into malformed JSON.",
+      "boundary": "Production schema decode followed by reputation semantic validation.",
+      "limitation": "The shared tag-only assertion does not prove the diagnostic reason or webhook persistence behavior.",
+      "wiring": "apps/service/src/ses/event-schema.ts#decodeSesEvent",
+      "evidence": "apps/service/src/ses/event-schema.test.ts:46-60 parameter row with only eventType and mail.",
+      "rationale": "Necessary matrix entry for provider redelivery when a reputation event is structurally incomplete."
+    },
+    {
+      "id": "c06753e4574aaa5927966e21d5f3a1b21639424b2e59b53e2eda6d9f4f2ab926",
+      "operation": "addition",
+      "to": ["c06753e4574aaa5927966e21d5f3a1b21639424b2e59b53e2eda6d9f4f2ab926"],
+      "invariant": "A Complaint declaration paired with a bounce object enters the retryable mismatch channel.",
+      "boundary": "Direct production SES decoder with valid common mail data.",
+      "limitation": "Assertion structure duplicates the other reputation mismatch rows and omits reason-text validation.",
+      "wiring": "apps/service/src/ses/event-schema.ts#decodeSesEvent",
+      "evidence": "apps/service/src/ses/event-schema.test.ts:46-60 parameter row for Complaint plus bounce.",
+      "rationale": "Provides symmetric coverage of the second event branch; consolidation must preserve reporter-distinct matrix cases."
+    },
+    {
+      "id": "2b484cae51fd0d90a2cbe2da1976a3ca1e786dc31aea0801fa94c165b9887198",
+      "operation": "addition",
+      "to": ["2b484cae51fd0d90a2cbe2da1976a3ca1e786dc31aea0801fa94c165b9887198"],
+      "invariant": "A Complaint event missing complaint details is retryable, not a non-retryable schema failure.",
+      "boundary": "Production Effect decoder with required mail data but absent reputation body.",
+      "limitation": "Only classification tags are asserted; the full webhook consequence is covered separately.",
+      "wiring": "apps/service/src/ses/event-schema.ts#decodeSesEvent",
+      "evidence": "apps/service/src/ses/event-schema.test.ts:46-60 parameter row containing Complaint and mail only.",
+      "rationale": "Completes the four-way semantic mismatch matrix with meaningful branch coverage."
+    },
+    {
+      "id": "1b51ceb9827b433416e15af2101d468d6d4886ac9bb8a2b760baafaf238f09ae",
+      "operation": "addition",
+      "to": ["1b51ceb9827b433416e15af2101d468d6d4886ac9bb8a2b760baafaf238f09ae"],
+      "invariant": "Automated reputation evidence monotonically promotes one case-insensitive global suppression from manual to bounce to complaint; a later bounce cannot demote it or replace identity metadata.",
+      "boundary": "Verified SNS processing with fake signature verification but real decoder, event transaction, suppression upsert, and SQLite.",
+      "limitation": "SNS authenticity and external redelivery are faked; concurrency is covered by separate file-backed race tests.",
+      "wiring": "apps/service/src/ses/process-event.ts#handleSesSnsRequest",
+      "evidence": "apps/service/src/ses/process-event.test.ts:146-216 checks unchanged id/created_at after each promotion and final complaint precedence.",
+      "rationale": "Strong high-value protection against weakening or duplicating safety suppressions."
+    },
+    {
+      "id": "6736d088e4cef8839d6145dd887605f6ad5f2298e17a57bfcb7eb220c0a2cb75",
+      "operation": "addition",
+      "to": ["6736d088e4cef8839d6145dd887605f6ad5f2298e17a57bfcb7eb220c0a2cb75"],
+      "invariant": "An ambiguous transport outcome terminates send-acceptance simulation as ambiguous, persists that state on both run and delivery, and invokes transport once.",
+      "boundary": "Production simulator, mailing creation, queue worker, send processor, and attempt recording with TestClock and a fake transport failure.",
+      "limitation": "The provider is a deterministic fake and the test does not inspect attempt/job rows; no real passage of timeout time occurs.",
+      "wiring": "apps/service/src/ses/simulator.ts#runSesSimulator",
+      "evidence": "apps/service/src/ses/simulator.test.ts:85-122 asserts run result, persisted error/status, delivery status, and exactly one send.",
+      "rationale": "High-value ambiguous-acceptance safety test proving the simulator neither retries a possibly accepted send nor mislabels it as timeout."
+    },
+    {
+      "id": "768dab6a52d18f8061fdf9b11b05a990228c3e58e26c4ebb148fcf447fa3f1af",
+      "operation": "addition",
+      "to": ["768dab6a52d18f8061fdf9b11b05a990228c3e58e26c4ebb148fcf447fa3f1af"],
+      "invariant": "A verified Bounce carrying complaint details receives empty 503 responses on original and duplicate delivery while retaining one unfinished audit and no event or suppression.",
+      "boundary": "Full webhook HTTP route with fake verification and real decoding, error mapping, dedupe query, and SQLite persistence.",
+      "limitation": "Signature verification is bypassed, and this route case overlaps the direct decoder matrix by design.",
+      "wiring": "apps/service/src/ses/process-event.ts#handleSesSnsRequest",
+      "evidence": "apps/service/src/ses/webhook-routes.test.ts:133-191 parameter row for Bounce with complaint checks both empty 503s and all three table outcomes.",
+      "rationale": "Strong boundary-level complement proving retry status and audit reuse, not just decoder classification."
+    },
+    {
+      "id": "feaace22aa3b6f5cecb49651a8f432af04d330fa1f968e16dc01a9c90ca6031d",
+      "operation": "addition",
+      "to": ["feaace22aa3b6f5cecb49651a8f432af04d330fa1f968e16dc01a9c90ca6031d"],
+      "invariant": "A verified Bounce without bounce details is repeatedly rejected as retryable while one nullable audit row is reused.",
+      "boundary": "Mounted production webhook handler with fake verifier and real database effects.",
+      "limitation": "Assertions duplicate the other three semantic mismatch route cases; its unique value is the missing-Bounce branch.",
+      "wiring": "apps/service/src/ses/process-event.ts#handleSesSnsRequest",
+      "evidence": "apps/service/src/ses/webhook-routes.test.ts:133-191 missing-Bounce parameter row verifies empty 503, one audit, and zero downstream rows.",
+      "rationale": "Necessary provider-redelivery coverage for a distinct retryable payload defect."
+    },
+    {
+      "id": "784fcf8a735bee0b3fb4e8bcd211ac158b786d08cec51c0c884706e402790d64",
+      "operation": "addition",
+      "to": ["784fcf8a735bee0b3fb4e8bcd211ac158b786d08cec51c0c884706e402790d64"],
+      "invariant": "A verified Complaint carrying bounce details remains an unprocessed single audit across two empty 503 responses.",
+      "boundary": "HTTP webhook composition through production route, processor, decoder, and response mapper.",
+      "limitation": "Uses an injected verifier and the same persistence assertions as the other matrix entries.",
+      "wiring": "apps/service/src/ses/process-event.ts#handleSesSnsRequest",
+      "evidence": "apps/service/src/ses/webhook-routes.test.ts:133-191 Complaint-with-bounce row checks response bodies and absence of event/suppression writes.",
+      "rationale": "Preserves symmetric route behavior for the Complaint conflict branch."
+    },
+    {
+      "id": "eb102607c7dbe7846ad36d827d28105fa67d07428d0a1897b05736b687b72098",
+      "operation": "addition",
+      "to": ["eb102607c7dbe7846ad36d827d28105fa67d07428d0a1897b05736b687b72098"],
+      "invariant": "A verified Complaint lacking complaint details returns retryable HTTP status on redelivery without duplicating its audit record.",
+      "boundary": "Production webhook route and SQLite audit/event/suppression tables with signature verification stubbed.",
+      "limitation": "Does not test eventual recovery with a corrected payload under the same SNS message ID.",
+      "wiring": "apps/service/src/ses/process-event.ts#handleSesSnsRequest",
+      "evidence": "apps/service/src/ses/webhook-routes.test.ts:133-191 missing-Complaint row verifies two empty 503s and unchanged unfinished state.",
+      "rationale": "Completes the high-value webhook retry matrix; apparent assertion duplication corresponds to a separate production predicate."
+    },
+    {
+      "id": "c55e0ee8dc034b8ca11d5f49a5069fd44dfbff49ec998d67195a98c54c0ae9e5",
+      "operation": "addition",
+      "to": ["c55e0ee8dc034b8ca11d5f49a5069fd44dfbff49ec998d67195a98c54c0ae9e5"],
+      "invariant": "If manual deletion commits before bounce promotion, promotion recreates an automated suppression that later cannot be manually deleted.",
+      "boundary": "Two Bun subprocesses, separate production SQLite connections, WAL/busy timeout, BEGIN IMMEDIATE barriers, and a file-backed database.",
+      "limitation": "Ordering is deliberately serialized rather than stress-randomized; filesystem barriers and Bun are platform-dependent.",
+      "wiring": "apps/service/src/suppressions/write.ts#deleteManualSuppression",
+      "evidence": "apps/service/src/suppressions/suppression-list-race.integration.test.ts:21-86 deletion-first row verifies blocking, both commits, automated identity, and final ConflictError.",
+      "rationale": "Excellent cross-connection race proof that a deletion cannot permanently erase later reputation protection."
+    },
+    {
+      "id": "e490c893132e882da2e3185c01bca11d9d8727dda3273c8302121a8a8b0c142c",
+      "operation": "addition",
+      "to": ["e490c893132e882da2e3185c01bca11d9d8727dda3273c8302121a8a8b0c142c"],
+      "invariant": "If bounce promotion commits first, the waiting manual delete observes the promoted reason and fails, preserving the original suppression row.",
+      "boundary": "Deterministically overlapped file-backed transactions in independent Bun processes using production database and suppression code.",
+      "limitation": "Covers one promotion reason and one exact lock ordering, not arbitrary contention or crash recovery.",
+      "wiring": "apps/service/src/suppressions/write.ts#deleteManualSuppression",
+      "evidence": "apps/service/src/suppressions/suppression-list-race.integration.test.ts:21-86 promotion-first row checks second-operation conflict and retained original id/created_at.",
+      "rationale": "Strong counterpart to deletion-first, proving safety under both possible commit orders."
+    },
+    {
+      "id": "d881091e8c017f72a41a5dc264efb1980a05d714684dd85f71084f236dbf1a1e",
+      "operation": "addition",
+      "to": ["d881091e8c017f72a41a5dc264efb1980a05d714684dd85f71084f236dbf1a1e"],
+      "invariant": "When mailing creation wins the write lock, list deletion subsequently conflicts and the complete list, mailing, delivery, and job graph remains valid.",
+      "boundary": "Independent Bun processes execute production createMailing and deleteList against migrated file-backed SQLite.",
+      "limitation": "Uses one recipient and one list; it does not simulate a send worker consuming the newly queued job.",
+      "wiring": "apps/service/src/lists/write.ts#deleteList",
+      "evidence": "apps/service/src/suppressions/suppression-list-race.integration.test.ts:88-143 creation-first row verifies blocked overlap, ConflictError, four retained rows, and no orphaned active mailing.",
+      "rationale": "High-value integrity test closing the check-then-delete race across real connections."
+    },
+    {
+      "id": "917c2e4667fd9bb606128bb925d51956633b5af04bf2fbfb916f5ebef6e58201",
+      "operation": "addition",
+      "to": ["917c2e4667fd9bb606128bb925d51956633b5af04bf2fbfb916f5ebef6e58201"],
+      "invariant": "When list deletion commits first, the waiting mailing creation fails as list-not-found and leaves no mailing, delivery, job, or orphaned active state.",
+      "boundary": "Cross-process production transactions on a real temporary SQLite file with explicit lock-acquisition barriers.",
+      "limitation": "Deterministic ordering proves this interleaving only; it is not a broad concurrency stress test.",
+      "wiring": "apps/service/src/lists/write.ts#deleteList",
+      "evidence": "apps/service/src/suppressions/suppression-list-race.integration.test.ts:88-143 deletion-first row checks ListNotFoundError and zero counts throughout the graph.",
+      "rationale": "Strong rollback and orphan-prevention counterpart to the creation-first case."
+    },
+    {
+      "id": "42cdd7b24f6e57f4ca614ad941f9b9497db24f47ad4c9bc07a1e970806564f71",
+      "operation": "addition",
+      "to": ["42cdd7b24f6e57f4ca614ad941f9b9497db24f47ad4c9bc07a1e970806564f71"],
+      "invariant": "Migration 0009 promotes only provider-proven latest ambiguity, preserves unrelated simulator failure history, repairs only qualifying suppressions, and preserves constraints, cascades, timestamps, queue history, and required indexes across UP, DOWN, and re-UP.",
+      "boundary": "The real Bun migration CLI and production SQL run against a temporary file-backed SQLite database through UP, DOWN, seeded pre-0009 data, UP, DOWN, and re-UP.",
+      "limitation": "The old schema is produced by the current DOWN migration rather than an archived production snapshot. The test does not interrupt a migration mid-transaction, introduce concurrent connections, or assess large-table migration time.",
+      "wiring": "apps/service/src/db/migrations/sql/0009_delivery_ambiguity_and_suppression_safety.sql#up-down",
+      "evidence": "apps/service/src/db/migrate.integration.test.ts:314-684 runs the real Bun migration CLI on file-backed SQLite, verifies exact/nonmatching conversion histories and suppression provenance, checks foreign_key_check/cascades/repeated directions, and explicitly retains jobs_delivery_id_idx and the unique delivery index after each rebuild and after rolling back 0008.",
+      "rationale": "High-value destructive migration safety proof. Strengthened after independent review to cover unrelated pre-existing sent-delivery simulator history and the nonunique job lookup index; the historical schema still comes from the migration's current DOWN path."
+    },
+    {
+      "id": "7e44e08ad7c57ab288cb99666cfb8193ba18f499a3249b7a61fcc45e629149aa",
+      "operation": "addition",
+      "to": ["7e44e08ad7c57ab288cb99666cfb8193ba18f499a3249b7a61fcc45e629149aa"],
+      "invariant": "When exact late provider evidence resolves an uncertain delivery, the attempt and delivery become succeeded/sent while the already-dead queue record remains immutable historical evidence.",
+      "boundary": "Production queue reconciliation and outcome recording execute over migrated in-memory SQLite with TestClock and local fake transport/config layers.",
+      "limitation": "No process crash or separate SQLite connection occurs here. The same dead-job preservation is also exercised more realistically by the crash integration identity `9452…`, so this test adds mainly fast, focused localization.",
+      "wiring": "apps/service/src/queue/runner.ts#runSendWorkerOnce",
+      "evidence": "apps/service/src/queue/runner.test.ts:374-416 starts with a dead job and started attempt, runs the production sweep, applies exact late proof, then asserts succeeded attempt, sent delivery, and unchanged dead job.",
+      "rationale": "Correct and useful as a focused regression, but partially duplicate of the stronger file-backed crash test; its incremental value is speed and direct diagnosis rather than unique behavior."
+    },
+    {
+      "id": "7cbcbf7979300cac2a50a36e5b37c66882fb6f0e761782c253cfe775226a53ee",
+      "operation": "addition",
+      "to": ["7cbcbf7979300cac2a50a36e5b37c66882fb6f0e761782c253cfe775226a53ee"],
+      "invariant": "Evidence for an older attempt cannot supersede a newer attempt while the delivery is nonterminal; the inconsistency must fail. Once the delivery is independently terminal, the same stale evidence is a non-mutating terminal supersession.",
+      "boundary": "The production transactional outcome writer runs against migrated in-memory SQLite with two explicitly seeded attempts.",
+      "limitation": "The newer-attempt state is injected directly and should not arise through the normal unique-job/lease path. The test checks defensive corruption handling rather than a naturally reproduced production race.",
+      "wiring": "apps/service/src/sending/attempts.ts#recordSendSuccess",
+      "evidence": "apps/service/src/sending/attempts.test.ts:392-448 inserts attempts 1 and 2, observes failure while the delivery is sending, changes only the delivery to failed, then obtains `SupersededTerminal` and verifies both attempts remain unchanged. Exact-latest gating is at attempts.ts:110-119.",
+      "rationale": "Valuable fail-closed coverage for stale proof: it prevents an older callback from silently rewriting active state, while acknowledging that the fixture is deliberately inconsistent."
+    },
+    {
+      "id": "5fb9e92ffd12509aaa976417efba1445c78063f225a02a2f7d02714efb3b70a5",
+      "operation": "addition",
+      "to": ["5fb9e92ffd12509aaa976417efba1445c78063f225a02a2f7d02714efb3b70a5"],
+      "invariant": "If an ambiguous attempt already contains one provider identifier, later evidence naming a different identifier cannot replace it or promote the delivery.",
+      "boundary": "The real paired-state transaction runs on migrated in-memory SQLite with conflicting identifiers seeded at the attempt boundary.",
+      "limitation": "This is sequential fault injection, not concurrent callback delivery. It does not identify which external source supplied the conflicting value or test operational alerting.",
+      "wiring": "apps/service/src/sending/attempts.ts#recordSendSuccess",
+      "evidence": "apps/service/src/sending/attempts.test.ts:265-300 seeds `provider-a`, submits `provider-b`, expects `SupersededTerminal`, and confirms the attempt remains ambiguous with `provider-a` while the delivery remains identifier-free.",
+      "rationale": "High-value data-integrity guard: accepting conflicting proof could falsely attribute a provider send to the wrong delivery."
+    },
+    {
+      "id": "32f5dbfd04b2bbcfc8ffc4130c968a3d3d9d55f70490ccbf48d8a02a7e592a33",
+      "operation": "addition",
+      "to": ["32f5dbfd04b2bbcfc8ffc4130c968a3d3d9d55f70490ccbf48d8a02a7e592a33"],
+      "invariant": "Policy suppression is final: later success evidence from an unfinished attempt cannot convert the delivery to sent or attach a provider identifier.",
+      "boundary": "The suppressed reporter row of a parameterized production-writer test over migrated in-memory SQLite.",
+      "limitation": "The suppression is inserted directly rather than produced through policy evaluation, and the test does not check suppression metadata or list/global scope.",
+      "wiring": "apps/service/src/sending/attempts.ts#recordSendSuccess",
+      "evidence": "apps/service/src/sending/attempts.test.ts:302-339 runs the `suppressed` parameter and verifies terminal classification, a still-started attempt, null identifiers, and unchanged suppressed delivery.",
+      "rationale": "Distinct from the failed case because accidental revival of an opted-out recipient is a separate policy and compliance risk."
+    },
+    {
+      "id": "a06d298b9e902005b8a650ad5dc615d638b2ab60c45e24e3d4491d080bd4486d",
+      "operation": "addition",
+      "to": ["a06d298b9e902005b8a650ad5dc615d638b2ab60c45e24e3d4491d080bd4486d"],
+      "invariant": "Replaying the same exact provider evidence after reconciliation is harmless: the first call resolves both records and the second reports an already-recorded outcome without changing state.",
+      "boundary": "Two sequential calls to the production transactional writer over migrated in-memory SQLite.",
+      "limitation": "The replay is sequential in one process; simultaneous duplicate callbacks and separate connections are covered only indirectly by the file-backed race tests.",
+      "wiring": "apps/service/src/sending/attempts.ts#recordSendSuccess",
+      "evidence": "apps/service/src/sending/attempts.test.ts:222-263 asserts `Reconciled`, then `AlreadyRecorded`, followed by matching succeeded/sent statuses and identical message identifiers. Idempotent read-back is defined at attempts.ts:104-105 and 566-577.",
+      "rationale": "Meaningful idempotency coverage, not redundant with the basic reconciliation test because it protects replay behavior after the state transition."
+    },
+    {
+      "id": "14d5702f2d356a37f5036d41db8de965400919527dc1cac38fff7f7a362eb9b4",
+      "operation": "addition",
+      "to": ["14d5702f2d356a37f5036d41db8de965400919527dc1cac38fff7f7a362eb9b4"],
+      "invariant": "If the attempt half of a success pair updates but the delivery half cannot be applied, the transaction fails and rolls back the attempt so no half-success is committed.",
+      "boundary": "A real SQLite transaction is used, while a narrowly wrapped Database service forces the delivery update to appear as a zero-row write.",
+      "limitation": "The second-write failure is an adapter-level synthetic null, not a reproduced lock, trigger, constraint, or concurrent state change. Rollback failure itself is not exercised.",
+      "wiring": "apps/service/src/sending/attempts.ts#recordSendSuccess",
+      "evidence": "apps/service/src/sending/attempts.test.ts:342-390 injects the zero-row delivery result, expects failure, and confirms both records retain their original ambiguous state and null identifiers. BEGIN IMMEDIATE and rollback-on-nonsuccess are at database.ts:93-106.",
+      "rationale": "Strong atomicity canary despite synthetic fault injection; it directly prevents a split-brain attempt/delivery pair."
+    },
+    {
+      "id": "5fc5af43b0273d60394209ef7cd741e35601602759627201555b7c576fe433f2",
+      "operation": "addition",
+      "to": ["5fc5af43b0273d60394209ef7cd741e35601602759627201555b7c576fe433f2"],
+      "invariant": "When provider dispatch returns success but paired outcome recording detects a newer attempt and nonterminal delivery, the processor must fail its owned queue job rather than falsely completing it.",
+      "boundary": "The full queue runner and delivery processor use migrated in-memory SQLite; an injected transport mutates the database during dispatch before returning a message identifier.",
+      "limitation": "Creating a newer attempt inside transport is deliberately artificial. The test stops with a queued job and sending delivery and does not run the next reconciliation cycle, so eventual recovery of this corruption is unproven.",
+      "wiring": "apps/service/src/sending/process-delivery.ts#processSendDeliveryJob",
+      "evidence": "apps/service/src/sending/process-delivery.test.ts:541-603 inserts attempt 2 from the transport, then asserts one dispatch, runner failed=1/succeeded=0, queued job, sending delivery, and unchanged attempts. Post-dispatch DatabaseError propagation is at process-delivery.ts:160-179.",
+      "rationale": "Useful fail-closed coverage at the processor/queue boundary, but its synthetic state and missing follow-up cycle make it less representative than the real file-backed races."
+    },
+    {
+      "id": "9452c1871596268cae97acd1e065aa5ba9285337753d71ea8dac580f5d6a8fe5",
+      "operation": "addition",
+      "to": ["9452c1871596268cae97acd1e065aa5ba9285337753d71ea8dac580f5d6a8fe5"],
+      "invariant": "After a worker dies once transport has been entered, lease recovery must finalize uncertainty without a second dispatch; later exact evidence may resolve delivery state while preserving the dead queue record.",
+      "boundary": "Spawned Bun processes, SIGKILL, the production worker, a real file-backed SQLite database, lease expiry, restart, and a separate late-evidence process.",
+      "limitation": "The dispatch marker proves entry into a fake transport adapter, not SES acceptance. Lease expiry is forced with SQL, late proof is injected, and only local single-host SQLite behavior is covered.",
+      "wiring": "apps/service/src/sending/attempts.ts#recordSendSuccess",
+      "evidence": "apps/service/src/sending/worker-crash.integration.test.ts:24-106 observes started/sending/leased before SIGKILL, verifies no restart marker and dead/ambiguous recovery, then obtains `Reconciled` and checks sent/succeeded identifiers with the job still dead.",
+      "rationale": "The strongest crash-boundary test in the group. It validates the no-redispatch safety policy with actual process death while honestly stopping short of real provider acceptance."
+    },
+    {
+      "id": "84febe7c96b323ff30acd7a942a37daa5a6619f9d73239d59e5312cf64ee6d3e",
+      "operation": "addition",
+      "to": ["84febe7c96b323ff30acd7a942a37daa5a6619f9d73239d59e5312cf64ee6d3e"],
+      "invariant": "When stale reconciliation obtains the SQLite write lock first, it commits an ambiguous pair; a blocked exact-success transaction then re-reads that state and safely reconciles both records to sent/succeeded.",
+      "boundary": "Two independent Bun processes and connections contend on a file-backed SQLite database using production BEGIN IMMEDIATE transactions and explicit barriers.",
+      "limitation": "Coordination uses local marker files and a short timing check. It does not model network filesystems, multiple hosts, or a datastore other than SQLite.",
+      "wiring": "apps/service/src/sending/attempts.ts#recordSendSuccess",
+      "evidence": "apps/service/src/sending/worker-crash.integration.test.ts:108-182 runs the `race-stale` first row, proves the second transaction has attempted but not acquired, expects `Recorded` then `Reconciled`, and verifies a single matching identifier on sent/succeeded state.",
+      "rationale": "Distinct and high-value race ordering: it proves late exact evidence remains usable after stale ambiguity wins serialization."
+    },
+    {
+      "id": "98e302b1dcea2cc742d9bcffe01526fc215644a1397c60e7c7f9b06fa5bcbd25",
+      "operation": "addition",
+      "to": ["98e302b1dcea2cc742d9bcffe01526fc215644a1397c60e7c7f9b06fa5bcbd25"],
+      "invariant": "When exact success owns the SQLite write lock first, it commits sent/succeeded state; the subsequently unblocked stale transaction must classify the terminal state as superseded and leave it untouched.",
+      "boundary": "Two spawned Bun processes with independent production database connections contend through BEGIN IMMEDIATE on local file-backed SQLite.",
+      "limitation": "The barrier instrumentation wraps transaction entry and uses filesystem polling; it does not exercise remote coordination, provider callbacks, or non-SQLite isolation.",
+      "wiring": "apps/service/src/sending/attempts.ts#recordSendSuccess",
+      "evidence": "apps/service/src/sending/worker-crash.integration.test.ts:108-182 runs the `race-success` first row, verifies lock exclusion, expects `Recorded` then `SupersededTerminal`, and confirms final attempt and delivery share the success identifier.",
+      "rationale": "Not a duplicate of the opposite ordering: this row specifically protects committed success from a delayed stale marker."
+    },
+    {
+      "id": "3be99ad8a12bdb4fa813a9d35fe56fc46b7242def67147c13c87aec5cc155c0c",
+      "operation": "addition",
+      "to": ["3be99ad8a12bdb4fa813a9d35fe56fc46b7242def67147c13c87aec5cc155c0c"],
+      "invariant": "A legacy mailing-count payload lacking the newly introduced ambiguity field decodes to a modern value with numeric zero, while the decoded TypeScript shape still requires that field.",
+      "boundary": "Direct Effect Schema decoding in the API-contract package, with no HTTP or CLI composition.",
+      "limitation": "It does not prove an installed older service can communicate with the current CLI or that explicit nonzero ambiguity is preserved. A higher-level CLI compatibility test exists elsewhere, so this is chiefly the precise decoder canary.",
+      "wiring": "packages/api-contract/src/mailings/schema.ts#MailingCountsSchema",
+      "evidence": "packages/api-contract/src/mailings/schema.test.ts:7-28 decodes five numeric fields, asserts the six-field result with ambiguity zero, and checks the output type. The decoding default is at schema.ts:5-12; CLI response wiring is at nusend-api.ts:130-141.",
+      "rationale": "Small but valuable upgrade-compatibility test. Its overlap with CLI-level coverage is intentional because it pins the exact schema default and static output contract."
+    },
+    {
+      "id": "3bd5c572c6a8db4660d707ac91cbf27f861539b4b6f99511072b85e616366a47",
+      "operation": "addition",
+      "to": ["3bd5c572c6a8db4660d707ac91cbf27f861539b4b6f99511072b85e616366a47"],
+      "invariant": "Logout revocation waits for a complete login-state commit and uses one matching base URL, API key, and key ID before deleting the local credential.",
+      "boundary": "An orchestrated file-backed login publication pauses between credential and config renames while the real CLI logout --revoke path contends on the shared local-state lock.",
+      "limitation": "Local filesystem and in-process fetch substitution only; Windows and network filesystems remain unvalidated or unsupported as documented.",
+      "wiring": "apps/cli/src/main.ts#runCli logout revoke setup",
+      "evidence": "apps/cli/src/commands/logout.test.ts:205-269 proves zero requests before publication release, then checks the new URL, API-key header, key ID, and local deletion.",
+      "rationale": "Essential destructive-path coverage distinct from general authenticated dispatch: it prevents revoking a key against a mismatched profile endpoint."
+    },
+    {
+      "id": "538c298ef3f481e17e33d628ca8e4567bc6019d54a7a9c52f0dc97dee102cd25",
+      "operation": "addition",
+      "to": ["538c298ef3f481e17e33d628ca8e4567bc6019d54a7a9c52f0dc97dee102cd25"],
+      "invariant": "Help and version output remain available without acquiring or decoding authenticated local state.",
+      "boundary": "Real CLI dispatch with deliberately unusable local mutex metadata; no network is involved.",
+      "limitation": "The fixture demonstrates local-state independence, not every possible filesystem failure.",
+      "wiring": "apps/cli/src/main.ts#runCli early help/version returns",
+      "evidence": "apps/cli/src/main.test.ts:47-61 supplies malformed mutex state and verifies both informational commands succeed and emit output.",
+      "rationale": "High-value recovery/operability canary that is distinct from exact help/version content tests."
+    },
+    {
+      "id": "4e1e319db50bc663f2c99e4cf0174564f560dbd06353d482244645ee46753500",
+      "operation": "addition",
+      "to": ["4e1e319db50bc663f2c99e4cf0174564f560dbd06353d482244645ee46753500"],
+      "invariant": "NUSEND_API_KEY authentication bypasses unreadable stored credentials and unusable local-state locking while still dispatching successfully.",
+      "boundary": "Real CLI whoami dispatch with environment URL/key, malformed credential JSON, malformed mutex state, and an intercepted HTTP boundary.",
+      "limitation": "No live service or operating-system credential store is exercised.",
+      "wiring": "apps/cli/src/main.ts#runCli environment credential branch",
+      "evidence": "apps/cli/src/main.test.ts:113-140 verifies whoami succeeds despite local-state corruption that would fail either snapshot acquisition or credential decoding.",
+      "rationale": "High-value explicit-precedence and recovery coverage not supplied by ordinary environment-authentication tests."
+    },
+    {
+      "id": "8173a3c3fe9eb9afcffea2fd15184be01b75bdc227f6cb87fcb88a43a098b768",
+      "operation": "addition",
+      "to": ["8173a3c3fe9eb9afcffea2fd15184be01b75bdc227f6cb87fcb88a43a098b768"],
+      "invariant": "File-authenticated network work uses one committed config/credential generation and does not hold the local-state lock during the request.",
+      "boundary": "An orchestrated local publication pauses after credential rename; the real CLI whoami path contends, then an intercepted request performs a nested config mutation.",
+      "limitation": "Deterministic local-filesystem scheduling does not validate Windows or unsupported network filesystems.",
+      "wiring": "apps/cli/src/config/local-state.ts#loadLocalStateSnapshot -> apps/cli/src/main.ts#runCli",
+      "evidence": "apps/cli/src/main.test.ts:142-222 proves zero requests during partial publication, checks the matching new URL/key, and proves lock release through successful mutation inside fetch.",
+      "rationale": "Essential end-to-end regression for the confirmed cross-file credential/base-URL TOCTOU."
+    },
+    {
+      "id": "22ef47d633528e350e6b1b8964e67dc556cd0ae546e77068ae0afc85d0366e0e",
+      "operation": "addition",
+      "to": ["22ef47d633528e350e6b1b8964e67dc556cd0ae546e77068ae0afc85d0366e0e"],
+      "invariant": "All-invalid tracking configuration yields an actionable readiness error and never a contradictory tracking-disabled success check.",
+      "boundary": "Production readiness aggregation with local configuration diagnostics and AWS checks disabled.",
+      "limitation": "No live AWS resources are queried; the test targets deterministic configuration readiness semantics.",
+      "wiring": "apps/service/src/config.ts#sesOperationsConfig -> apps/service/src/aws/readiness.ts#runSesReadinessChecks",
+      "evidence": "apps/service/src/aws/readiness.test.ts:59-76 asserts the config.tracking_events error and absence of the shadowed config.tracking disabled check.",
+      "rationale": "High-value cross-layer protection against false-green readiness from misspelled tracking configuration."
+    },
+    {
+      "id": "781fe5395873cde20a23bd31de89fd2f9be3feaf9152e319b28099bead1e4980",
+      "operation": "addition",
+      "to": ["781fe5395873cde20a23bd31de89fd2f9be3feaf9152e319b28099bead1e4980"],
+      "invariant": "Blank or delimiter-only tracking-event input disables optional tracking without creating a configuration issue.",
+      "boundary": "Production Effect Config parsing through an in-memory provider.",
+      "limitation": "Synthetic environment injection; process-level deployment configuration is not exercised.",
+      "wiring": "apps/service/src/config.ts#sesOperationsConfig",
+      "evidence": "apps/service/src/config.test.ts:307-312 drives comma-only input and asserts an empty event set with no tracking issue.",
+      "rationale": "Essential boundary test distinguishing truly blank input from unsupported nonblank tokens."
+    },
+    {
+      "id": "d3f26349c1c729d0d419262764ba9a74a93d2c2058bdf79a137a04b111a0f2ca",
+      "operation": "addition",
+      "to": ["d3f26349c1c729d0d419262764ba9a74a93d2c2058bdf79a137a04b111a0f2ca"],
+      "invariant": "All-invalid tracking-event input enables no events but preserves an actionable configuration issue rather than silently appearing disabled.",
+      "boundary": "Production Effect Config graph with an in-memory environment provider.",
+      "limitation": "Does not boot a deployed process or query AWS.",
+      "wiring": "apps/service/src/config.ts#sesOperationsConfig tracking parser",
+      "evidence": "apps/service/src/config.test.ts:292-305 asserts no accepted events and the exact invalid-token issue for all-invalid input.",
+      "rationale": "High-value parser contract for the false-green edge not covered by mixed valid/invalid input."
+    },
+    {
+      "id": "0d982648d1f7c00f24dde7c0af08cb1d1786eae87b4394b93cea7b36efe069ed",
+      "operation": "addition",
+      "to": ["0d982648d1f7c00f24dde7c0af08cb1d1786eae87b4394b93cea7b36efe069ed"],
+      "invariant": "A Bounce with zero bounced recipients is rejected as retryable rather than accepted without event or suppression rows.",
+      "boundary": "Direct production SES event decoder boundary.",
+      "limitation": "HTTP retry, audit-row reuse, and persistence behavior are covered by representative malformed-reputation webhook rows rather than duplicated for this predicate.",
+      "wiring": "apps/service/src/ses/event-schema.ts#decodeSesEvent",
+      "evidence": "apps/service/src/ses/event-schema.test.ts:46-65 exercises the bouncedRecipients length predicate and asserts SesOperationsRetryablePayloadError.",
+      "rationale": "High-value reputation safety predicate; missing-body and wrong-body variants do not cover present-but-empty recipient arrays."
+    },
+    {
+      "id": "ea326773ce2456f199d830a0e3588ffd242739406db68bb7132162651f8f17ba",
+      "operation": "addition",
+      "to": ["ea326773ce2456f199d830a0e3588ffd242739406db68bb7132162651f8f17ba"],
+      "invariant": "A Complaint with zero complained recipients is rejected as retryable rather than accepted without event or suppression rows.",
+      "boundary": "Direct production SES event decoder boundary.",
+      "limitation": "HTTP retry, audit-row reuse, and persistence behavior are covered by representative malformed-reputation webhook rows rather than duplicated for this predicate.",
+      "wiring": "apps/service/src/ses/event-schema.ts#decodeSesEvent",
+      "evidence": "apps/service/src/ses/event-schema.test.ts:46-65 exercises the complainedRecipients length predicate and asserts SesOperationsRetryablePayloadError.",
+      "rationale": "High-value complaint-specific safety branch; the analogous Bounce assertion cannot detect field-specific drift."
     }
   ],
   "reviewBatches": [
@@ -7176,6 +8031,136 @@
           "status": "accepted-findings-applied-selective"
         }
       ]
+    },
+    {
+      "reviewer": "Selected production fixes cli reviewer",
+      "date": "2026-07-13",
+      "artifact": ".progress/test-audit-review-batches/selected-fixes-cli.md",
+      "artifactSha256": "41ddd9e9a999e041a7b1720c0818a78db45daa508c8c8e16a653ec1696ee9ca2",
+      "workingReportSha256": "9ddf74195325ae8c7a80f836b6bd6147b613b652c2b184ade8b911bf6ba56c7c",
+      "fullyRead": [
+        "apps/cli/src/commands/login-order.test.ts",
+        "apps/cli/src/commands/login.test.ts",
+        "apps/cli/src/commands/logout.test.ts",
+        "apps/cli/src/commands/mailings.test.ts",
+        "apps/cli/src/config/local-state.test.ts"
+      ],
+      "partiallyRead": [
+        "apps/cli/src/config/local-state.ts",
+        "apps/cli/src/commands/login.ts",
+        "apps/cli/src/commands/logout.ts",
+        "apps/cli/src/commands/mailings.ts",
+        "apps/cli/src/client/nusend-api.ts"
+      ],
+      "skipped": [
+        "Live external providers, hosted CI, Windows runtime, and unsupported network filesystems were outside this local source-and-test review."
+      ],
+      "reviewRunIds": ["audit-cli"],
+      "residualLimits": "Local and process-coordinated evidence only; Windows is unvalidated and network filesystems are unsupported. Reviewer-identified duplicate constant/pacing tests were removed before the final refreeze."
+    },
+    {
+      "reviewer": "Selected production fixes serviceSafety reviewer",
+      "date": "2026-07-13",
+      "artifact": ".progress/test-audit-review-batches/selected-fixes-service-safety.md",
+      "artifactSha256": "1b73b0dbcd11384fcc25e7a57ee2d08696db63dcbb1a4c9f4436735d7e3e698a",
+      "workingReportSha256": "9ddf74195325ae8c7a80f836b6bd6147b613b652c2b184ade8b911bf6ba56c7c",
+      "fullyRead": [
+        "apps/service/src/aws/readiness.test.ts",
+        "apps/service/src/device-auth/attempt-limiter.test.ts",
+        "apps/service/src/device-auth/routes.test.ts",
+        "apps/service/src/lists/routes.test.ts",
+        "apps/service/src/ses/event-schema.test.ts",
+        "apps/service/src/ses/process-event.test.ts",
+        "apps/service/src/ses/simulator.test.ts",
+        "apps/service/src/ses/webhook-routes.test.ts",
+        "apps/service/src/suppressions/suppression-list-race.integration.test.ts"
+      ],
+      "partiallyRead": [
+        "apps/service/src/device-auth/attempt-limiter.ts",
+        "apps/service/src/device-auth/routes.ts",
+        "apps/service/src/device-auth/service.ts",
+        "apps/service/src/lists/write.ts",
+        "apps/service/src/suppressions/write.ts",
+        "apps/service/src/ses/event-schema.ts",
+        "apps/service/src/ses/process-event.ts",
+        "apps/service/src/aws/readiness.ts"
+      ],
+      "skipped": [
+        "Live external providers, hosted CI, Windows runtime, and unsupported network filesystems were outside this local source-and-test review."
+      ],
+      "reviewRunIds": ["audit-service-safety"],
+      "residualLimits": "No live AWS/SNS or multi-process service deployment was exercised; deterministic local boundaries and SQLite state were inspected."
+    },
+    {
+      "reviewer": "Selected production fixes sending reviewer",
+      "date": "2026-07-13",
+      "artifact": ".progress/test-audit-review-batches/selected-fixes-sending.md",
+      "artifactSha256": "d8e8fe00435ffda4830a6ba645e7a0f6f09372cc65d01905cc442dce91f68ce0",
+      "workingReportSha256": "9ddf74195325ae8c7a80f836b6bd6147b613b652c2b184ade8b911bf6ba56c7c",
+      "fullyRead": [
+        "apps/service/src/db/migrate.integration.test.ts",
+        "apps/service/src/queue/runner.test.ts",
+        "apps/service/src/sending/attempts.test.ts",
+        "apps/service/src/sending/process-delivery.test.ts",
+        "apps/service/src/sending/worker-crash.integration.test.ts",
+        "packages/api-contract/src/mailings/schema.test.ts"
+      ],
+      "partiallyRead": [
+        "apps/service/src/db/migrations/sql/0009_delivery_ambiguity_and_suppression_safety.sql",
+        "apps/service/src/sending/attempts.ts",
+        "apps/service/src/sending/process-delivery.ts",
+        "apps/service/src/queue/runner.ts",
+        "apps/service/src/testing/worker-crash-fixture.ts",
+        "packages/api-contract/src/mailings/schema.ts"
+      ],
+      "skipped": [
+        "Live external providers, hosted CI, Windows runtime, and unsupported network filesystems were outside this local source-and-test review."
+      ],
+      "reviewRunIds": ["audit-sending"],
+      "residualLimits": "No live SES acceptance, multi-host race, interrupted migration, or production-sized migration was exercised. Reviewer-identified duplicate failed-terminal row was removed before refreeze."
+    },
+    {
+      "reviewer": "Selected production fixes final-review CLI test-quality reviewer",
+      "date": "2026-07-13",
+      "artifact": ".progress/test-audit-review-batches/selected-fixes-final-review-cli.md",
+      "artifactSha256": "539be79b3586e823804471b6898459d7a2d33873be9951a3ee3dd72b54656ec8",
+      "workingReportSha256": "487b30245fdf2c06664c475743bc493f66be6b77680e12daf2cd0601a250a1cd",
+      "fullyRead": [
+        "apps/cli/src/commands/logout.test.ts",
+        "apps/cli/src/main.test.ts",
+        "apps/cli/src/config/local-state.ts",
+        "apps/cli/src/main.ts"
+      ],
+      "partiallyRead": ["apps/cli/src/commands/logout.ts", "apps/cli/src/config/profiles.ts"],
+      "skipped": ["Live service, Windows runtime, and unsupported network filesystems."],
+      "reviewRunIds": ["audit-final-review-cli"],
+      "residualLimits": "Deterministic local filesystem and intercepted-network evidence only; documented platform limits remain."
+    },
+    {
+      "reviewer": "Selected production fixes final-review service test-quality reviewer",
+      "date": "2026-07-13",
+      "artifact": ".progress/test-audit-review-batches/selected-fixes-final-review-service.md",
+      "artifactSha256": "4cdd3e985ebd2cb9a3aa267754ec7819d57317c1db67edc5666f487a2dd4129b",
+      "workingReportSha256": "487b30245fdf2c06664c475743bc493f66be6b77680e12daf2cd0601a250a1cd",
+      "fullyRead": [
+        "apps/service/src/aws/readiness.test.ts",
+        "apps/service/src/config.test.ts",
+        "apps/service/src/db/migrate.integration.test.ts",
+        "apps/service/src/ses/event-schema.test.ts",
+        "apps/service/src/ses/webhook-routes.test.ts"
+      ],
+      "partiallyRead": [
+        "apps/service/src/aws/readiness.ts",
+        "apps/service/src/config.ts",
+        "apps/service/src/db/migrations/sql/0009_delivery_ambiguity_and_suppression_safety.sql",
+        "apps/service/src/ses/event-schema.ts",
+        "apps/service/src/ses/process-event.ts"
+      ],
+      "skipped": [
+        "Live AWS/SNS, interrupted/production-sized migration, and multi-host execution."
+      ],
+      "reviewRunIds": ["audit-final-review-service"],
+      "residualLimits": "Local deterministic config, decoder, HTTP, and SQLite evidence; live-provider and deployment limits remain."
     }
   ],
   "mutations": [

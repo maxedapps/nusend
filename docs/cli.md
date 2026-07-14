@@ -27,40 +27,41 @@ nusend mailings get <id> [--json]
 nusend config repair-permissions
 ```
 
-Options also accept `--opt=value` syntax; tokens split on the first `=`, so values may contain `=` themselves. Boolean flags such as `--json` reject an attached value, and empty values (`--name=`) are usage errors. `--version`/`-v` is recognized only as the first token after global options; `--help`/`-h` anywhere prints the global help.
+Options accept `--opt=value`; values may contain `=`. Boolean flags reject attached values, and empty values are usage errors. `--version`/`-v` is recognized only as the first token after global options; `--help`/`-h` anywhere prints global help.
 
-New API keys expire after 365 days by default. Use `--expires-at` for an explicit date or `--no-expiry` to opt out. Raw keys are shown once on create/rotate and then stored only as hashes by the service. `api-keys list` returns one page (server default 50); human output prints a "More keys available" hint with the next offset when further pages exist.
+New API keys expire after 365 days by default. Use `--expires-at` for an explicit date or `--no-expiry` to opt out. Raw keys are shown once on create/rotate. `api-keys list` returns one page; human output prints the next-offset hint when present. Mailing JSON includes required `counts.ambiguous`; human mailing output prints `ambiguous=N` when nonzero.
 
-`login` requires a domain-root base URL such as `https://nusend.example.com`; path-carrying URLs (for example `https://host/nusend`) are rejected because sub-path deployments are unsupported. If an older configuration stored a prefixed base URL, commands fail with the same clear message — re-run `nusend login <root-url>` to repair the profile. Denied, expired, and unrecognized device codes are reported as authentication failures.
+`login` requires a domain-root base URL such as `https://nusend.example.com`; sub-path deployments are unsupported. Polling is iterative, honors each server interval with a 1000 ms minimum, sleeps no later than local authorization expiry, and starts no token request at or after expiry. An approval returned by a request started before expiry is accepted. There is no polling-speed environment override.
 
-`logout` is idempotent. With a stored credential, `logout --revoke` revokes remotely and always removes the local credential; a failed remote revoke is emitted as a warning. When `NUSEND_API_KEY` is set, logout deletes nothing: the environment key stays active until you unset it, and any stored credential for the profile is kept (reported in human output and as `storedCredentialKept` in `--json` mode).
+`logout` is idempotent. With a stored credential, `logout --revoke` attempts remote revocation and always removes the local credential; a failed remote revoke is a warning. When `NUSEND_API_KEY` is set, logout deletes nothing locally or remotely.
 
 ## Output and exit codes
 
 `--json` prints exactly one success document to stdout. Every error is exactly one compact object on stderr:
 
 ```json
-{"error":{"code":"invalid_request","message":"..."}}
+{ "error": { "code": "invalid_request", "message": "..." } }
 ```
 
-Two commands additionally emit informational JSON lines on stderr in `--json` mode, keeping the stdout contract intact:
+`login --json` prints one verification line on stderr before polling. `logout --revoke --json` prints remote-revocation warnings on stderr. Human errors use plain `Error: ...` text.
 
-- `login --json` prints one verification line before polling, so scripts can present the activation URL and code: `{"verification":{"uri":"...","uriComplete":"...","userCode":"...","expiresAt":"..."}}` (`uriComplete` may be null).
-- `logout --revoke --json` reports a failed remote revoke as `{"warning":{"code":"revoke_failed","message":"..."}}`, and an environment credential that cannot be revoked as `{"warning":{"code":"revoke_unsupported","message":"..."}}`.
+| Exit | Meaning                                        |
+| ---: | ---------------------------------------------- |
+|    0 | Success                                        |
+|    1 | Unexpected/internal CLI failure                |
+|    2 | Invalid CLI usage                              |
+|    3 | Authentication or device-authorization failure |
+|    4 | API/HTTP failure                               |
 
-Human errors are plain `Error: ...` text, with an authentication hint where useful.
+## Configuration and local-state locking
 
-| Exit | Meaning |
-|---:|---|
-| 0 | Success |
-| 1 | Unexpected/internal CLI failure |
-| 2 | Invalid CLI usage |
-| 3 | Authentication or device-authorization failure |
-| 4 | API/HTTP failure |
+Config defaults to an XDG-style directory. Config and credentials share one cross-process lock for every mutation. Under that lock, Nusend reloads current JSON and publishes complete same-directory temporary files by rename; login writes credentials before config and prevents another cooperative CLI process from interleaving. Individual files are crash-safe, but a crash between the two login renames is not cross-file atomic.
 
-## Configuration
+Lock acquisition waits at most five seconds. A proven dead same-host owner may be reaped after the publication grace period; live, foreign-host, malformed, too-young, or permission-indeterminate owners are never stolen. An orphaned/malformed reaper mutex or uncertain release fails closed with operator-inspection guidance—do not delete unfamiliar lock/tombstone files while any CLI process may be running.
 
-Config defaults to an XDG-style directory. Credentials are stored separately in `credentials.json` with mode `0600` and a mode `0700` directory on Unix. Run `nusend config repair-permissions` if these modes were broadened. The command is a no-op on Windows.
+This protocol supports local filesystems only. Network-mounted config directories are unsupported. Windows local filesystems are intended to work but are not validated by the current project checks; unsupported hard-link/rename behavior fails rather than falling back to unsafe locking.
+
+On Unix, the directory uses mode `0700` and config/credential files use `0600`. Run `nusend config repair-permissions` if these modes were broadened; it is a no-op on Windows.
 
 Environment overrides:
 
