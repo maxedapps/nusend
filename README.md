@@ -29,7 +29,9 @@ pnpm --filter @nusend/service worker:send:once
 pnpm --filter @nusend/service worker:send
 ```
 
-Apply migrations to existing databases; do not delete production data. Migration `0009` requires stopped API/worker processes and matching binaries as described in [`docs/deployment.md`](./docs/deployment.md).
+Nusend intentionally ships one fresh migration baseline, `0001_initial_schema`, for new databases only. Databases that recorded the old `0001`–`0009` history intentionally fail checksum or missing-history validation; there is no automatic upgrade bridge. Never auto-delete a non-default or production database. Archive and recreate it, or preserve its data through a deliberate manual export/import, as described in [`docs/deployment.md`](./docs/deployment.md).
+
+Production Bun database access uses WAL with `synchronous=FULL` on both the application and Better Auth handles and reads the setting back as mode `2`. This is the dispatch-ledger durability setting; it is not a backup, disaster-recovery design, or claim of overall production readiness.
 
 Default service environment:
 
@@ -304,7 +306,7 @@ jobs.state = queued | leased | succeeded | dead
 jobs.delivery_id -> deliveries.id
 ```
 
-`completed` means every delivery is terminal, including `ambiguous`; it does not mean SES inbox delivery confirmation. `failed` is a known failure, while `ambiguous` means provider acceptance is unknown. Ambiguous outcomes are never automatically retried. Only a compatible SES MessageId from the exact same latest attempt can reconcile an ambiguous attempt/delivery to succeeded/sent; a dead job remains dead as queue incident history. SES operations is stored separately in audit tables and does not add `delivered`, `bounced`, or `complained` delivery statuses.
+`completed` means every delivery is terminal, including `ambiguous`; it does not mean SES inbox delivery confirmation. `failed` is a known failure, while `ambiguous` means provider acceptance is unknown. SES internal/server/service-unavailable errors and generic HTTP `500`–`599` outcomes are terminal ambiguous and are never automatically retried. Explicit pre-connect DNS/connect failures and throttle/quota refusals remain retryable; named permanent SES rejections remain permanent. Only a compatible SES MessageId from the exact same latest attempt can reconcile an ambiguous attempt/delivery to succeeded/sent; a dead job remains dead as queue incident history. SES operations is stored separately in audit tables and does not add `delivered`, `bounced`, or `complained` delivery statuses.
 
 Supported placeholders for now:
 

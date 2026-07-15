@@ -3,16 +3,16 @@
   "snapshot": "final",
   "identityAlgorithm": "sha256-json-tuple-v1",
   "report": {
-    "command": "pnpm exec vitest run --reporter=json --outputFile=.progress/selected-production-fixes-final.json",
-    "collectedAt": "2026-07-13T16:40:30.117Z",
+    "command": "pnpm exec vitest run --reporter=json --outputFile=.progress/ses-sqlite-squash-final-vitest.json",
+    "collectedAt": "2026-07-14T07:12:42.658Z",
     "vitestVersion": "4.1.9",
     "nodeVersion": "v26.1.0",
     "pnpmVersion": "11.9.0",
-    "localPath": ".progress/selected-production-fixes-final.json",
-    "sha256": "487b30245fdf2c06664c475743bc493f66be6b77680e12daf2cd0601a250a1cd",
+    "localPath": ".progress/ses-sqlite-squash-final-vitest.json",
+    "sha256": "c53f38bbcd7d712bae0dfa7d6ccba0086671952a2629b8729f8fe9cd2e553c08",
     "success": true,
     "declaredFiles": 79,
-    "declaredTests": 692
+    "declaredTests": 735
   },
   "tests": [
     {
@@ -2920,27 +2920,15 @@
       "occurrence": 0
     },
     {
-      "id": "42cdd7b24f6e57f4ca614ad941f9b9497db24f47ad4c9bc07a1e970806564f71",
+      "id": "13d75fa9a6d3e5d10557688a85698a8ec53eb3216b781df5dd808ce80b39e2ce",
       "tuple": [
         "vitest-json-v1",
         "apps/service/src/db/migrate.integration.test.ts",
-        "migration runner converts only proven historical ambiguity, repairs exact suppressions, and preserves the graph through UP/DOWN/re-UP",
+        "migration runner enforces the fresh schema checks, uniqueness, cascades, and SET NULL edges",
         0
       ],
       "file": "apps/service/src/db/migrate.integration.test.ts",
-      "fullName": "migration runner converts only proven historical ambiguity, repairs exact suppressions, and preserves the graph through UP/DOWN/re-UP",
-      "occurrence": 0
-    },
-    {
-      "id": "c823f1ef699e81db99a1aee3963a3532d42dcd860f1a481fb724e0d70f78bc21",
-      "tuple": [
-        "vitest-json-v1",
-        "apps/service/src/db/migrate.integration.test.ts",
-        "migration runner fails loudly when 0002 sees future-only mailing states",
-        0
-      ],
-      "file": "apps/service/src/db/migrate.integration.test.ts",
-      "fullName": "migration runner fails loudly when 0002 sees future-only mailing states",
+      "fullName": "migration runner enforces the fresh schema checks, uniqueness, cascades, and SET NULL edges",
       "occurrence": 0
     },
     {
@@ -5740,6 +5728,18 @@
       "occurrence": 0
     },
     {
+      "id": "5b006523159ff984e98934246e77901b9d5b865d5ef48298359358064f6afefe",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/sending/process-delivery.test.ts",
+        "processSendDeliveryJob treats an SES ServiceUnavailableException with HTTP 503 as terminal without resending",
+        0
+      ],
+      "file": "apps/service/src/sending/process-delivery.test.ts",
+      "fullName": "processSendDeliveryJob treats an SES ServiceUnavailableException with HTTP 503 as terminal without resending",
+      "occurrence": 0
+    },
+    {
       "id": "7d38b02da35e0b96f34a45c3995c861fd2549ce37b49339a3717cbf3a57700e5",
       "tuple": [
         "vitest-json-v1",
@@ -6124,15 +6124,531 @@
       "occurrence": 0
     },
     {
-      "id": "7c38d97a490b613cf24a25e6a26ffb363908d4cc6f7633c02346d20b466e2dcc",
+      "id": "4639fbfe9e9799a2e3aa778bdd772c476dfaa65c8ab2f35e5c4c62228c3f7a33",
       "tuple": [
         "vitest-json-v1",
         "apps/service/src/services/email-transport-ses.test.ts",
-        "SES email transport classifies known SES errors conservatively",
+        "SES email transport classifies SES metadata HTTP status 500 as ambiguous",
         0
       ],
       "file": "apps/service/src/services/email-transport-ses.test.ts",
-      "fullName": "SES email transport classifies known SES errors conservatively",
+      "fullName": "SES email transport classifies SES metadata HTTP status 500 as ambiguous",
+      "occurrence": 0
+    },
+    {
+      "id": "3e6397c71234547cb9b460d3aa03beec17f2225a04bedc26dd606284a153c93c",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "SES email transport classifies SES metadata HTTP status 503 as ambiguous",
+        0
+      ],
+      "file": "apps/service/src/services/email-transport-ses.test.ts",
+      "fullName": "SES email transport classifies SES metadata HTTP status 503 as ambiguous",
+      "occurrence": 0
+    },
+    {
+      "id": "f0485e9da6505829db732d10105d661948d2c1760e6117325bb61c706c3b6fd0",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "SES email transport classifies SES metadata HTTP status 599 as ambiguous",
+        0
+      ],
+      "file": "apps/service/src/services/email-transport-ses.test.ts",
+      "fullName": "SES email transport classifies SES metadata HTTP status 599 as ambiguous",
+      "occurrence": 0
+    },
+    {
+      "id": "f4e5996aa285e353315082b80282b984cff35ce34d06adb1f1d76ead43b7d683",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "SES email transport classifies SES provider code InternalFailure as ambiguous",
+        0
+      ],
+      "file": "apps/service/src/services/email-transport-ses.test.ts",
+      "fullName": "SES email transport classifies SES provider code InternalFailure as ambiguous",
+      "occurrence": 0
+    },
+    {
+      "id": "b0c72552d6108d1fe2c051ce0778c049637343d9593a428b7c15634a3cf0077b",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "SES email transport classifies SES provider code InternalServerError as ambiguous",
+        0
+      ],
+      "file": "apps/service/src/services/email-transport-ses.test.ts",
+      "fullName": "SES email transport classifies SES provider code InternalServerError as ambiguous",
+      "occurrence": 0
+    },
+    {
+      "id": "5635ff05a93bb23ca79c5ef644c4af703b74ba323fb8caf9b6f517391080c25a",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "SES email transport classifies SES provider code ServiceUnavailable as ambiguous",
+        0
+      ],
+      "file": "apps/service/src/services/email-transport-ses.test.ts",
+      "fullName": "SES email transport classifies SES provider code ServiceUnavailable as ambiguous",
+      "occurrence": 0
+    },
+    {
+      "id": "8938515cc51e7c5c766af23f582c5984617039a37baae7258edaa2dca97baf1d",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "SES email transport classifies SES provider code ServiceUnavailableException as ambiguous",
+        0
+      ],
+      "file": "apps/service/src/services/email-transport-ses.test.ts",
+      "fullName": "SES email transport classifies SES provider code ServiceUnavailableException as ambiguous",
+      "occurrence": 0
+    },
+    {
+      "id": "4ae2e00b1ffdfaabe4bdae0e6ed34a9557f0e800f5cdc2a841805d5c8adc1308",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "SES email transport classifies SES provider name InternalFailure as ambiguous",
+        0
+      ],
+      "file": "apps/service/src/services/email-transport-ses.test.ts",
+      "fullName": "SES email transport classifies SES provider name InternalFailure as ambiguous",
+      "occurrence": 0
+    },
+    {
+      "id": "3c08456078952086ac1a8665508208e1bdf162d1b0c854ffc6e673ef6be62d11",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "SES email transport classifies SES provider name InternalServerError as ambiguous",
+        0
+      ],
+      "file": "apps/service/src/services/email-transport-ses.test.ts",
+      "fullName": "SES email transport classifies SES provider name InternalServerError as ambiguous",
+      "occurrence": 0
+    },
+    {
+      "id": "6f35573000a00dca5a80a675c59a653fa35b7ab9bfba32c67532cbea174269ea",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "SES email transport classifies SES provider name ServiceUnavailable as ambiguous",
+        0
+      ],
+      "file": "apps/service/src/services/email-transport-ses.test.ts",
+      "fullName": "SES email transport classifies SES provider name ServiceUnavailable as ambiguous",
+      "occurrence": 0
+    },
+    {
+      "id": "2c05c4740192cd3638739e71b9e3a29e4799538ddd4bf084f7657a6083bd25c8",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "SES email transport classifies SES provider name ServiceUnavailableException as ambiguous",
+        0
+      ],
+      "file": "apps/service/src/services/email-transport-ses.test.ts",
+      "fullName": "SES email transport classifies SES provider name ServiceUnavailableException as ambiguous",
+      "occurrence": 0
+    },
+    {
+      "id": "e3b8455d0efffb7f8b5f67b088ba32842cb5bde3485ccef0bf954c4298f4366e",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "SES email transport classifies an unknown named error as ambiguous",
+        0
+      ],
+      "file": "apps/service/src/services/email-transport-ses.test.ts",
+      "fullName": "SES email transport classifies an unknown named error as ambiguous",
+      "occurrence": 0
+    },
+    {
+      "id": "5c0d913c78898c79df059c12f1d6f80460a86b89f8a7893ce17d0f20f1217f8f",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "SES email transport classifies plain named provider rejection BadRequestException as permanent",
+        0
+      ],
+      "file": "apps/service/src/services/email-transport-ses.test.ts",
+      "fullName": "SES email transport classifies plain named provider rejection BadRequestException as permanent",
+      "occurrence": 0
+    },
+    {
+      "id": "56fb603dbe9171e68272aa2704deb5db42440ecff11b6228d742564f5b433887",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "SES email transport classifies plain named provider rejection MessageRejected as permanent",
+        0
+      ],
+      "file": "apps/service/src/services/email-transport-ses.test.ts",
+      "fullName": "SES email transport classifies plain named provider rejection MessageRejected as permanent",
+      "occurrence": 0
+    },
+    {
+      "id": "0f4856ffedcfc8388c013eb7e0aff5bb3bf68a2aedea1a4d3cef1cb4f93c10c4",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "SES email transport classifies pre-connect code EAI_AGAIN as retryable",
+        0
+      ],
+      "file": "apps/service/src/services/email-transport-ses.test.ts",
+      "fullName": "SES email transport classifies pre-connect code EAI_AGAIN as retryable",
+      "occurrence": 0
+    },
+    {
+      "id": "8c24fe904477459526de9366f5056e76fcd237105a4beceb83aed3fbfeeeeb3a",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "SES email transport classifies pre-connect code ECONNREFUSED as retryable",
+        0
+      ],
+      "file": "apps/service/src/services/email-transport-ses.test.ts",
+      "fullName": "SES email transport classifies pre-connect code ECONNREFUSED as retryable",
+      "occurrence": 0
+    },
+    {
+      "id": "94a22032cf30a1b68661a5363d6f1a269457b3365aa68c44912c778d350b417e",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "SES email transport classifies pre-connect code ENETUNREACH as retryable",
+        0
+      ],
+      "file": "apps/service/src/services/email-transport-ses.test.ts",
+      "fullName": "SES email transport classifies pre-connect code ENETUNREACH as retryable",
+      "occurrence": 0
+    },
+    {
+      "id": "e89f9171ce6c4bc1fdf7085df8761aac1afa190337672e92f6a557146ea5c327",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "SES email transport classifies pre-connect code ENOTFOUND as retryable",
+        0
+      ],
+      "file": "apps/service/src/services/email-transport-ses.test.ts",
+      "fullName": "SES email transport classifies pre-connect code ENOTFOUND as retryable",
+      "occurrence": 0
+    },
+    {
+      "id": "dcf1ac1af03838b79c389d5478155363f790ebb867f6ae5f29659d813fa16279",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "SES email transport classifies pre-connect name EAI_AGAIN as retryable",
+        0
+      ],
+      "file": "apps/service/src/services/email-transport-ses.test.ts",
+      "fullName": "SES email transport classifies pre-connect name EAI_AGAIN as retryable",
+      "occurrence": 0
+    },
+    {
+      "id": "4be0d0755b681855879d029bcdce0cb5e5a88ae696505ffe06b5c498b398f130",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "SES email transport classifies pre-connect name ECONNREFUSED as retryable",
+        0
+      ],
+      "file": "apps/service/src/services/email-transport-ses.test.ts",
+      "fullName": "SES email transport classifies pre-connect name ECONNREFUSED as retryable",
+      "occurrence": 0
+    },
+    {
+      "id": "17a4c547c5db80291ba9187373406618bfde01e08944e52eac7800d0d4276738",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "SES email transport classifies pre-connect name ENETUNREACH as retryable",
+        0
+      ],
+      "file": "apps/service/src/services/email-transport-ses.test.ts",
+      "fullName": "SES email transport classifies pre-connect name ENETUNREACH as retryable",
+      "occurrence": 0
+    },
+    {
+      "id": "77390745a4f3547c7e111d51ff12d5155b216709df02523d8631c44f33e0c005",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "SES email transport classifies pre-connect name ENOTFOUND as retryable",
+        0
+      ],
+      "file": "apps/service/src/services/email-transport-ses.test.ts",
+      "fullName": "SES email transport classifies pre-connect name ENOTFOUND as retryable",
+      "occurrence": 0
+    },
+    {
+      "id": "09eb61c312e36914366943abc5820e151027cdfba78979201bc3a497a5deb884",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "SES email transport classifies provider refusal code LimitExceededException as retryable",
+        0
+      ],
+      "file": "apps/service/src/services/email-transport-ses.test.ts",
+      "fullName": "SES email transport classifies provider refusal code LimitExceededException as retryable",
+      "occurrence": 0
+    },
+    {
+      "id": "ea676a82de50e1ea74681a02ad7d10dceaab2ed6ff8e0603715ec27488cd13e5",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "SES email transport classifies provider refusal code ThrottlingException as retryable",
+        0
+      ],
+      "file": "apps/service/src/services/email-transport-ses.test.ts",
+      "fullName": "SES email transport classifies provider refusal code ThrottlingException as retryable",
+      "occurrence": 0
+    },
+    {
+      "id": "6f5c5ccc70e336b224eef03b2f771289f081fe6104476f7752fb0004676d2792",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "SES email transport classifies provider refusal code TooManyRequestsException as retryable",
+        0
+      ],
+      "file": "apps/service/src/services/email-transport-ses.test.ts",
+      "fullName": "SES email transport classifies provider refusal code TooManyRequestsException as retryable",
+      "occurrence": 0
+    },
+    {
+      "id": "f63e80132b7395016a7a2f6cdf4fdcb78b04aad21a21c90cfff295099709cd64",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "SES email transport classifies provider refusal name LimitExceededException as retryable",
+        0
+      ],
+      "file": "apps/service/src/services/email-transport-ses.test.ts",
+      "fullName": "SES email transport classifies provider refusal name LimitExceededException as retryable",
+      "occurrence": 0
+    },
+    {
+      "id": "e65bd41dc1f05450e37bba725a4453c44ec75195b037294db8e877ef456b6c37",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "SES email transport classifies provider refusal name ThrottlingException as retryable",
+        0
+      ],
+      "file": "apps/service/src/services/email-transport-ses.test.ts",
+      "fullName": "SES email transport classifies provider refusal name ThrottlingException as retryable",
+      "occurrence": 0
+    },
+    {
+      "id": "ba5b612b82c09f70a514c93330bc57a2acff20aa366933af02bc3941ad44d521",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "SES email transport classifies provider refusal name TooManyRequestsException as retryable",
+        0
+      ],
+      "file": "apps/service/src/services/email-transport-ses.test.ts",
+      "fullName": "SES email transport classifies provider refusal name TooManyRequestsException as retryable",
+      "occurrence": 0
+    },
+    {
+      "id": "2a69ade4deb1b1eb8ca744c76a3f5dfdfca526bd8b015d6dee4ccbe9b1f227f4",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "SES email transport classifies timeout/abort name AbortError as ambiguous",
+        0
+      ],
+      "file": "apps/service/src/services/email-transport-ses.test.ts",
+      "fullName": "SES email transport classifies timeout/abort name AbortError as ambiguous",
+      "occurrence": 0
+    },
+    {
+      "id": "7d4bf6f9fd27f82877cb414ede293c690ea8bdc1c7506771436df261451ff19e",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "SES email transport classifies timeout/abort name RequestTimeout as ambiguous",
+        0
+      ],
+      "file": "apps/service/src/services/email-transport-ses.test.ts",
+      "fullName": "SES email transport classifies timeout/abort name RequestTimeout as ambiguous",
+      "occurrence": 0
+    },
+    {
+      "id": "3bb74eacf0051db498689f10974e5998c71a2502c15a6b0619fa8c5f10a6e126",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "SES email transport classifies timeout/abort name TimeoutError as ambiguous",
+        0
+      ],
+      "file": "apps/service/src/services/email-transport-ses.test.ts",
+      "fullName": "SES email transport classifies timeout/abort name TimeoutError as ambiguous",
+      "occurrence": 0
+    },
+    {
+      "id": "6033ac1be3b2e10b7df040e5cacb4a5c92161c9a6109a726e4d6c89751d343c3",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "SES email transport keeps internal/service name InternalFailure ambiguous with generic network code",
+        0
+      ],
+      "file": "apps/service/src/services/email-transport-ses.test.ts",
+      "fullName": "SES email transport keeps internal/service name InternalFailure ambiguous with generic network code",
+      "occurrence": 0
+    },
+    {
+      "id": "5ee0221e2997a681354dadd0f581c0ae26e6b7885b32b2a584c2cab0ab958ee3",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "SES email transport keeps internal/service name InternalServerError ambiguous with generic network code",
+        0
+      ],
+      "file": "apps/service/src/services/email-transport-ses.test.ts",
+      "fullName": "SES email transport keeps internal/service name InternalServerError ambiguous with generic network code",
+      "occurrence": 0
+    },
+    {
+      "id": "e4842f0edcdb108b9a01236d2b32fa702da167e7e0b2c4f9f1678b65b5ec93c1",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "SES email transport keeps internal/service name ServiceUnavailable ambiguous with generic network code",
+        0
+      ],
+      "file": "apps/service/src/services/email-transport-ses.test.ts",
+      "fullName": "SES email transport keeps internal/service name ServiceUnavailable ambiguous with generic network code",
+      "occurrence": 0
+    },
+    {
+      "id": "91ca713179ba2ade4abc30452c0c76e312df23250362dce5faec0e6bf7d388f5",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "SES email transport keeps internal/service name ServiceUnavailableException ambiguous with generic network code",
+        0
+      ],
+      "file": "apps/service/src/services/email-transport-ses.test.ts",
+      "fullName": "SES email transport keeps internal/service name ServiceUnavailableException ambiguous with generic network code",
+      "occurrence": 0
+    },
+    {
+      "id": "2e2913419ffcf4ebfbe5cf4539552559c6e299e8f0bdcd89739748329753b218",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "SES email transport keeps permanent provider rejection 'BadRequestException + EAI_AGAIN + HTT…' permanent",
+        0
+      ],
+      "file": "apps/service/src/services/email-transport-ses.test.ts",
+      "fullName": "SES email transport keeps permanent provider rejection 'BadRequestException + EAI_AGAIN + HTT…' permanent",
+      "occurrence": 0
+    },
+    {
+      "id": "943380aa69af79899a67ad19f0a0ab87c7e951f66e08919fb2d1b8fafd18a642",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "SES email transport keeps permanent provider rejection 'BadRequestException + ECONNREFUSED' permanent",
+        0
+      ],
+      "file": "apps/service/src/services/email-transport-ses.test.ts",
+      "fullName": "SES email transport keeps permanent provider rejection 'BadRequestException + ECONNREFUSED' permanent",
+      "occurrence": 0
+    },
+    {
+      "id": "5adab3b32c41eeb080eef2812e1ef9e6e39ef35de91e30d61b3cf0154c5ab867",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "SES email transport keeps permanent provider rejection 'MessageRejected + HTTP 503' permanent",
+        0
+      ],
+      "file": "apps/service/src/services/email-transport-ses.test.ts",
+      "fullName": "SES email transport keeps permanent provider rejection 'MessageRejected + HTTP 503' permanent",
+      "occurrence": 0
+    },
+    {
+      "id": "6dea5738f4139faf36ee74f1b52a84fc196b06b684162ed8bf38617a846472d1",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "SES email transport keeps pre-connect code retryable with out-of-range HTTP status 499",
+        0
+      ],
+      "file": "apps/service/src/services/email-transport-ses.test.ts",
+      "fullName": "SES email transport keeps pre-connect code retryable with out-of-range HTTP status 499",
+      "occurrence": 0
+    },
+    {
+      "id": "2f7a7e6201bc39e537653787caaca4ad6c20ff9e8e71f243d75a27d14cf217fb",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "SES email transport keeps pre-connect code retryable with out-of-range HTTP status 600",
+        0
+      ],
+      "file": "apps/service/src/services/email-transport-ses.test.ts",
+      "fullName": "SES email transport keeps pre-connect code retryable with out-of-range HTTP status 600",
+      "occurrence": 0
+    },
+    {
+      "id": "0832061345903cd1b9771a9c86e383401a7d08805b54803b79384a9b7ce03343",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "SES email transport keeps provider refusal LimitExceededException retryable with incidental HTTP 503",
+        0
+      ],
+      "file": "apps/service/src/services/email-transport-ses.test.ts",
+      "fullName": "SES email transport keeps provider refusal LimitExceededException retryable with incidental HTTP 503",
+      "occurrence": 0
+    },
+    {
+      "id": "e9e4c1c0a475afce88430c2db5843d642d7a3272807c472eab826d775fa9db95",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "SES email transport keeps provider refusal ThrottlingException retryable with incidental HTTP 503",
+        0
+      ],
+      "file": "apps/service/src/services/email-transport-ses.test.ts",
+      "fullName": "SES email transport keeps provider refusal ThrottlingException retryable with incidental HTTP 503",
+      "occurrence": 0
+    },
+    {
+      "id": "2816a3a2daab02319908d26bb586a921d8e5cf18c04ae8f264cd2c6f443751cd",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "SES email transport keeps provider refusal TooManyRequestsException retryable with incidental HTTP 503",
+        0
+      ],
+      "file": "apps/service/src/services/email-transport-ses.test.ts",
+      "fullName": "SES email transport keeps provider refusal TooManyRequestsException retryable with incidental HTTP 503",
+      "occurrence": 0
+    },
+    {
+      "id": "663d5cff6875a5cd418ddae52aa46889248d72fbb67a771d51116a5429b3fab4",
+      "tuple": [
+        "vitest-json-v1",
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "SES email transport maps a ServiceUnavailableException with HTTP 503 to ambiguous through transport.send",
+        0
+      ],
+      "file": "apps/service/src/services/email-transport-ses.test.ts",
+      "fullName": "SES email transport maps a ServiceUnavailableException with HTTP 503 to ambiguous through transport.send",
       "occurrence": 0
     },
     {

@@ -169,14 +169,12 @@ This comparison requires a successful report with matching normalized identities
 - CLI HTTP redirects are rejected and API keys are never forwarded to a redirect target. Configure each profile with the canonical service URL instead of a redirecting alias.
 - `NUSEND_HTTP_TIMEOUT_MS` overrides the CLI HTTP timeout (default `30000`). It must be an unpadded decimal safe integer of at least `1`; surrounding whitespace is invalid. Invalid values exit `2` when an HTTP client is needed. Local-only commands such as `config repair-permissions` do not parse it.
 - Destructive `db:rollback` operations print a sorted table inventory before refusal or execution and require `NUSEND_CONFIRM_DESTRUCTIVE_ROLLBACK=1`.
-- Migration `0008` creates a unique `jobs(delivery_id)` index. Legacy duplicate jobs make the migration fail and require operator inspection; do not delete duplicates silently.
+- The migration directory intentionally contains only the fresh `0001_initial_schema` baseline. Databases that recorded the former `0001`–`0009` history fail checksum or missing-history validation by design. Never auto-delete a non-default or production database; archive/recreate it or perform a deliberate manual export/import. No automatic upgrade bridge exists.
 - The internal `PaginationSchema` value is no longer exported from `@nusend/api-contract`; the `Pagination` type and `PaginationMetaSchema` remain public.
-- Migration `0009` converts failed deliveries whose latest attempt was ambiguous into `ambiguous`, unless that exact latest attempt has a compatible non-null SES MessageId proving acceptance. Its destructive DOWN maps delivery/simulator ambiguity to `failed` and is semantically lossy. Stop old API and worker processes before UP, then start matching service/worker binaries and distribute the matching CLI. Stop processes again before DOWN and use binaries matching the downgraded schema.
 - Mailing read responses add required decoded `counts.ambiguous`; the updated first-party CLI defaults an absent old-wire key to `0`. New services always emit it, and exhaustive third-party clients must handle the additive field and `ambiguous` status literal.
 - `DELETE /api/lists/:id` now returns `409 conflict` while any non-completed mailing references the list.
 - Device-authorization request limiters are process-local and reset on restart. Token polling is limited to 120 requests/minute per source and 600/minute globally with at most 1024 active source keys per process; durable limits count unexpired, non-denied, non-consumed grants, including approved-but-unconsumed grants.
 - CLI config and credential mutations share a bounded cross-process local-filesystem lock. Network-mounted config directories are unsupported. Login polling has a 1000 ms minimum and stops locally at authorization expiry; there is no hidden polling-speed environment override.
-- Migration `0004` intentionally uses reset-clean semantics for legacy `ses_feedback_*` data. Applying it discards those legacy rows; export them before migration if history is required.
 - `/api/operations/deliveries` is a filtered, limit-only operational view and does not promise `offset`; unknown delivery query parameters are not a pagination contract. `/api/operations/ses/events` supports offset pagination.
 - Hosted CI/release automation is intentionally absent. `pnpm check`, build, and audit commands are local validation contracts only.
 
@@ -275,6 +273,8 @@ Nusend owns first-party auth tables:
 - `device_authorizations`, for short-lived CLI login approval and polling
 
 Connection model: app database access is serialized through a single-permit semaphore per connection so concurrent request fibers cannot interleave statements into an open transaction on the shared SQLite connection. Better Auth runs its own statements on a dedicated second connection (same pragmas) for file-path databases. A `:memory:` database (dev only) cannot split, so Better Auth shares the single handle and relies on the semaphore alone.
+
+Production Bun application and Better Auth handles use WAL with `synchronous=FULL`; setup reads back `PRAGMA synchronous` and fails unless each handle reports mode `2`. This strengthens committed dispatch-ledger durability at the cost of additional commit latency. It does not provide backup, restore, disaster recovery, or overall production readiness.
 
 ### Device Authorization
 
@@ -625,8 +625,9 @@ Those belong in earlier pipeline stages.
    - complete job
 
 9. **Record failure or ambiguity**
-   - mark known permanent failures as `failed` and store a safe error message
-   - for retryable pre-dispatch failures, fail the send-delivery job so queue backoff handles retry/dead state
+   - mark named permanent SES rejections as `failed` and store a safe error message
+   - classify SES internal/server/service-unavailable signals and generic HTTP `500`–`599` outcomes as terminal `ambiguous`, because provider acceptance may be unknown
+   - retry only explicit pre-connect DNS/connect failures and throttle/quota refusals through queue backoff
    - if a job reaches `dead`, mark a never-started queued delivery `failed`, but mark an in-flight provider-unknown delivery `ambiguous`
    - never automatically retry an ambiguous outcome
    - for permanent policy failures, mark delivery failed/suppressed and complete the job

@@ -16,17 +16,17 @@
       "declaredTests": 490
     },
     "final": {
-      "command": "pnpm exec vitest run --reporter=json --outputFile=.progress/selected-production-fixes-final.json",
-      "collectedAt": "2026-07-13T16:40:30.117Z",
+      "command": "pnpm exec vitest run --reporter=json --outputFile=.progress/ses-sqlite-squash-final-vitest.json",
+      "collectedAt": "2026-07-14T07:12:42.658Z",
       "vitestVersion": "4.1.9",
       "nodeVersion": "v26.1.0",
       "pnpmVersion": "11.9.0",
-      "bunVersion": "1.3.14",
-      "localPath": ".progress/selected-production-fixes-final.json",
-      "sha256": "487b30245fdf2c06664c475743bc493f66be6b77680e12daf2cd0601a250a1cd",
+      "localPath": ".progress/ses-sqlite-squash-final-vitest.json",
+      "sha256": "c53f38bbcd7d712bae0dfa7d6ccba0086671952a2629b8729f8fe9cd2e553c08",
       "success": true,
       "declaredFiles": 79,
-      "declaredTests": 692,
+      "declaredTests": 735,
+      "bunVersion": "1.3.14",
       "status": "final-frozen"
     }
   },
@@ -37,7 +37,7 @@
     },
     "final": {
       "path": "docs/test-audit/final-inventory.json",
-      "sha256": "5a7788b952f5c6e9ee02f38f2ed042ae43e5d7e4b9701e0da6d15736bf5d473e",
+      "sha256": "e89837a006e69e783a789d5ef4deb1503f4c7d57bd623769c49c79a4c5558139",
       "status": "final-frozen"
     }
   },
@@ -54,7 +54,7 @@
       "boundary": "Production queue runner and delivery processor over migrated in-memory SQLite, TestClock, and an injected transport/config layer.",
       "limitation": "Transport/config/time are deterministic fakes; durable state transitions are real SQLite, but provider acceptance and cross-process crash behavior are not exercised.",
       "wiring": "apps/service/src/sending/process-delivery.ts#processSendDeliveryJob",
-      "evidence": "`apps/service/src/sending/process-delivery.test.ts:340` test declaration/table plus its state assertions; production wiring named above was traced from the imported symbol into its caller.",
+      "evidence": "Final identity `8ebbb263c45960ac2aa9b5835b466da32e2c3dc1b908845b69cad8a1f4bb3dde`, `processSendDeliveryJob retries a retryable transport failure across worker runs`, in `apps/service/src/sending/process-delivery.test.ts` is the source assertion for this record: First cycle persists retry state/backoff attempt; after advancing the clock, second cycle creates attempt 2, sends once more, clears errors, and completes delivery/job/mailing. Production wiring named above was traced from the imported symbol into its caller.",
       "rationale": "The across-worker-runs case passed after retaining every first-cycle queued job/delivery, sending mailing, failed attempt, and exactly-one-send assertion; the weaker one-cycle identity was then removed."
     },
     {
@@ -2125,33 +2125,34 @@
       "operation": "retain",
       "from": ["de93b3ca269bd4e9b5bcd21ef77b54f852374b83420c677133ba7f6f80e2f2b0"],
       "to": ["de93b3ca269bd4e9b5bcd21ef77b54f852374b83420c677133ba7f6f80e2f2b0"],
-      "invariant": "A real Bun CLI starts pending, applies all eight committed migrations, verifies tables/columns/indexes/check constraints, detects checksum drift/missing files, rolls every migration down, and reapplies; it protects the complete rollout/rollback lifecycle.",
-      "boundary": "Real Bun subprocess + bun:sqlite file and committed migrations; local runtime only, not deployed upgrade concurrency.",
-      "limitation": "Local runtime evidence only; platform/provider/hosted behavior outside the named subprocess and protocol path is not claimed.",
-      "wiring": "apps/service/src/db/migrate.ts#migrationProgram/migrateUp/migrateDown",
-      "evidence": "`apps/service/src/db/migrate.integration.test.ts:18` test declaration/table plus its state assertions; production wiring named above was traced from the imported symbol into its caller."
+      "invariant": "The sole baseline starts pending, applies exactly `0001_initial_schema`, exposes the exact 19-table/45-index/20-FK/column/CHECK/COLLATE contract, refuses checksum drift and missing applied files, drops to runner-owned `schema_migrations`, and recreates an identical schema on re-UP.",
+      "boundary": "The production Bun migration CLI and sole committed SQL execute in subprocesses against temporary file-backed SQLite; schema metadata is read through sqlite_schema and PRAGMA APIs before and after rollback/re-UP.",
+      "limitation": "Local deterministic lifecycle evidence does not cover interrupted migrations, concurrent deployed migrators, production-sized latency, or compatibility with deleted 0002–0009 histories.",
+      "wiring": "apps/service/src/db/migrations/sql/0001_initial_schema.sql#up-down",
+      "evidence": "apps/service/src/db/migrate.integration.test.ts verifies one pending/applied identity, all 19 ordered column contracts, 45 explicit indexes, 20 foreign keys, complete CHECK/COLLATE counts, checksum and missing-file refusal, second DOWN, and schema-equal re-UP."
     },
     {
-      "id": "retain-c823f1ef699e",
-      "operation": "retain",
+      "id": "rewrite-13d75fa9a6d3",
+      "operation": "rewrite",
       "from": ["c823f1ef699e81db99a1aee3963a3532d42dcd860f1a481fb724e0d70f78bc21"],
-      "to": ["c823f1ef699e81db99a1aee3963a3532d42dcd860f1a481fb724e0d70f78bc21"],
-      "invariant": "A database seeded at 0001 with a future-only `draft` state makes 0002 up fail with the migration operation and remain pending, preventing silent lossy table-copy migration.",
-      "boundary": "Real Bun subprocess + bun:sqlite file and committed migrations; local runtime only, not deployed upgrade concurrency.",
-      "limitation": "Local runtime evidence only; platform/provider/hosted behavior outside the named subprocess and protocol path is not claimed.",
-      "wiring": "apps/service/src/db/migrate.ts#migrationProgram/migrateUp/migrateDown",
-      "evidence": "`apps/service/src/db/migrate.integration.test.ts:295` test declaration/table plus its state assertions; production wiring named above was traced from the imported symbol into its caller."
+      "to": ["13d75fa9a6d3e5d10557688a85698a8ec53eb3216b781df5dd808ce80b39e2ce"],
+      "invariant": "A newly migrated database accepts representative rows in all 19 application tables, rejects invalid mailing/delivery/job/attempt/simulator/suppression states and duplicate delivery jobs, and enforces the specified cascade and SET NULL graph.",
+      "boundary": "The real Bun migration CLI applies the sole initial schema to a temporary file-backed database; direct DML then exercises SQLite CHECK, UNIQUE, foreign-key, cascade, self-reference, and re-UP behavior.",
+      "limitation": "This is a fresh-baseline contract, not an upgrade conversion test; it intentionally says nothing about importing or transforming databases that recorded deleted migration versions.",
+      "wiring": "apps/service/src/db/migrations/sql/0001_initial_schema.sql#up-down",
+      "evidence": "apps/service/src/db/migrate.integration.test.ts seeds every application table, checks six invalid-row families plus job uniqueness, notification/contact/delivery/mailing/API-key/user delete effects, empty foreign_key_check, destructive DOWN, and fresh re-UP; final identity 13d75fa9a6d3e5d10557688a85698a8ec53eb3216b781df5dd808ce80b39e2ce.",
+      "rationale": "Replaces the obsolete 0002 future-state conversion scenario with permanent DML and relationship evidence for the intentionally incompatible sole fresh baseline."
     },
     {
       "id": "retain-0ead0e5555f1",
       "operation": "retain",
       "from": ["0ead0e5555f1eee2f538ad2783c91b602515328f43f052b2fc796671f1d0b1ca"],
       "to": ["0ead0e5555f1eee2f538ad2783c91b602515328f43f052b2fc796671f1d0b1ca"],
-      "invariant": "After rolling index-only migrations back, an unconfirmed 0005 down exits nonzero and leaves tables/columns intact; confirmed down prints the same sorted table inventory before success and removes the expected schema.",
-      "boundary": "Real Bun subprocess + bun:sqlite file and committed migrations; local runtime only, not deployed upgrade concurrency.",
-      "limitation": "Local runtime evidence only; platform/provider/hosted behavior outside the named subprocess and protocol path is not claimed.",
-      "wiring": "apps/service/src/db/migrate.ts#migrationProgram/migrateUp/migrateDown",
-      "evidence": "`apps/service/src/db/migrate.integration.test.ts:256` test declaration/table plus its state assertions; production wiring named above was traced from the imported symbol into its caller."
+      "invariant": "Unconfirmed DOWN prints the exact sorted inventory of all 19 data-bearing tables, exits nonzero, and preserves the complete populated schema and row graph; confirmed DOWN prints inventory before success and leaves only `schema_migrations`.",
+      "boundary": "The production Bun migration CLI and destructive-table parser operate on a temporary file-backed database populated across all 19 application tables from the sole initial migration.",
+      "limitation": "The rollback gate and intact local graph are covered; process interruption during DROP execution, concurrent deployed connections, and restoration of intentionally destroyed data are not.",
+      "wiring": "apps/service/src/db/migrations/sql/0001_initial_schema.sql#down",
+      "evidence": "apps/service/src/db/migrate.integration.test.ts snapshots canonical schema plus every application row before refusal, compares both afterward, then confirms exact inventory/message order and complete application-table removal."
     },
     {
       "id": "retain-32e78d8945d1",
@@ -3823,7 +3824,7 @@
       "boundary": "Production queue runner and delivery processor over migrated in-memory SQLite, TestClock, and an injected transport/config layer.",
       "limitation": "Transport/config/time are deterministic fakes; durable state transitions are real SQLite, but provider acceptance and cross-process crash behavior are not exercised.",
       "wiring": "apps/service/src/sending/process-delivery.ts#processSendDeliveryJob",
-      "evidence": "`apps/service/src/sending/process-delivery.test.ts:1018` test declaration/table plus its state assertions; production wiring named above was traced from the imported symbol into its caller."
+      "evidence": "Final identity `31b06780340bb197e734d5ead1ca05155f759c3d884076b76697e5d196c3b24e`, `processSendDeliveryJob escapes HTML placeholder values while leaving subject/text substitutions plain`, in `apps/service/src/sending/process-delivery.test.ts` is the source assertion for this record: The same hostile scalar renders HTML-escaped in body but remains plain in subject/text, asserting context-sensitive escaping at the worker transport boundary. Production wiring named above was traced from the imported symbol into its caller."
     },
     {
       "id": "retain-c42e10215ac6",
@@ -3834,7 +3835,7 @@
       "boundary": "Production queue runner and delivery processor over migrated in-memory SQLite, TestClock, and an injected transport/config layer.",
       "limitation": "Transport/config/time are deterministic fakes; durable state transitions are real SQLite, but provider acceptance and cross-process crash behavior are not exercised.",
       "wiring": "apps/service/src/sending/process-delivery.ts#processSendDeliveryJob",
-      "evidence": "`apps/service/src/sending/process-delivery.test.ts:1076` test declaration/table plus its state assertions; production wiring named above was traced from the imported symbol into its caller."
+      "evidence": "Final identity `c42e10215ac6d2f729ed3a299066836286d7757075d343f7ebca757e3fde9577`, `processSendDeliveryJob fails invalid vars_json without calling transport`, in `apps/service/src/sending/process-delivery.test.ts` is the source assertion for this record: Corrupted persisted JSON is rejected during rendering, fails delivery with fixed diagnostic, and never calls transport. Production wiring named above was traced from the imported symbol into its caller."
     },
     {
       "id": "retain-30c7ca6f2592",
@@ -3845,7 +3846,7 @@
       "boundary": "Production queue runner and delivery processor over migrated in-memory SQLite, TestClock, and an injected transport/config layer.",
       "limitation": "Transport/config/time are deterministic fakes; durable state transitions are real SQLite, but provider acceptance and cross-process crash behavior are not exercised.",
       "wiring": "apps/service/src/sending/process-delivery.ts#processSendDeliveryJob",
-      "evidence": "`apps/service/src/sending/process-delivery.test.ts:1104` test declaration/table plus its state assertions; production wiring named above was traced from the imported symbol into its caller."
+      "evidence": "Final identity `30c7ca6f25924087ab68c34e57e222cca5c5a020d0924e10fb88f1eed26fbf51`, `processSendDeliveryJob fails non-scalar vars without calling transport`, in `apps/service/src/sending/process-delivery.test.ts` is the source assertion for this record: Object-valued vars are rejected as non-scalar, fail delivery, and never call transport. Production wiring named above was traced from the imported symbol into its caller."
     },
     {
       "id": "retain-7211ba1c30ea",
@@ -3856,7 +3857,7 @@
       "boundary": "Production queue runner and delivery processor over migrated in-memory SQLite, TestClock, and an injected transport/config layer.",
       "limitation": "Transport/config/time are deterministic fakes; durable state transitions are real SQLite, but provider acceptance and cross-process crash behavior are not exercised.",
       "wiring": "apps/service/src/sending/process-delivery.ts#processSendDeliveryJob",
-      "evidence": "`apps/service/src/sending/process-delivery.test.ts:1049` test declaration/table plus its state assertions; production wiring named above was traced from the imported symbol into its caller."
+      "evidence": "Final identity `7211ba1c30ea36b6eeefbe35119ed053b934c23a3a3d7fb44ac8b47ca8d2b2b2`, `processSendDeliveryJob fails unsupported placeholders without calling transport`, in `apps/service/src/sending/process-delivery.test.ts` is the source assertion for this record: Missing placeholder resolution terminally fails the delivery with fixed diagnostic and zero transport calls. Production wiring named above was traced from the imported symbol into its caller."
     },
     {
       "id": "retain-df8a7ea43586",
@@ -3867,7 +3868,7 @@
       "boundary": "Production queue runner and delivery processor over migrated in-memory SQLite, TestClock, and an injected transport/config layer.",
       "limitation": "Transport/config/time are deterministic fakes; durable state transitions are real SQLite, but provider acceptance and cross-process crash behavior are not exercised.",
       "wiring": "apps/service/src/sending/process-delivery.ts#processSendDeliveryJob",
-      "evidence": "`apps/service/src/sending/process-delivery.test.ts:957` test declaration/table plus its state assertions; production wiring named above was traced from the imported symbol into its caller."
+      "evidence": "Final identity `df8a7ea43586bf868b145f35826770e3e85e03159254f01d92b34a9af5db8c4f`, `processSendDeliveryJob ignores marketing suppressions before transactional sending`, in `apps/service/src/sending/process-delivery.test.ts` is the source assertion for this record: Marketing-only suppression does not block transactional mail; delivery sends once. Production wiring named above was traced from the imported symbol into its caller."
     },
     {
       "id": "retain-4fc40ba50b29",
@@ -3878,7 +3879,7 @@
       "boundary": "Production queue runner and delivery processor over migrated in-memory SQLite, TestClock, and an injected transport/config layer.",
       "limitation": "Transport/config/time are deterministic fakes; durable state transitions are real SQLite, but provider acceptance and cross-process crash behavior are not exercised.",
       "wiring": "apps/service/src/sending/process-delivery.ts#processSendDeliveryJob",
-      "evidence": "`apps/service/src/sending/process-delivery.test.ts:917` test declaration/table plus its state assertions; production wiring named above was traced from the imported symbol into its caller."
+      "evidence": "Final identity `4fc40ba50b29d7549437ba814375961eb4dc57a91808120667dda846a567cae7`, `processSendDeliveryJob ignores non-matching list suppressions for marketing sends`, in `apps/service/src/sending/process-delivery.test.ts` is the source assertion for this record: A list-scoped suppression for another list does not suppress; delivery sends once. Production wiring named above was traced from the imported symbol into its caller."
     },
     {
       "id": "retain-a9f4838ca331",
@@ -3889,7 +3890,7 @@
       "boundary": "Production queue runner and delivery processor over migrated in-memory SQLite, TestClock, and an injected transport/config layer.",
       "limitation": "Transport/config/time are deterministic fakes; durable state transitions are real SQLite, but provider acceptance and cross-process crash behavior are not exercised.",
       "wiring": "apps/service/src/sending/process-delivery.ts#processSendDeliveryJob",
-      "evidence": "`apps/service/src/sending/process-delivery.test.ts:219` test declaration/table plus its state assertions; production wiring named above was traced from the imported symbol into its caller."
+      "evidence": "Final identity `a9f4838ca33113ea9cb970e5cf9ab61034c160586079d6de5e478091261f93b6`, `processSendDeliveryJob keeps multi-recipient mailings sending until all delivery jobs are terminal`, in `apps/service/src/sending/process-delivery.test.ts` is the source assertion for this record: With batch size one, first recipient becomes sent while mailing stays sending; second cycle sends the other and only then completes mailing, proving aggregate terminal-state refresh. Production wiring named above was traced from the imported symbol into its caller."
     },
     {
       "id": "retain-3c1362a513f4",
@@ -3900,7 +3901,7 @@
       "boundary": "Production queue runner and delivery processor over migrated in-memory SQLite, TestClock, and an injected transport/config layer.",
       "limitation": "Transport/config/time are deterministic fakes; durable state transitions are real SQLite, but provider acceptance and cross-process crash behavior are not exercised.",
       "wiring": "apps/service/src/sending/process-delivery.ts#processSendDeliveryJob",
-      "evidence": "`apps/service/src/sending/process-delivery.test.ts:437` test declaration/table plus its state assertions; production wiring named above was traced from the imported symbol into its caller."
+      "evidence": "Final identity `3c1362a513f40e2c7b1d9bd61c6d2331784c68141901c4ed05515f07a906a691`, `processSendDeliveryJob marks delivery failed and mailing completed when a retryable failure exhausts attempts`, in `apps/service/src/sending/process-delivery.test.ts` is the source assertion for this record: With `max_attempts=1`, a retryable provider failure dead-letters the job, fails delivery, and completes mailing rather than leaving retryable state. Production wiring named above was traced from the imported symbol into its caller."
     },
     {
       "id": "retain-d228f782d4bf",
@@ -3911,7 +3912,7 @@
       "boundary": "Production queue runner and delivery processor over migrated in-memory SQLite, TestClock, and an injected transport/config layer.",
       "limitation": "Transport/config/time are deterministic fakes; durable state transitions are real SQLite, but provider acceptance and cross-process crash behavior are not exercised.",
       "wiring": "apps/service/src/sending/process-delivery.ts#processSendDeliveryJob",
-      "evidence": "`apps/service/src/sending/process-delivery.test.ts:1163` test declaration/table plus its state assertions; production wiring named above was traced from the imported symbol into its caller."
+      "evidence": "Final identity `d228f782d4bf66eec191e60715a345a8949c0c19b34fe6991ffc233e106b5d24`, `processSendDeliveryJob marks stale in-flight deliveries as ambiguous without calling transport`, in `apps/service/src/sending/process-delivery.test.ts` is the source assertion for this record: A delivery already `sending` with a started attempt is finalized ambiguous with timestamp/error, job succeeds, and transport is not called—seeded crash residue, not a killed process. Production wiring named above was traced from the imported symbol into its caller."
     },
     {
       "id": "retain-560f8ae7ea23",
@@ -3922,7 +3923,7 @@
       "boundary": "Production queue runner and delivery processor over migrated in-memory SQLite, TestClock, and an injected transport/config layer.",
       "limitation": "Transport/config/time are deterministic fakes; durable state transitions are real SQLite, but provider acceptance and cross-process crash behavior are not exercised.",
       "wiring": "apps/service/src/sending/process-delivery.ts#processSendDeliveryJob",
-      "evidence": "`apps/service/src/sending/process-delivery.test.ts:986` test declaration/table plus its state assertions; production wiring named above was traced from the imported symbol into its caller."
+      "evidence": "Final identity `560f8ae7ea23e0bae409da498039d62bbfc6ebc40ebd648a7a354b8902e04abc`, `processSendDeliveryJob re-checks global suppressions before transactional sending`, in `apps/service/src/sending/process-delivery.test.ts` is the source assertion for this record: Global suppression is rechecked for transactional mail and produces suppressed delivery with zero sends. Production wiring named above was traced from the imported symbol into its caller."
     },
     {
       "id": "retain-f25666a6099d",
@@ -3933,7 +3934,7 @@
       "boundary": "Production queue runner and delivery processor over migrated in-memory SQLite, TestClock, and an injected transport/config layer.",
       "limitation": "Transport/config/time are deterministic fakes; durable state transitions are real SQLite, but provider acceptance and cross-process crash behavior are not exercised.",
       "wiring": "apps/service/src/sending/process-delivery.ts#processSendDeliveryJob",
-      "evidence": "`apps/service/src/sending/process-delivery.test.ts:478` test declaration/table plus its state assertions; production wiring named above was traced from the imported symbol into its caller."
+      "evidence": "Final identity `f25666a6099dd8883b12b046d16ce2da2965966d85d622fabc831ae1da7f4032`, `processSendDeliveryJob records ambiguous transport failures as terminal ambiguous outcomes`, in `apps/service/src/sending/process-delivery.test.ts` is the source assertion for this record: An explicit ambiguous provider failure is handled terminally: job succeeds, attempt is ambiguous, delivery fails with fixed text, and only one dispatch occurs. Production wiring named above was traced from the imported symbol into its caller."
     },
     {
       "id": "retain-2e3e60012ee8",
@@ -3944,7 +3945,7 @@
       "boundary": "Production queue runner and delivery processor over migrated in-memory SQLite, TestClock, and an injected transport/config layer.",
       "limitation": "Transport/config/time are deterministic fakes; durable state transitions are real SQLite, but provider acceptance and cross-process crash behavior are not exercised.",
       "wiring": "apps/service/src/sending/process-delivery.ts#processSendDeliveryJob",
-      "evidence": "`apps/service/src/sending/process-delivery.test.ts:587` test declaration/table plus its state assertions; production wiring named above was traced from the imported symbol into its caller."
+      "evidence": "Final identity `2e3e60012ee860462e875320a6932ad634230662ce7b544f8135de6badd16f1b`, `processSendDeliveryJob records permanent transport failures as terminal failed deliveries`, in `apps/service/src/sending/process-delivery.test.ts` is the source assertion for this record: An explicit permanent failure produces failed attempt/delivery, succeeded terminal job, completed mailing, fixed text, and one dispatch. Production wiring named above was traced from the imported symbol into its caller."
     },
     {
       "id": "retain-532418ed676d",
@@ -3955,7 +3956,7 @@
       "boundary": "Production queue runner and delivery processor over migrated in-memory SQLite, TestClock, and an injected transport/config layer.",
       "limitation": "Transport/config/time are deterministic fakes; durable state transitions are real SQLite, but provider acceptance and cross-process crash behavior are not exercised.",
       "wiring": "apps/service/src/sending/process-delivery.ts#processSendDeliveryJob",
-      "evidence": "`apps/service/src/sending/process-delivery.test.ts:172` test declaration/table plus its state assertions; production wiring named above was traced from the imported symbol into its caller."
+      "evidence": "Final identity `532418ed676d9b2383f3ce0edfb15974985ce8dc5c2e530ee95068c51b308d14`, `processSendDeliveryJob resets the delivery to queued (retryable) when a pre-transport DB read fails`, in `apps/service/src/sending/process-delivery.test.ts` is the source assertion for this record: An injected suppression-policy DB read failure after marking `sending` but before transport resets delivery/job to queued, records failed attempt, and asserts zero sends—safe retry because dispatch never occurred. Production wiring named above was traced from the imported symbol into its caller."
     },
     {
       "id": "retain-87e73f6edd88",
@@ -3966,7 +3967,7 @@
       "boundary": "Production queue runner and delivery processor over migrated in-memory SQLite, TestClock, and an injected transport/config layer.",
       "limitation": "Transport/config/time are deterministic fakes; durable state transitions are real SQLite, but provider acceptance and cross-process crash behavior are not exercised.",
       "wiring": "apps/service/src/sending/process-delivery.ts#processSendDeliveryJob",
-      "evidence": "`apps/service/src/sending/process-delivery.test.ts:679` test declaration/table plus its state assertions; production wiring named above was traced from the imported symbol into its caller."
+      "evidence": "Final identity `87e73f6edd88ae7f93a42c00736b699f9eba8f32abb2c906e56d9c4a4b6141d0`, `processSendDeliveryJob retries marketing sends when the SES marketing configuration set is missing`, in `apps/service/src/sending/process-delivery.test.ts` is the source assertion for this record: A marketing job with unsubscribe configured but no SES marketing set is requeued with the fixed configuration error and zero sends. Production wiring named above was traced from the imported symbol into its caller."
     },
     {
       "id": "retain-a2936c47a12b",
@@ -3977,7 +3978,7 @@
       "boundary": "Production queue runner and delivery processor over migrated in-memory SQLite, TestClock, and an injected transport/config layer.",
       "limitation": "Transport/config/time are deterministic fakes; durable state transitions are real SQLite, but provider acceptance and cross-process crash behavior are not exercised.",
       "wiring": "apps/service/src/sending/process-delivery.ts#processSendDeliveryJob",
-      "evidence": "`apps/service/src/sending/process-delivery.test.ts:633` test declaration/table plus its state assertions; production wiring named above was traced from the imported symbol into its caller."
+      "evidence": "Final identity `a2936c47a12b6392afea71b0e2575a896219ed1c5cdb6ef575ad1ee4378437c4`, `processSendDeliveryJob retries marketing sends when unsubscribe config is missing`, in `apps/service/src/sending/process-delivery.test.ts` is the source assertion for this record: A marketing job without unsubscribe configuration fails before transport, records fixed retryable attempt/delivery/job state, and sends zero messages. Production wiring named above was traced from the imported symbol into its caller."
     },
     {
       "id": "retain-403f2c56505e",
@@ -3988,7 +3989,7 @@
       "boundary": "Production queue runner and delivery processor over migrated in-memory SQLite, TestClock, and an injected transport/config layer.",
       "limitation": "Transport/config/time are deterministic fakes; durable state transitions are real SQLite, but provider acceptance and cross-process crash behavior are not exercised.",
       "wiring": "apps/service/src/sending/process-delivery.ts#processSendDeliveryJob",
-      "evidence": "`apps/service/src/sending/process-delivery.test.ts:716` test declaration/table plus its state assertions; production wiring named above was traced from the imported symbol into its caller."
+      "evidence": "Final identity `403f2c56505e837ffbd1873628dd67d3a257f39dacaab85818ce02306c673e60`, `processSendDeliveryJob sends marketing deliveries with unsubscribe config and marketing configuration set`, in `apps/service/src/sending/process-delivery.test.ts` is the source assertion for this record: With both configs, one marketing send contains the marketing configuration set, RFC 8058 headers, embedded URL, and persisted sent/message-id state. Production wiring named above was traced from the imported symbol into its caller."
     },
     {
       "id": "retain-a8c5072d8061",
@@ -3999,7 +4000,7 @@
       "boundary": "Production queue runner and delivery processor over migrated in-memory SQLite, TestClock, and an injected transport/config layer.",
       "limitation": "Transport/config/time are deterministic fakes; durable state transitions are real SQLite, but provider acceptance and cross-process crash behavior are not exercised.",
       "wiring": "apps/service/src/sending/process-delivery.ts#processSendDeliveryJob",
-      "evidence": "`apps/service/src/sending/process-delivery.test.ts:128` test declaration/table plus its state assertions; production wiring named above was traced from the imported symbol into its caller."
+      "evidence": "Final identity `a8c5072d8061611ac1320fd443f1af877eaca71ff861fa0510612af8f6c2a3a7`, `processSendDeliveryJob sends transactional deliveries and lets the queue runner complete the job`, in `apps/service/src/sending/process-delivery.test.ts` is the source assertion for this record: One due transactional job produces one prepared fake send and durable succeeded job/attempt plus sent delivery with the same message id. Production wiring named above was traced from the imported symbol into its caller."
     },
     {
       "id": "retain-d21e3fd67670",
@@ -4010,7 +4011,7 @@
       "boundary": "Production queue runner and delivery processor over migrated in-memory SQLite, TestClock, and an injected transport/config layer.",
       "limitation": "Transport/config/time are deterministic fakes; durable state transitions are real SQLite, but provider acceptance and cross-process crash behavior are not exercised.",
       "wiring": "apps/service/src/sending/process-delivery.ts#processSendDeliveryJob",
-      "evidence": "`apps/service/src/sending/process-delivery.test.ts:1136` test declaration/table plus its state assertions; production wiring named above was traced from the imported symbol into its caller."
+      "evidence": "Final identity `d21e3fd67670df3c7cb17bed1c0618495fb8ba940beb0237ae3c6d42310af144`, `processSendDeliveryJob skips terminal deliveries without calling transport`, in `apps/service/src/sending/process-delivery.test.ts` is the source assertion for this record: A leased job pointing to an already sent delivery completes without creating an attempt or invoking transport. Production wiring named above was traced from the imported symbol into its caller."
     },
     {
       "id": "retain-3f52f64c4d1a",
@@ -4021,7 +4022,7 @@
       "boundary": "Production queue runner and delivery processor over migrated in-memory SQLite, TestClock, and an injected transport/config layer.",
       "limitation": "Transport/config/time are deterministic fakes; durable state transitions are real SQLite, but provider acceptance and cross-process crash behavior are not exercised.",
       "wiring": "apps/service/src/sending/process-delivery.ts#processSendDeliveryJob",
-      "evidence": "`apps/service/src/sending/process-delivery.test.ts:759` test declaration/table plus its state assertions; production wiring named above was traced from the imported symbol into its caller."
+      "evidence": "Final identity `3f52f64c4d1a22d9ab326404a28e38e3bcdc07d6ffc08275379e3cd6a76a97ef`, `processSendDeliveryJob suppresses marketing deliveries before retryable config gates`, in `apps/service/src/sending/process-delivery.test.ts` is the source assertion for this record: A preexisting marketing suppression wins before missing-config checks: delivery becomes suppressed, job succeeds, and transport is not called. Production wiring named above was traced from the imported symbol into its caller."
     },
     {
       "id": "retain-7b4e1038e79f",
@@ -4032,7 +4033,7 @@
       "boundary": "Production queue runner and delivery processor over migrated in-memory SQLite, TestClock, and an injected transport/config layer.",
       "limitation": "Transport/config/time are deterministic fakes; durable state transitions are real SQLite, but provider acceptance and cross-process crash behavior are not exercised.",
       "wiring": "apps/service/src/sending/process-delivery.ts#processSendDeliveryJob",
-      "evidence": "`apps/service/src/sending/process-delivery.test.ts:799` test declaration/table plus its state assertions; production wiring named above was traced from the imported symbol into its caller."
+      "evidence": "Final identity `7b4e1038e79fdb40369b48f7251dacb624e731a08565dbe997f84edb62c02fcc`, `processSendDeliveryJob suppresses marketing deliveries when the recipient unsubscribes after creation`, in `apps/service/src/sending/process-delivery.test.ts` is the source assertion for this record: A case-varied unsubscribe inserted after mailing creation is rechecked at send time and suppresses without dispatch. Production wiring named above was traced from the imported symbol into its caller."
     },
     {
       "id": "retain-17a50c6466eb",
@@ -4043,7 +4044,7 @@
       "boundary": "Production queue runner and delivery processor over migrated in-memory SQLite, TestClock, and an injected transport/config layer.",
       "limitation": "Transport/config/time are deterministic fakes; durable state transitions are real SQLite, but provider acceptance and cross-process crash behavior are not exercised.",
       "wiring": "apps/service/src/sending/process-delivery.ts#processSendDeliveryJob",
-      "evidence": "`apps/service/src/sending/process-delivery.test.ts:837` test declaration/table plus its state assertions; production wiring named above was traced from the imported symbol into its caller."
+      "evidence": "Final identity `17a50c6466eb1e7090efa6b09e4e81e893a0c9cbb3adfdcf455f0e0fd242c0bc`, `processSendDeliveryJob suppresses marketing deliveries with global suppressions at send time`, in `apps/service/src/sending/process-delivery.test.ts` is the source assertion for this record: A global `all` suppression inserted after creation suppresses a marketing delivery with zero dispatch. Production wiring named above was traced from the imported symbol into its caller."
     },
     {
       "id": "retain-da1024ee44ef",
@@ -4054,7 +4055,7 @@
       "boundary": "Production queue runner and delivery processor over migrated in-memory SQLite, TestClock, and an injected transport/config layer.",
       "limitation": "Transport/config/time are deterministic fakes; durable state transitions are real SQLite, but provider acceptance and cross-process crash behavior are not exercised.",
       "wiring": "apps/service/src/sending/process-delivery.ts#processSendDeliveryJob",
-      "evidence": "`apps/service/src/sending/process-delivery.test.ts:875` test declaration/table plus its state assertions; production wiring named above was traced from the imported symbol into its caller."
+      "evidence": "Final identity `da1024ee44ef6358edcaab1858d5c787379bc56b0ba8aad9043c40e3e0c2e742`, `processSendDeliveryJob suppresses matching list-scoped marketing suppressions at send time`, in `apps/service/src/sending/process-delivery.test.ts` is the source assertion for this record: A suppression whose list matches the mailing list suppresses at send time with zero dispatch. Production wiring named above was traced from the imported symbol into its caller."
     },
     {
       "id": "retain-cd45b8d12d5c",
@@ -4065,7 +4066,7 @@
       "boundary": "Production queue runner and delivery processor over migrated in-memory SQLite, TestClock, and an injected transport/config layer.",
       "limitation": "The Cause/throw is injected after a fake dispatch; durable no-resend state is real SQLite, but no live provider or killed-process concurrency is claimed.",
       "wiring": "apps/service/src/sending/process-delivery.ts#processSendDeliveryJob",
-      "evidence": "`apps/service/src/sending/process-delivery.test.ts:1136` test declaration/table plus its state assertions; production wiring named above was traced from the imported symbol into its caller."
+      "evidence": "Final identity `cd45b8d12d5c601f851a74eb2ce4ff77968549e538e8f75c7187e25db5c616c9`, `processSendDeliveryJob treats a 'plain Error defect' as terminal ambiguity without resending`, in `apps/service/src/sending/process-delivery.test.ts` is the source assertion for this record: A post-dispatch Die(Error) is terminal ambiguity; a second cycle claims nothing, send count remains one, and defect text is absent from persistence/formatted logs. Production wiring named above was traced from the imported symbol into its caller."
     },
     {
       "id": "retain-58ad5cd1e9f4",
@@ -4076,7 +4077,7 @@
       "boundary": "Production queue runner and delivery processor over migrated in-memory SQLite, TestClock, and an injected transport/config layer.",
       "limitation": "The Cause/throw is injected after a fake dispatch; durable no-resend state is real SQLite, but no live provider or killed-process concurrency is claimed.",
       "wiring": "apps/service/src/sending/process-delivery.ts#processSendDeliveryJob",
-      "evidence": "`apps/service/src/sending/process-delivery.test.ts:1136` test declaration/table plus its state assertions; production wiring named above was traced from the imported symbol into its caller."
+      "evidence": "Final identity `58ad5cd1e9f4ecdd817d8ca4f01f17b3282ee1b08a113dcae3143488d6548627`, `processSendDeliveryJob treats a 'typed-looking defect' as terminal ambiguity without resending`, in `apps/service/src/sending/process-delivery.test.ts` is the source assertion for this record: A Die containing an EmailTransportError-shaped value is not mistaken for typed Fail; it is terminal ambiguity with one send and no nested cause/operation sentinel persisted or logged. Production wiring named above was traced from the imported symbol into its caller."
     },
     {
       "id": "retain-7d38b02da35e",
@@ -4098,7 +4099,7 @@
       "boundary": "The deleted case called the pure renderer with synthetic context; the substitution replacement runs through the production queue runner and `processSendDeliveryJob` over migrated SQLite with TestClock and injected transport and configuration.",
       "limitation": "The replacement proves local HTML `<p>Hello Max</p>` and text `Hi Max` output, not provider or cross-process behavior. Final identity `93d42c9a92c7f7b6945cd83ebf3fe01c14fcfae0400fc8149c62d3f48aac01c0` (`fake email workflow creates a mailing, processes it with the fake worker, and exposes operations state`) proves transactional `headers: {}`; final identity `f21bcfa46088b1f74e4699c0a49dcf08f79b974c154cf6e02f7110a842ffce40` (`renderDeliveryEmail renders unsubscribe.url for marketing templates`) proves marketing URL output; and final identity `7d38b02da35e0b96f34a45c3995c861fd2549ce37b49339a3717cbf3a57700e5` (`renderDeliveryEmail fails transactional templates that use unsubscribe.url`) proves missing-URL failure. Those three are supporting behavior only, not replacements for the direct null field.",
       "wiring": "apps/service/src/sending/process-delivery.ts#processSendDeliveryJob -> apps/service/src/sending/render.ts#renderDeliveryEmail -> apps/service/src/sending/prepare.ts#prepareEmail",
-      "evidence": "Baseline identity `f7ad7dc9d0f458224758718a810df56c98e4e12e372fa5c7e0ebd85d675f807b`, `renderDeliveryEmail preserves existing escaped HTML placeholders`, at `apps/service/src/sending/render.test.ts:62-75` asserted ordinary `Max` substitution and `unsubscribeUrl === null`. Final identity `a8c5072d8061611ac1320fd443f1af877eaca71ff861fa0510612af8f6c2a3a7`, `processSendDeliveryJob sends transactional deliveries and lets the queue runner complete the job`, asserts `<p>Hello Max</p>` and `Hi Max` at `apps/service/src/sending/process-delivery.test.ts:128-167`. Supporting only: final identity `93d42c9a92c7f7b6945cd83ebf3fe01c14fcfae0400fc8149c62d3f48aac01c0`, `fake email workflow creates a mailing, processes it with the fake worker, and exposes operations state`, at `apps/service/src/sending/fake-workflow.integration.test.ts:77-92`; final identity `f21bcfa46088b1f74e4699c0a49dcf08f79b974c154cf6e02f7110a842ffce40`, `renderDeliveryEmail renders unsubscribe.url for marketing templates`, at `apps/service/src/sending/render.test.ts:43-53`; and final identity `7d38b02da35e0b96f34a45c3995c861fd2549ce37b49339a3717cbf3a57700e5`, `renderDeliveryEmail fails transactional templates that use unsubscribe.url`, at `apps/service/src/sending/render.test.ts:56-60`.",
+      "evidence": "Historical baseline identity `f7ad7dc9d0f458224758718a810df56c98e4e12e372fa5c7e0ebd85d675f807b`, `renderDeliveryEmail preserves existing escaped HTML placeholders`, at `apps/service/src/sending/render.test.ts:62-75` asserted ordinary `Max` substitution and `unsubscribeUrl === null`. Final identity `a8c5072d8061611ac1320fd443f1af877eaca71ff861fa0510612af8f6c2a3a7`, `processSendDeliveryJob sends transactional deliveries and lets the queue runner complete the job`, in `apps/service/src/sending/process-delivery.test.ts` asserts `<p>Hello Max</p>` and `Hi Max`. Supporting only: final identity `93d42c9a92c7f7b6945cd83ebf3fe01c14fcfae0400fc8149c62d3f48aac01c0`, `fake email workflow creates a mailing, processes it with the fake worker, and exposes operations state`, in `apps/service/src/sending/fake-workflow.integration.test.ts`; final identity `f21bcfa46088b1f74e4699c0a49dcf08f79b974c154cf6e02f7110a842ffce40`, `renderDeliveryEmail renders unsubscribe.url for marketing templates`, in `apps/service/src/sending/render.test.ts`; and final identity `7d38b02da35e0b96f34a45c3995c861fd2549ce37b49339a3717cbf3a57700e5`, `renderDeliveryEmail fails transactional templates that use unsubscribe.url`, in `apps/service/src/sending/render.test.ts`.",
       "rationale": "Ordinary scalar substitution is replaced by final identity `a8c5072d8061611ac1320fd443f1af877eaca71ff861fa0510612af8f6c2a3a7`, `processSendDeliveryJob sends transactional deliveries and lets the queue runner complete the job`. The direct transactional `RenderedEmail.unsubscribeUrl === null` assertion is intentionally removed rather than replaced because it is a private lower-level field. Final identity `93d42c9a92c7f7b6945cd83ebf3fe01c14fcfae0400fc8149c62d3f48aac01c0`, `fake email workflow creates a mailing, processes it with the fake worker, and exposes operations state`; final identity `f21bcfa46088b1f74e4699c0a49dcf08f79b974c154cf6e02f7110a842ffce40`, `renderDeliveryEmail renders unsubscribe.url for marketing templates`; and final identity `7d38b02da35e0b96f34a45c3995c861fd2549ce37b49339a3717cbf3a57700e5`, `renderDeliveryEmail fails transactional templates that use unsubscribe.url`, bound transactional headers, marketing URL presence, and missing-URL failure only as supporting behavior. No hostile-character escaping test is claimed as equivalent."
     },
     {
@@ -4227,11 +4228,11 @@
       "operation": "retain",
       "from": ["cd9907cc0c5657accc2b1c1f55b3894e075b3663f41b137ac01df9164c4e7c48"],
       "to": ["cd9907cc0c5657accc2b1c1f55b3894e075b3663f41b137ac01df9164c4e7c48"],
-      "invariant": "Better Auth receives a distinct Bun connection with matching foreign-key/WAL/busy-timeout pragmas, preventing shared-handle transaction interference.",
-      "boundary": "Real driver/database lifecycle (Bun case may use subprocess/runtime); local SQLite only, no lock-contention stress.",
-      "limitation": "Deterministic local dependencies bound this row; it does not independently establish hosted, live-provider, or cross-process behavior.",
-      "wiring": "apps/service/src/services/database.ts#DatabaseService/makeTransaction/serializeDatabaseService",
-      "evidence": "`apps/service/src/services/database.test.ts:65` test declaration/table plus its state assertions; production wiring named above was traced from the imported symbol into its caller."
+      "invariant": "The application and Better Auth use distinct real Bun SQLite handles, both report `synchronous=2`, and the auth handle also reports WAL, foreign keys, and 5000 ms busy timeout while its TEMP table remains invisible to the app handle.",
+      "boundary": "A Bun subprocess opens a temporary file-backed DatabaseBunLive layer; the fixture queries synchronous mode through the application Database service and the raw auth SqliteHandle, then proves connection separation with a TEMP table.",
+      "limitation": "The test verifies actual runtime configuration and read-back on both handles, not durability under physical power loss, filesystem failure, or storage-controller behavior.",
+      "wiring": "apps/service/src/services/database-bun.ts#DatabaseBunLive/applyConnectionPragmas",
+      "evidence": "apps/service/src/services/database.test.ts and apps/service/src/testing/bun-fixtures.ts assert app/auth synchronous=2, WAL, FK, busy timeout, app liveness, and auth TEMP-table isolation against the production layer."
     },
     {
       "id": "retain-7983f1bc3b20",
@@ -4242,7 +4243,7 @@
       "boundary": "Real driver/database lifecycle (Bun case may use subprocess/runtime); local SQLite only, no lock-contention stress.",
       "limitation": "Deterministic local dependencies bound this row; it does not independently establish hosted, live-provider, or cross-process behavior.",
       "wiring": "apps/service/src/services/database.ts#DatabaseService/makeTransaction/serializeDatabaseService",
-      "evidence": "`apps/service/src/services/database.test.ts:45` test declaration/table plus its state assertions; production wiring named above was traced from the imported symbol into its caller."
+      "evidence": "Final identity `7983f1bc3b20416ebd1e29a2aa88758ce57da2816efb31ad992b3be354c984cd`, `database service bun:sqlite layer satisfies the driver contract and dispose lifecycle`, in `apps/service/src/services/database.test.ts` is the source assertion for this record: The Bun adapter passes the same driver contract and disposal probe through its real runtime boundary. Production wiring named above was traced from the imported symbol into its caller."
     },
     {
       "id": "retain-8c55612f48cf",
@@ -4253,7 +4254,7 @@
       "boundary": "Real driver/database lifecycle (Bun case may use subprocess/runtime); local SQLite only, no lock-contention stress.",
       "limitation": "Deterministic local dependencies bound this row; it does not independently establish hosted, live-provider, or cross-process behavior.",
       "wiring": "apps/service/src/services/database.ts#DatabaseService/makeTransaction/serializeDatabaseService",
-      "evidence": "`apps/service/src/services/database.test.ts:41` test declaration/table plus its state assertions; production wiring named above was traced from the imported symbol into its caller."
+      "evidence": "Final identity `8c55612f48cf0c7153872e2dcddec97d7f731f90215a15174619a7396a9a733d`, `database service ManagedRuntime.dispose closes the node:sqlite connection`, in `apps/service/src/services/database.test.ts` is the source assertion for this record: Disposing ManagedRuntime closes the node SQLite handle; subsequent access fails, protecting lifecycle cleanup. Production wiring named above was traced from the imported symbol into its caller."
     },
     {
       "id": "retain-554533ab9ad3",
@@ -4264,7 +4265,7 @@
       "boundary": "Real driver/database lifecycle (Bun case may use subprocess/runtime); local SQLite only, no lock-contention stress.",
       "limitation": "Deterministic local dependencies bound this row; it does not independently establish hosted, live-provider, or cross-process behavior.",
       "wiring": "apps/service/src/services/database.ts#DatabaseService/makeTransaction/serializeDatabaseService",
-      "evidence": "`apps/service/src/services/database.test.ts:19` test declaration/table plus its state assertions; production wiring named above was traced from the imported symbol into its caller."
+      "evidence": "Final identity `554533ab9ad32fd5c071657b4f424f771bfe691d5392034bbc6a4cfc86cdc75d`, `database service node:sqlite layer applies the real migration files`, in `apps/service/src/services/database.test.ts` is the source assertion for this record: Node layer executes the committed migrations and exposes expected real schema rather than a test-only schema. Production wiring named above was traced from the imported symbol into its caller."
     },
     {
       "id": "retain-c263f3ec915b",
@@ -4275,7 +4276,7 @@
       "boundary": "Real driver/database lifecycle (Bun case may use subprocess/runtime); local SQLite only, no lock-contention stress.",
       "limitation": "Deterministic local dependencies bound this row; it does not independently establish hosted, live-provider, or cross-process behavior.",
       "wiring": "apps/service/src/services/database.ts#DatabaseService/makeTransaction/serializeDatabaseService",
-      "evidence": "`apps/service/src/services/database.test.ts:45` test declaration/table plus its state assertions; production wiring named above was traced from the imported symbol into its caller."
+      "evidence": "Final identity `c263f3ec915bb992460b0a5dbb416870eb8771717a460eff426912859770d4e3`, `database service node:sqlite layer satisfies the driver contract`, in `apps/service/src/services/database.test.ts` is the source assertion for this record: The node:sqlite layer passes the shared DatabaseService query/run/transaction rollback contract. Production wiring named above was traced from the imported symbol into its caller."
     },
     {
       "id": "retain-612227c6d7db",
@@ -4289,15 +4290,16 @@
       "evidence": "Direct production adapter invocation inspects SendEmailCommand/EmailTransportError and, for validation rows, proves the injected sender receives zero calls."
     },
     {
-      "id": "retain-7c38d97a490b",
-      "operation": "retain",
+      "id": "rewrite-3e6397c71234",
+      "operation": "rewrite",
       "from": ["7c38d97a490b613cf24a25e6a26ffb363908d4cc6f7633c02346d20b466e2dcc"],
-      "to": ["7c38d97a490b613cf24a25e6a26ffb363908d4cc6f7633c02346d20b466e2dcc"],
-      "invariant": "Quota/throttle/network/5xx shapes are retryable, request rejection shapes permanent, and abort/unknown shapes ambiguous, preserving no-loss/no-double-send policy.",
-      "boundary": "Direct SES transport/command adapter with real AWS SDK command classes and an injected sender; validation failures traverse the Effect error channel. No request is serialized or sent to SES, so provider acceptance, SDK middleware, and live retry behavior remain unproved.",
-      "limitation": "None about the local branch/assertion; live/external limitations are confined to the boundary statement.",
-      "wiring": "apps/service/src/services/email-transport-ses.ts#makeSesEmailTransport/toSendEmailCommand/classifySesError/makeSesClient",
-      "evidence": "Direct production adapter invocation inspects SendEmailCommand/EmailTransportError and, for validation rows, proves the injected sender receives zero calls."
+      "to": ["3e6397c71234547cb9b460d3aa03beec17f2225a04bedc26dd606284a153c93c"],
+      "invariant": "AWS metadata status 503 is treated as terminal ambiguity because SES may have accepted the message before returning a service failure.",
+      "boundary": "The production `classifySesError` function receives a locally constructed AWS-style error with `$metadata.httpStatusCode=503`; the row does not invoke the SDK sender or queue.",
+      "limitation": "This classifier row pins one representative generic 5xx value; adjacent records cover 500/599, provider name/code signals, precedence conflicts, transport surfacing, and queue persistence. Live SES timing is not reproduced.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts exact kind `ambiguous` for status 503; final identity 3e6397c71234547cb9b460d3aa03beec17f2225a04bedc26dd606284a153c93c.",
+      "rationale": "The former omnibus classifier identity was split into input-identifying rows; this edge carries its generic-503 ambiguity requirement while every other split row is admitted separately."
     },
     {
       "id": "retain-bb9e324d308c",
@@ -6087,7 +6089,7 @@
       "boundary": "Production queue runner and delivery processor over migrated in-memory SQLite, TestClock, and an injected transport/config layer.",
       "limitation": "The Cause/throw is injected after a fake dispatch; durable no-resend state is real SQLite, but no live provider or killed-process concurrency is claimed.",
       "wiring": "apps/service/src/sending/process-delivery.ts#processSendDeliveryJob",
-      "evidence": "`apps/service/src/sending/process-delivery.test.ts:1136` test declaration/table plus its state assertions; production wiring named above was traced from the imported symbol into its caller.",
+      "evidence": "Final identity `b2395af4370aa45b34450d37bb3de6def7f86d575146bf2c6b8ad3379e8e8331`, `processSendDeliveryJob treats a 'mixed retryable typed and untyped fai…' as terminal ambiguity without resending`, in `apps/service/src/sending/process-delivery.test.ts` is the source assertion for this record: A Cause containing retryable typed Fail plus untyped Fail is classified from all reasons as terminal ambiguity; second cycle cannot claim/resend and all provider sentinels are excluded. Production wiring named above was traced from the imported symbol into its caller.",
       "rationale": "Added as the production worker regression for the prior first-reason retry bug; pure classifier rows cannot prove durable no-resend state."
     },
     {
@@ -6098,7 +6100,7 @@
       "boundary": "Production queue runner and delivery processor over migrated in-memory SQLite, TestClock, and an injected transport/config layer.",
       "limitation": "The Cause/throw is injected after a fake dispatch; durable no-resend state is real SQLite, but no live provider or killed-process concurrency is claimed.",
       "wiring": "apps/service/src/sending/process-delivery.ts#processSendDeliveryJob",
-      "evidence": "`apps/service/src/sending/process-delivery.test.ts:1136` test declaration/table plus its state assertions; production wiring named above was traced from the imported symbol into its caller.",
+      "evidence": "Final identity `02d68f38051d39e5e1336ad1e6c282ccc76e12383116d5cf03d7a4c787370c6b`, `processSendDeliveryJob treats a 'synchronous adapter throw' as terminal ambiguity without resending`, in `apps/service/src/sending/process-delivery.test.ts` is the source assertion for this record: A synchronous throw after recording dispatch is suspended into Cause handling; two worker cycles prove exactly one dispatch, terminal ambiguous attempt/delivery, succeeded job/completed mailing, and no sentinel in formatted logs or persistence. Production wiring named above was traced from the imported symbol into its caller.",
       "rationale": "Added after review found synchronous transport evaluation escaped Cause handling; this worker row proves terminal persistence and no redispatch."
     },
     {
@@ -7488,17 +7490,6 @@
       "rationale": "Strong rollback and orphan-prevention counterpart to the creation-first case."
     },
     {
-      "id": "42cdd7b24f6e57f4ca614ad941f9b9497db24f47ad4c9bc07a1e970806564f71",
-      "operation": "addition",
-      "to": ["42cdd7b24f6e57f4ca614ad941f9b9497db24f47ad4c9bc07a1e970806564f71"],
-      "invariant": "Migration 0009 promotes only provider-proven latest ambiguity, preserves unrelated simulator failure history, repairs only qualifying suppressions, and preserves constraints, cascades, timestamps, queue history, and required indexes across UP, DOWN, and re-UP.",
-      "boundary": "The real Bun migration CLI and production SQL run against a temporary file-backed SQLite database through UP, DOWN, seeded pre-0009 data, UP, DOWN, and re-UP.",
-      "limitation": "The old schema is produced by the current DOWN migration rather than an archived production snapshot. The test does not interrupt a migration mid-transaction, introduce concurrent connections, or assess large-table migration time.",
-      "wiring": "apps/service/src/db/migrations/sql/0009_delivery_ambiguity_and_suppression_safety.sql#up-down",
-      "evidence": "apps/service/src/db/migrate.integration.test.ts:314-684 runs the real Bun migration CLI on file-backed SQLite, verifies exact/nonmatching conversion histories and suppression provenance, checks foreign_key_check/cascades/repeated directions, and explicitly retains jobs_delivery_id_idx and the unique delivery index after each rebuild and after rolling back 0008.",
-      "rationale": "High-value destructive migration safety proof. Strengthened after independent review to cover unrelated pre-existing sent-delivery simulator history and the nonunique job lookup index; the historical schema still comes from the migration's current DOWN path."
-    },
-    {
       "id": "7e44e08ad7c57ab288cb99666cfb8193ba18f499a3249b7a61fcc45e629149aa",
       "operation": "addition",
       "to": ["7e44e08ad7c57ab288cb99666cfb8193ba18f499a3249b7a61fcc45e629149aa"],
@@ -7572,7 +7563,7 @@
       "boundary": "The full queue runner and delivery processor use migrated in-memory SQLite; an injected transport mutates the database during dispatch before returning a message identifier.",
       "limitation": "Creating a newer attempt inside transport is deliberately artificial. The test stops with a queued job and sending delivery and does not run the next reconciliation cycle, so eventual recovery of this corruption is unproven.",
       "wiring": "apps/service/src/sending/process-delivery.ts#processSendDeliveryJob",
-      "evidence": "apps/service/src/sending/process-delivery.test.ts:541-603 inserts attempt 2 from the transport, then asserts one dispatch, runner failed=1/succeeded=0, queued job, sending delivery, and unchanged attempts. Post-dispatch DatabaseError propagation is at process-delivery.ts:160-179.",
+      "evidence": "Final identity `5fc5af43b0273d60394209ef7cd741e35601602759627201555b7c576fe433f2`, `processSendDeliveryJob fails the owned job instead of completing it on incompatible nonterminal read-back`, in `apps/service/src/sending/process-delivery.test.ts` inserts attempt 2 from the transport, then asserts one dispatch, runner failed=1/succeeded=0, queued job, sending delivery, and unchanged attempts; the production wiring named above propagates the post-dispatch DatabaseError.",
       "rationale": "Useful fail-closed coverage at the processor/queue boundary, but its synthetic state and missing follow-up cycle make it less representative than the real file-backed races."
     },
     {
@@ -7717,6 +7708,490 @@
       "wiring": "apps/service/src/ses/event-schema.ts#decodeSesEvent",
       "evidence": "apps/service/src/ses/event-schema.test.ts:46-65 exercises the complainedRecipients length predicate and asserts SesOperationsRetryablePayloadError.",
       "rationale": "High-value complaint-specific safety branch; the analogous Bounce assertion cannot detect field-specific drift."
+    },
+    {
+      "id": "addition-5b006523159f",
+      "operation": "addition",
+      "to": ["5b006523159ff984e98934246e77901b9d5b865d5ef48298359358064f6afefe"],
+      "invariant": "A real SES adapter rejection shaped as ServiceUnavailableException plus HTTP 503 dispatches once, stores one ambiguous attempt/delivery, completes the job and mailing, and leaves the next due worker cycle with zero claims and no second sender call.",
+      "boundary": "The production queue runner, delivery processor, SES adapter, migrated in-memory SQLite, and Effect TestClock run together; only the SES sender is injected.",
+      "limitation": "The two cycles prove local durable no-resend behavior for this classified rejection, but do not reproduce live SES acceptance timing, a killed process, multi-host workers, or external AWS networking.",
+      "wiring": "apps/service/src/sending/process-delivery.ts#processSendDeliveryJob",
+      "evidence": "apps/service/src/sending/process-delivery.test.ts asserts sender calls 1→1, one ambiguous attempt, ambiguous delivery, succeeded job, completed mailing, and second-cycle claimed/failed/succeeded all zero; final identity 5b006523159ff984e98934246e77901b9d5b865d5ef48298359358064f6afefe.",
+      "rationale": "Adds the end-to-end classifier-to-queue regression required to show that a potentially post-acceptance 503 cannot be automatically dispatched twice."
+    },
+    {
+      "id": "addition-4639fbfe9e97",
+      "operation": "addition",
+      "to": ["4639fbfe9e9799a2e3aa778bdd772c476dfaa65c8ab2f35e5c4c62228c3f7a33"],
+      "invariant": "Generic AWS metadata HTTP 500 is terminal ambiguous within the bounded 500–599 range.",
+      "boundary": "The production `classifySesError` function receives a locally constructed Error carrying the named AWS-style name, code, and/or metadata fields; no network call or queue mutation occurs.",
+      "limitation": "This row establishes classification and precedence for its exact shape only; live SES acceptance timing and provider/network execution are outside the local matrix.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError/makeSesEmailTransport",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts the exact resulting kind for final identity 4639fbfe9e9799a2e3aa778bdd772c476dfaa65c8ab2f35e5c4c62228c3f7a33; parameter interpolation leaves a unique reporter name.",
+      "rationale": "Adds boundary/value coverage for HTTP 500; together the 500, 503, and 599 rows pin both ends and an operational service-unavailable value."
+    },
+    {
+      "id": "addition-f0485e9da650",
+      "operation": "addition",
+      "to": ["f0485e9da6505829db732d10105d661948d2c1760e6117325bb61c706c3b6fd0"],
+      "invariant": "Generic AWS metadata HTTP 599 is terminal ambiguous within the bounded 500–599 range.",
+      "boundary": "The production `classifySesError` function receives a locally constructed Error carrying the named AWS-style name, code, and/or metadata fields; no network call or queue mutation occurs.",
+      "limitation": "This row establishes classification and precedence for its exact shape only; live SES acceptance timing and provider/network execution are outside the local matrix.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError/makeSesEmailTransport",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts the exact resulting kind for final identity f0485e9da6505829db732d10105d661948d2c1760e6117325bb61c706c3b6fd0; parameter interpolation leaves a unique reporter name.",
+      "rationale": "Adds boundary/value coverage for HTTP 599; together the 500, 503, and 599 rows pin both ends and an operational service-unavailable value."
+    },
+    {
+      "id": "addition-f4e5996aa285",
+      "operation": "addition",
+      "to": ["f4e5996aa285e353315082b80282b984cff35ce34d06adb1f1d76ead43b7d683"],
+      "invariant": "Provider code `InternalFailure` is terminal ambiguous, so an internal/service response cannot be mistaken for a proven pre-acceptance refusal.",
+      "boundary": "The production `classifySesError` function receives a locally constructed Error carrying the named AWS-style name, code, and/or metadata fields; no network call or queue mutation occurs.",
+      "limitation": "This row establishes classification and precedence for its exact shape only; live SES acceptance timing and provider/network execution are outside the local matrix.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError/makeSesEmailTransport",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts the exact resulting kind for final identity f4e5996aa285e353315082b80282b984cff35ce34d06adb1f1d76ead43b7d683; parameter interpolation leaves a unique reporter name.",
+      "rationale": "Adds the code-encoded `InternalFailure` provider shape; the paired encoding has a separate stable identity so name/code extraction cannot silently diverge."
+    },
+    {
+      "id": "addition-b0c72552d610",
+      "operation": "addition",
+      "to": ["b0c72552d6108d1fe2c051ce0778c049637343d9593a428b7c15634a3cf0077b"],
+      "invariant": "Provider code `InternalServerError` is terminal ambiguous, so an internal/service response cannot be mistaken for a proven pre-acceptance refusal.",
+      "boundary": "The production `classifySesError` function receives a locally constructed Error carrying the named AWS-style name, code, and/or metadata fields; no network call or queue mutation occurs.",
+      "limitation": "This row establishes classification and precedence for its exact shape only; live SES acceptance timing and provider/network execution are outside the local matrix.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError/makeSesEmailTransport",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts the exact resulting kind for final identity b0c72552d6108d1fe2c051ce0778c049637343d9593a428b7c15634a3cf0077b; parameter interpolation leaves a unique reporter name.",
+      "rationale": "Adds the code-encoded `InternalServerError` provider shape; the paired encoding has a separate stable identity so name/code extraction cannot silently diverge."
+    },
+    {
+      "id": "addition-5635ff05a93b",
+      "operation": "addition",
+      "to": ["5635ff05a93bb23ca79c5ef644c4af703b74ba323fb8caf9b6f517391080c25a"],
+      "invariant": "Provider code `ServiceUnavailable` is terminal ambiguous, so an internal/service response cannot be mistaken for a proven pre-acceptance refusal.",
+      "boundary": "The production `classifySesError` function receives a locally constructed Error carrying the named AWS-style name, code, and/or metadata fields; no network call or queue mutation occurs.",
+      "limitation": "This row establishes classification and precedence for its exact shape only; live SES acceptance timing and provider/network execution are outside the local matrix.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError/makeSesEmailTransport",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts the exact resulting kind for final identity 5635ff05a93bb23ca79c5ef644c4af703b74ba323fb8caf9b6f517391080c25a; parameter interpolation leaves a unique reporter name.",
+      "rationale": "Adds the code-encoded `ServiceUnavailable` provider shape; the paired encoding has a separate stable identity so name/code extraction cannot silently diverge."
+    },
+    {
+      "id": "addition-8938515cc51e",
+      "operation": "addition",
+      "to": ["8938515cc51e7c5c766af23f582c5984617039a37baae7258edaa2dca97baf1d"],
+      "invariant": "Provider code `ServiceUnavailableException` is terminal ambiguous, so an internal/service response cannot be mistaken for a proven pre-acceptance refusal.",
+      "boundary": "The production `classifySesError` function receives a locally constructed Error carrying the named AWS-style name, code, and/or metadata fields; no network call or queue mutation occurs.",
+      "limitation": "This row establishes classification and precedence for its exact shape only; live SES acceptance timing and provider/network execution are outside the local matrix.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError/makeSesEmailTransport",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts the exact resulting kind for final identity 8938515cc51e7c5c766af23f582c5984617039a37baae7258edaa2dca97baf1d; parameter interpolation leaves a unique reporter name.",
+      "rationale": "Adds the code-encoded `ServiceUnavailableException` provider shape; the paired encoding has a separate stable identity so name/code extraction cannot silently diverge."
+    },
+    {
+      "id": "addition-4ae2e00b1ffd",
+      "operation": "addition",
+      "to": ["4ae2e00b1ffdfaabe4bdae0e6ed34a9557f0e800f5cdc2a841805d5c8adc1308"],
+      "invariant": "Provider name `InternalFailure` is terminal ambiguous, so an internal/service response cannot be mistaken for a proven pre-acceptance refusal.",
+      "boundary": "The production `classifySesError` function receives a locally constructed Error carrying the named AWS-style name, code, and/or metadata fields; no network call or queue mutation occurs.",
+      "limitation": "This row establishes classification and precedence for its exact shape only; live SES acceptance timing and provider/network execution are outside the local matrix.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError/makeSesEmailTransport",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts the exact resulting kind for final identity 4ae2e00b1ffdfaabe4bdae0e6ed34a9557f0e800f5cdc2a841805d5c8adc1308; parameter interpolation leaves a unique reporter name.",
+      "rationale": "Adds the name-encoded `InternalFailure` provider shape; the paired encoding has a separate stable identity so name/code extraction cannot silently diverge."
+    },
+    {
+      "id": "addition-3c0845607895",
+      "operation": "addition",
+      "to": ["3c08456078952086ac1a8665508208e1bdf162d1b0c854ffc6e673ef6be62d11"],
+      "invariant": "Provider name `InternalServerError` is terminal ambiguous, so an internal/service response cannot be mistaken for a proven pre-acceptance refusal.",
+      "boundary": "The production `classifySesError` function receives a locally constructed Error carrying the named AWS-style name, code, and/or metadata fields; no network call or queue mutation occurs.",
+      "limitation": "This row establishes classification and precedence for its exact shape only; live SES acceptance timing and provider/network execution are outside the local matrix.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError/makeSesEmailTransport",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts the exact resulting kind for final identity 3c08456078952086ac1a8665508208e1bdf162d1b0c854ffc6e673ef6be62d11; parameter interpolation leaves a unique reporter name.",
+      "rationale": "Adds the name-encoded `InternalServerError` provider shape; the paired encoding has a separate stable identity so name/code extraction cannot silently diverge."
+    },
+    {
+      "id": "addition-6f35573000a0",
+      "operation": "addition",
+      "to": ["6f35573000a00dca5a80a675c59a653fa35b7ab9bfba32c67532cbea174269ea"],
+      "invariant": "Provider name `ServiceUnavailable` is terminal ambiguous, so an internal/service response cannot be mistaken for a proven pre-acceptance refusal.",
+      "boundary": "The production `classifySesError` function receives a locally constructed Error carrying the named AWS-style name, code, and/or metadata fields; no network call or queue mutation occurs.",
+      "limitation": "This row establishes classification and precedence for its exact shape only; live SES acceptance timing and provider/network execution are outside the local matrix.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError/makeSesEmailTransport",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts the exact resulting kind for final identity 6f35573000a00dca5a80a675c59a653fa35b7ab9bfba32c67532cbea174269ea; parameter interpolation leaves a unique reporter name.",
+      "rationale": "Adds the name-encoded `ServiceUnavailable` provider shape; the paired encoding has a separate stable identity so name/code extraction cannot silently diverge."
+    },
+    {
+      "id": "addition-2c05c4740192",
+      "operation": "addition",
+      "to": ["2c05c4740192cd3638739e71b9e3a29e4799538ddd4bf084f7657a6083bd25c8"],
+      "invariant": "Provider name `ServiceUnavailableException` is terminal ambiguous, so an internal/service response cannot be mistaken for a proven pre-acceptance refusal.",
+      "boundary": "The production `classifySesError` function receives a locally constructed Error carrying the named AWS-style name, code, and/or metadata fields; no network call or queue mutation occurs.",
+      "limitation": "This row establishes classification and precedence for its exact shape only; live SES acceptance timing and provider/network execution are outside the local matrix.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError/makeSesEmailTransport",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts the exact resulting kind for final identity 2c05c4740192cd3638739e71b9e3a29e4799538ddd4bf084f7657a6083bd25c8; parameter interpolation leaves a unique reporter name.",
+      "rationale": "Adds the name-encoded `ServiceUnavailableException` provider shape; the paired encoding has a separate stable identity so name/code extraction cannot silently diverge."
+    },
+    {
+      "id": "addition-e3b8455d0eff",
+      "operation": "addition",
+      "to": ["e3b8455d0efffb7f8b5f67b088ba32842cb5bde3485ccef0bf954c4298f4366e"],
+      "invariant": "An unrecognized provider name takes the conservative terminal-ambiguous fallback instead of automatic retry.",
+      "boundary": "The production `classifySesError` function receives a locally constructed Error carrying the named AWS-style name, code, and/or metadata fields; no network call or queue mutation occurs.",
+      "limitation": "This row establishes classification and precedence for its exact shape only; live SES acceptance timing and provider/network execution are outside the local matrix.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError/makeSesEmailTransport",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts the exact resulting kind for final identity e3b8455d0efffb7f8b5f67b088ba32842cb5bde3485ccef0bf954c4298f4366e; parameter interpolation leaves a unique reporter name.",
+      "rationale": "Preserves fail-safe handling for provider shapes not enumerated in the known semantic sets."
+    },
+    {
+      "id": "addition-5c0d913c7889",
+      "operation": "addition",
+      "to": ["5c0d913c78898c79df059c12f1d6f80460a86b89f8a7893ce17d0f20f1217f8f"],
+      "invariant": "Named SES rejection `BadRequestException` remains permanent rather than retryable or ambiguous.",
+      "boundary": "The production `classifySesError` function receives a locally constructed Error carrying the named AWS-style name, code, and/or metadata fields; no network call or queue mutation occurs.",
+      "limitation": "This row establishes classification and precedence for its exact shape only; live SES acceptance timing and provider/network execution are outside the local matrix.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError/makeSesEmailTransport",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts the exact resulting kind for final identity 5c0d913c78898c79df059c12f1d6f80460a86b89f8a7893ce17d0f20f1217f8f; parameter interpolation leaves a unique reporter name.",
+      "rationale": "Preserves the explicit permanent-provider policy for `BadRequestException` while 5xx and low-level network precedence changed."
+    },
+    {
+      "id": "addition-56fb603dbe91",
+      "operation": "addition",
+      "to": ["56fb603dbe9171e68272aa2704deb5db42440ecff11b6228d742564f5b433887"],
+      "invariant": "Named SES rejection `MessageRejected` remains permanent rather than retryable or ambiguous.",
+      "boundary": "The production `classifySesError` function receives a locally constructed Error carrying the named AWS-style name, code, and/or metadata fields; no network call or queue mutation occurs.",
+      "limitation": "This row establishes classification and precedence for its exact shape only; live SES acceptance timing and provider/network execution are outside the local matrix.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError/makeSesEmailTransport",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts the exact resulting kind for final identity 56fb603dbe9171e68272aa2704deb5db42440ecff11b6228d742564f5b433887; parameter interpolation leaves a unique reporter name.",
+      "rationale": "Preserves the explicit permanent-provider policy for `MessageRejected` while 5xx and low-level network precedence changed."
+    },
+    {
+      "id": "addition-0f4856ffedcf",
+      "operation": "addition",
+      "to": ["0f4856ffedcfc8388c013eb7e0aff5bb3bf68a2aedea1a4d3cef1cb4f93c10c4"],
+      "invariant": "Pre-connect code `EAI_AGAIN` remains retryable because the connection/DNS failure establishes non-acceptance.",
+      "boundary": "The production `classifySesError` function receives a locally constructed Error carrying the named AWS-style name, code, and/or metadata fields; no network call or queue mutation occurs.",
+      "limitation": "This row establishes classification and precedence for its exact shape only; live SES acceptance timing and provider/network execution are outside the local matrix.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError/makeSesEmailTransport",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts the exact resulting kind for final identity 0f4856ffedcfc8388c013eb7e0aff5bb3bf68a2aedea1a4d3cef1cb4f93c10c4; parameter interpolation leaves a unique reporter name.",
+      "rationale": "Protects the safe-retry code representation of `EAI_AGAIN` from being swallowed by the conservative ambiguous fallback."
+    },
+    {
+      "id": "addition-8c24fe904477",
+      "operation": "addition",
+      "to": ["8c24fe904477459526de9366f5056e76fcd237105a4beceb83aed3fbfeeeeb3a"],
+      "invariant": "Pre-connect code `ECONNREFUSED` remains retryable because the connection/DNS failure establishes non-acceptance.",
+      "boundary": "The production `classifySesError` function receives a locally constructed Error carrying the named AWS-style name, code, and/or metadata fields; no network call or queue mutation occurs.",
+      "limitation": "This row establishes classification and precedence for its exact shape only; live SES acceptance timing and provider/network execution are outside the local matrix.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError/makeSesEmailTransport",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts the exact resulting kind for final identity 8c24fe904477459526de9366f5056e76fcd237105a4beceb83aed3fbfeeeeb3a; parameter interpolation leaves a unique reporter name.",
+      "rationale": "Protects the safe-retry code representation of `ECONNREFUSED` from being swallowed by the conservative ambiguous fallback."
+    },
+    {
+      "id": "addition-94a22032cf30",
+      "operation": "addition",
+      "to": ["94a22032cf30a1b68661a5363d6f1a269457b3365aa68c44912c778d350b417e"],
+      "invariant": "Pre-connect code `ENETUNREACH` remains retryable because the connection/DNS failure establishes non-acceptance.",
+      "boundary": "The production `classifySesError` function receives a locally constructed Error carrying the named AWS-style name, code, and/or metadata fields; no network call or queue mutation occurs.",
+      "limitation": "This row establishes classification and precedence for its exact shape only; live SES acceptance timing and provider/network execution are outside the local matrix.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError/makeSesEmailTransport",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts the exact resulting kind for final identity 94a22032cf30a1b68661a5363d6f1a269457b3365aa68c44912c778d350b417e; parameter interpolation leaves a unique reporter name.",
+      "rationale": "Protects the safe-retry code representation of `ENETUNREACH` from being swallowed by the conservative ambiguous fallback."
+    },
+    {
+      "id": "addition-e89f9171ce6c",
+      "operation": "addition",
+      "to": ["e89f9171ce6c4bc1fdf7085df8761aac1afa190337672e92f6a557146ea5c327"],
+      "invariant": "Pre-connect code `ENOTFOUND` remains retryable because the connection/DNS failure establishes non-acceptance.",
+      "boundary": "The production `classifySesError` function receives a locally constructed Error carrying the named AWS-style name, code, and/or metadata fields; no network call or queue mutation occurs.",
+      "limitation": "This row establishes classification and precedence for its exact shape only; live SES acceptance timing and provider/network execution are outside the local matrix.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError/makeSesEmailTransport",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts the exact resulting kind for final identity e89f9171ce6c4bc1fdf7085df8761aac1afa190337672e92f6a557146ea5c327; parameter interpolation leaves a unique reporter name.",
+      "rationale": "Protects the safe-retry code representation of `ENOTFOUND` from being swallowed by the conservative ambiguous fallback."
+    },
+    {
+      "id": "addition-dcf1ac1af038",
+      "operation": "addition",
+      "to": ["dcf1ac1af03838b79c389d5478155363f790ebb867f6ae5f29659d813fa16279"],
+      "invariant": "Pre-connect name `EAI_AGAIN` remains retryable because the connection/DNS failure establishes non-acceptance.",
+      "boundary": "The production `classifySesError` function receives a locally constructed Error carrying the named AWS-style name, code, and/or metadata fields; no network call or queue mutation occurs.",
+      "limitation": "This row establishes classification and precedence for its exact shape only; live SES acceptance timing and provider/network execution are outside the local matrix.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError/makeSesEmailTransport",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts the exact resulting kind for final identity dcf1ac1af03838b79c389d5478155363f790ebb867f6ae5f29659d813fa16279; parameter interpolation leaves a unique reporter name.",
+      "rationale": "Protects the safe-retry name representation of `EAI_AGAIN` from being swallowed by the conservative ambiguous fallback."
+    },
+    {
+      "id": "addition-4be0d0755b68",
+      "operation": "addition",
+      "to": ["4be0d0755b681855879d029bcdce0cb5e5a88ae696505ffe06b5c498b398f130"],
+      "invariant": "Pre-connect name `ECONNREFUSED` remains retryable because the connection/DNS failure establishes non-acceptance.",
+      "boundary": "The production `classifySesError` function receives a locally constructed Error carrying the named AWS-style name, code, and/or metadata fields; no network call or queue mutation occurs.",
+      "limitation": "This row establishes classification and precedence for its exact shape only; live SES acceptance timing and provider/network execution are outside the local matrix.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError/makeSesEmailTransport",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts the exact resulting kind for final identity 4be0d0755b681855879d029bcdce0cb5e5a88ae696505ffe06b5c498b398f130; parameter interpolation leaves a unique reporter name.",
+      "rationale": "Protects the safe-retry name representation of `ECONNREFUSED` from being swallowed by the conservative ambiguous fallback."
+    },
+    {
+      "id": "addition-17a4c547c5db",
+      "operation": "addition",
+      "to": ["17a4c547c5db80291ba9187373406618bfde01e08944e52eac7800d0d4276738"],
+      "invariant": "Pre-connect name `ENETUNREACH` remains retryable because the connection/DNS failure establishes non-acceptance.",
+      "boundary": "The production `classifySesError` function receives a locally constructed Error carrying the named AWS-style name, code, and/or metadata fields; no network call or queue mutation occurs.",
+      "limitation": "This row establishes classification and precedence for its exact shape only; live SES acceptance timing and provider/network execution are outside the local matrix.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError/makeSesEmailTransport",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts the exact resulting kind for final identity 17a4c547c5db80291ba9187373406618bfde01e08944e52eac7800d0d4276738; parameter interpolation leaves a unique reporter name.",
+      "rationale": "Protects the safe-retry name representation of `ENETUNREACH` from being swallowed by the conservative ambiguous fallback."
+    },
+    {
+      "id": "addition-77390745a4f3",
+      "operation": "addition",
+      "to": ["77390745a4f3547c7e111d51ff12d5155b216709df02523d8631c44f33e0c005"],
+      "invariant": "Pre-connect name `ENOTFOUND` remains retryable because the connection/DNS failure establishes non-acceptance.",
+      "boundary": "The production `classifySesError` function receives a locally constructed Error carrying the named AWS-style name, code, and/or metadata fields; no network call or queue mutation occurs.",
+      "limitation": "This row establishes classification and precedence for its exact shape only; live SES acceptance timing and provider/network execution are outside the local matrix.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError/makeSesEmailTransport",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts the exact resulting kind for final identity 77390745a4f3547c7e111d51ff12d5155b216709df02523d8631c44f33e0c005; parameter interpolation leaves a unique reporter name.",
+      "rationale": "Protects the safe-retry name representation of `ENOTFOUND` from being swallowed by the conservative ambiguous fallback."
+    },
+    {
+      "id": "addition-09eb61c312e3",
+      "operation": "addition",
+      "to": ["09eb61c312e36914366943abc5820e151027cdfba78979201bc3a497a5deb884"],
+      "invariant": "Provider refusal code `LimitExceededException` is retryable because the quota/throttle response establishes that SES declined acceptance.",
+      "boundary": "The production `classifySesError` function receives a locally constructed Error carrying the named AWS-style name, code, and/or metadata fields; no network call or queue mutation occurs.",
+      "limitation": "This row establishes classification and precedence for its exact shape only; live SES acceptance timing and provider/network execution are outside the local matrix.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError/makeSesEmailTransport",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts the exact resulting kind for final identity 09eb61c312e36914366943abc5820e151027cdfba78979201bc3a497a5deb884; parameter interpolation leaves a unique reporter name.",
+      "rationale": "Adds the code-encoded `LimitExceededException` refusal branch and prevents conservative fallback from suppressing a safe retry."
+    },
+    {
+      "id": "addition-ea676a82de50",
+      "operation": "addition",
+      "to": ["ea676a82de50e1ea74681a02ad7d10dceaab2ed6ff8e0603715ec27488cd13e5"],
+      "invariant": "Provider refusal code `ThrottlingException` is retryable because the quota/throttle response establishes that SES declined acceptance.",
+      "boundary": "The production `classifySesError` function receives a locally constructed Error carrying the named AWS-style name, code, and/or metadata fields; no network call or queue mutation occurs.",
+      "limitation": "This row establishes classification and precedence for its exact shape only; live SES acceptance timing and provider/network execution are outside the local matrix.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError/makeSesEmailTransport",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts the exact resulting kind for final identity ea676a82de50e1ea74681a02ad7d10dceaab2ed6ff8e0603715ec27488cd13e5; parameter interpolation leaves a unique reporter name.",
+      "rationale": "Adds the code-encoded `ThrottlingException` refusal branch and prevents conservative fallback from suppressing a safe retry."
+    },
+    {
+      "id": "addition-6f5c5ccc70e3",
+      "operation": "addition",
+      "to": ["6f5c5ccc70e336b224eef03b2f771289f081fe6104476f7752fb0004676d2792"],
+      "invariant": "Provider refusal code `TooManyRequestsException` is retryable because the quota/throttle response establishes that SES declined acceptance.",
+      "boundary": "The production `classifySesError` function receives a locally constructed Error carrying the named AWS-style name, code, and/or metadata fields; no network call or queue mutation occurs.",
+      "limitation": "This row establishes classification and precedence for its exact shape only; live SES acceptance timing and provider/network execution are outside the local matrix.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError/makeSesEmailTransport",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts the exact resulting kind for final identity 6f5c5ccc70e336b224eef03b2f771289f081fe6104476f7752fb0004676d2792; parameter interpolation leaves a unique reporter name.",
+      "rationale": "Adds the code-encoded `TooManyRequestsException` refusal branch and prevents conservative fallback from suppressing a safe retry."
+    },
+    {
+      "id": "addition-f63e80132b73",
+      "operation": "addition",
+      "to": ["f63e80132b7395016a7a2f6cdf4fdcb78b04aad21a21c90cfff295099709cd64"],
+      "invariant": "Provider refusal name `LimitExceededException` is retryable because the quota/throttle response establishes that SES declined acceptance.",
+      "boundary": "The production `classifySesError` function receives a locally constructed Error carrying the named AWS-style name, code, and/or metadata fields; no network call or queue mutation occurs.",
+      "limitation": "This row establishes classification and precedence for its exact shape only; live SES acceptance timing and provider/network execution are outside the local matrix.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError/makeSesEmailTransport",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts the exact resulting kind for final identity f63e80132b7395016a7a2f6cdf4fdcb78b04aad21a21c90cfff295099709cd64; parameter interpolation leaves a unique reporter name.",
+      "rationale": "Adds the name-encoded `LimitExceededException` refusal branch and prevents conservative fallback from suppressing a safe retry."
+    },
+    {
+      "id": "addition-e65bd41dc1f0",
+      "operation": "addition",
+      "to": ["e65bd41dc1f05450e37bba725a4453c44ec75195b037294db8e877ef456b6c37"],
+      "invariant": "Provider refusal name `ThrottlingException` is retryable because the quota/throttle response establishes that SES declined acceptance.",
+      "boundary": "The production `classifySesError` function receives a locally constructed Error carrying the named AWS-style name, code, and/or metadata fields; no network call or queue mutation occurs.",
+      "limitation": "This row establishes classification and precedence for its exact shape only; live SES acceptance timing and provider/network execution are outside the local matrix.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError/makeSesEmailTransport",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts the exact resulting kind for final identity e65bd41dc1f05450e37bba725a4453c44ec75195b037294db8e877ef456b6c37; parameter interpolation leaves a unique reporter name.",
+      "rationale": "Adds the name-encoded `ThrottlingException` refusal branch and prevents conservative fallback from suppressing a safe retry."
+    },
+    {
+      "id": "addition-ba5b612b82c0",
+      "operation": "addition",
+      "to": ["ba5b612b82c09f70a514c93330bc57a2acff20aa366933af02bc3941ad44d521"],
+      "invariant": "Provider refusal name `TooManyRequestsException` is retryable because the quota/throttle response establishes that SES declined acceptance.",
+      "boundary": "The production `classifySesError` function receives a locally constructed Error carrying the named AWS-style name, code, and/or metadata fields; no network call or queue mutation occurs.",
+      "limitation": "This row establishes classification and precedence for its exact shape only; live SES acceptance timing and provider/network execution are outside the local matrix.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError/makeSesEmailTransport",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts the exact resulting kind for final identity ba5b612b82c09f70a514c93330bc57a2acff20aa366933af02bc3941ad44d521; parameter interpolation leaves a unique reporter name.",
+      "rationale": "Adds the name-encoded `TooManyRequestsException` refusal branch and prevents conservative fallback from suppressing a safe retry."
+    },
+    {
+      "id": "addition-2a69ade4deb1",
+      "operation": "addition",
+      "to": ["2a69ade4deb1b1eb8ca744c76a3f5dfdfca526bd8b015d6dee4ccbe9b1f227f4"],
+      "invariant": "Timeout/abort shape `AbortError` remains terminal ambiguous because completion after dispatch is unknown.",
+      "boundary": "The production `classifySesError` function receives a locally constructed Error carrying the named AWS-style name, code, and/or metadata fields; no network call or queue mutation occurs.",
+      "limitation": "This row establishes classification and precedence for its exact shape only; live SES acceptance timing and provider/network execution are outside the local matrix.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError/makeSesEmailTransport",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts the exact resulting kind for final identity 2a69ade4deb1b1eb8ca744c76a3f5dfdfca526bd8b015d6dee4ccbe9b1f227f4; parameter interpolation leaves a unique reporter name.",
+      "rationale": "Preserves the existing timeout safety policy for the explicit `AbortError` spelling after classifier precedence was reorganized."
+    },
+    {
+      "id": "addition-7d4bf6f9fd27",
+      "operation": "addition",
+      "to": ["7d4bf6f9fd27f82877cb414ede293c690ea8bdc1c7506771436df261451ff19e"],
+      "invariant": "Timeout/abort shape `RequestTimeout` remains terminal ambiguous because completion after dispatch is unknown.",
+      "boundary": "The production `classifySesError` function receives a locally constructed Error carrying the named AWS-style name, code, and/or metadata fields; no network call or queue mutation occurs.",
+      "limitation": "This row establishes classification and precedence for its exact shape only; live SES acceptance timing and provider/network execution are outside the local matrix.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError/makeSesEmailTransport",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts the exact resulting kind for final identity 7d4bf6f9fd27f82877cb414ede293c690ea8bdc1c7506771436df261451ff19e; parameter interpolation leaves a unique reporter name.",
+      "rationale": "Preserves the existing timeout safety policy for the explicit `RequestTimeout` spelling after classifier precedence was reorganized."
+    },
+    {
+      "id": "addition-3bb74eacf005",
+      "operation": "addition",
+      "to": ["3bb74eacf0051db498689f10974e5998c71a2502c15a6b0619fa8c5f10a6e126"],
+      "invariant": "Timeout/abort shape `TimeoutError` remains terminal ambiguous because completion after dispatch is unknown.",
+      "boundary": "The production `classifySesError` function receives a locally constructed Error carrying the named AWS-style name, code, and/or metadata fields; no network call or queue mutation occurs.",
+      "limitation": "This row establishes classification and precedence for its exact shape only; live SES acceptance timing and provider/network execution are outside the local matrix.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError/makeSesEmailTransport",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts the exact resulting kind for final identity 3bb74eacf0051db498689f10974e5998c71a2502c15a6b0619fa8c5f10a6e126; parameter interpolation leaves a unique reporter name.",
+      "rationale": "Preserves the existing timeout safety policy for the explicit `TimeoutError` spelling after classifier precedence was reorganized."
+    },
+    {
+      "id": "addition-6033ac1be3b2",
+      "operation": "addition",
+      "to": ["6033ac1be3b2e10b7df040e5cacb4a5c92161c9a6109a726e4d6c89751d343c3"],
+      "invariant": "Internal/service provider name `InternalFailure` stays ambiguous despite a conflicting ECONNREFUSED code.",
+      "boundary": "The production `classifySesError` function receives a locally constructed Error carrying the named AWS-style name, code, and/or metadata fields; no network call or queue mutation occurs.",
+      "limitation": "This row establishes classification and precedence for its exact shape only; live SES acceptance timing and provider/network execution are outside the local matrix.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError/makeSesEmailTransport",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts the exact resulting kind for final identity 6033ac1be3b2e10b7df040e5cacb4a5c92161c9a6109a726e4d6c89751d343c3; parameter interpolation leaves a unique reporter name.",
+      "rationale": "Adds a mixed-signal precedence case showing a generic network field cannot weaken the stronger `InternalFailure` provider signal."
+    },
+    {
+      "id": "addition-5ee0221e2997",
+      "operation": "addition",
+      "to": ["5ee0221e2997a681354dadd0f581c0ae26e6b7885b32b2a584c2cab0ab958ee3"],
+      "invariant": "Internal/service provider name `InternalServerError` stays ambiguous despite a conflicting ECONNREFUSED code.",
+      "boundary": "The production `classifySesError` function receives a locally constructed Error carrying the named AWS-style name, code, and/or metadata fields; no network call or queue mutation occurs.",
+      "limitation": "This row establishes classification and precedence for its exact shape only; live SES acceptance timing and provider/network execution are outside the local matrix.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError/makeSesEmailTransport",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts the exact resulting kind for final identity 5ee0221e2997a681354dadd0f581c0ae26e6b7885b32b2a584c2cab0ab958ee3; parameter interpolation leaves a unique reporter name.",
+      "rationale": "Adds a mixed-signal precedence case showing a generic network field cannot weaken the stronger `InternalServerError` provider signal."
+    },
+    {
+      "id": "addition-e4842f0edcdb",
+      "operation": "addition",
+      "to": ["e4842f0edcdb108b9a01236d2b32fa702da167e7e0b2c4f9f1678b65b5ec93c1"],
+      "invariant": "Internal/service provider name `ServiceUnavailable` stays ambiguous despite a conflicting ECONNREFUSED code.",
+      "boundary": "The production `classifySesError` function receives a locally constructed Error carrying the named AWS-style name, code, and/or metadata fields; no network call or queue mutation occurs.",
+      "limitation": "This row establishes classification and precedence for its exact shape only; live SES acceptance timing and provider/network execution are outside the local matrix.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError/makeSesEmailTransport",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts the exact resulting kind for final identity e4842f0edcdb108b9a01236d2b32fa702da167e7e0b2c4f9f1678b65b5ec93c1; parameter interpolation leaves a unique reporter name.",
+      "rationale": "Adds a mixed-signal precedence case showing a generic network field cannot weaken the stronger `ServiceUnavailable` provider signal."
+    },
+    {
+      "id": "addition-91ca713179ba",
+      "operation": "addition",
+      "to": ["91ca713179ba2ade4abc30452c0c76e312df23250362dce5faec0e6bf7d388f5"],
+      "invariant": "Internal/service provider name `ServiceUnavailableException` stays ambiguous despite a conflicting ECONNREFUSED code.",
+      "boundary": "The production `classifySesError` function receives a locally constructed Error carrying the named AWS-style name, code, and/or metadata fields; no network call or queue mutation occurs.",
+      "limitation": "This row establishes classification and precedence for its exact shape only; live SES acceptance timing and provider/network execution are outside the local matrix.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError/makeSesEmailTransport",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts the exact resulting kind for final identity 91ca713179ba2ade4abc30452c0c76e312df23250362dce5faec0e6bf7d388f5; parameter interpolation leaves a unique reporter name.",
+      "rationale": "Adds a mixed-signal precedence case showing a generic network field cannot weaken the stronger `ServiceUnavailableException` provider signal."
+    },
+    {
+      "id": "addition-2e2913419ffc",
+      "operation": "addition",
+      "to": ["2e2913419ffcf4ebfbe5cf4539552559c6e299e8f0bdcd89739748329753b218"],
+      "invariant": "Permanent provider semantics in 'BadRequestException + EAI_AGAIN + HTT…' win over the attached network and/or 5xx fields.",
+      "boundary": "The production `classifySesError` function receives a locally constructed Error carrying the named AWS-style name, code, and/or metadata fields; no network call or queue mutation occurs.",
+      "limitation": "This row establishes classification and precedence for its exact shape only; live SES acceptance timing and provider/network execution are outside the local matrix.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError/makeSesEmailTransport",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts the exact resulting kind for final identity 2e2913419ffcf4ebfbe5cf4539552559c6e299e8f0bdcd89739748329753b218; parameter interpolation leaves a unique reporter name.",
+      "rationale": "Adds the concrete conflicting-signal combination 'BadRequestException + EAI_AGAIN + HTT…', preventing generic transport metadata from converting a provider rejection into a retry."
+    },
+    {
+      "id": "addition-943380aa69af",
+      "operation": "addition",
+      "to": ["943380aa69af79899a67ad19f0a0ab87c7e951f66e08919fb2d1b8fafd18a642"],
+      "invariant": "Permanent provider semantics in 'BadRequestException + ECONNREFUSED' win over the attached network and/or 5xx fields.",
+      "boundary": "The production `classifySesError` function receives a locally constructed Error carrying the named AWS-style name, code, and/or metadata fields; no network call or queue mutation occurs.",
+      "limitation": "This row establishes classification and precedence for its exact shape only; live SES acceptance timing and provider/network execution are outside the local matrix.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError/makeSesEmailTransport",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts the exact resulting kind for final identity 943380aa69af79899a67ad19f0a0ab87c7e951f66e08919fb2d1b8fafd18a642; parameter interpolation leaves a unique reporter name.",
+      "rationale": "Adds the concrete conflicting-signal combination 'BadRequestException + ECONNREFUSED', preventing generic transport metadata from converting a provider rejection into a retry."
+    },
+    {
+      "id": "addition-5adab3b32c41",
+      "operation": "addition",
+      "to": ["5adab3b32c41eeb080eef2812e1ef9e6e39ef35de91e30d61b3cf0154c5ab867"],
+      "invariant": "Permanent provider semantics in 'MessageRejected + HTTP 503' win over the attached network and/or 5xx fields.",
+      "boundary": "The production `classifySesError` function receives a locally constructed Error carrying the named AWS-style name, code, and/or metadata fields; no network call or queue mutation occurs.",
+      "limitation": "This row establishes classification and precedence for its exact shape only; live SES acceptance timing and provider/network execution are outside the local matrix.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError/makeSesEmailTransport",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts the exact resulting kind for final identity 5adab3b32c41eeb080eef2812e1ef9e6e39ef35de91e30d61b3cf0154c5ab867; parameter interpolation leaves a unique reporter name.",
+      "rationale": "Adds the concrete conflicting-signal combination 'MessageRejected + HTTP 503', preventing generic transport metadata from converting a provider rejection into a retry."
+    },
+    {
+      "id": "addition-6dea5738f413",
+      "operation": "addition",
+      "to": ["6dea5738f4139faf36ee74f1b52a84fc196b06b684162ed8bf38617a846472d1"],
+      "invariant": "Out-of-range metadata HTTP 499 does not mask the explicit ECONNREFUSED pre-connect proof, which remains retryable.",
+      "boundary": "The production `classifySesError` function receives a locally constructed Error carrying the named AWS-style name, code, and/or metadata fields; no network call or queue mutation occurs.",
+      "limitation": "This row establishes classification and precedence for its exact shape only; live SES acceptance timing and provider/network execution are outside the local matrix.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError/makeSesEmailTransport",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts the exact resulting kind for final identity 6dea5738f4139faf36ee74f1b52a84fc196b06b684162ed8bf38617a846472d1; parameter interpolation leaves a unique reporter name.",
+      "rationale": "Pins the 499 control outside the ambiguous 500–599 interval and prevents an unbounded status predicate."
+    },
+    {
+      "id": "addition-2f7a7e6201bc",
+      "operation": "addition",
+      "to": ["2f7a7e6201bc39e537653787caaca4ad6c20ff9e8e71f243d75a27d14cf217fb"],
+      "invariant": "Out-of-range metadata HTTP 600 does not mask the explicit ECONNREFUSED pre-connect proof, which remains retryable.",
+      "boundary": "The production `classifySesError` function receives a locally constructed Error carrying the named AWS-style name, code, and/or metadata fields; no network call or queue mutation occurs.",
+      "limitation": "This row establishes classification and precedence for its exact shape only; live SES acceptance timing and provider/network execution are outside the local matrix.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError/makeSesEmailTransport",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts the exact resulting kind for final identity 2f7a7e6201bc39e537653787caaca4ad6c20ff9e8e71f243d75a27d14cf217fb; parameter interpolation leaves a unique reporter name.",
+      "rationale": "Pins the 600 control outside the ambiguous 500–599 interval and prevents an unbounded status predicate."
+    },
+    {
+      "id": "addition-083206134590",
+      "operation": "addition",
+      "to": ["0832061345903cd1b9771a9c86e383401a7d08805b54803b79384a9b7ce03343"],
+      "invariant": "Explicit provider refusal `LimitExceededException` remains retryable even when incidental metadata carries HTTP 503.",
+      "boundary": "The production `classifySesError` function receives a locally constructed Error carrying the named AWS-style name, code, and/or metadata fields; no network call or queue mutation occurs.",
+      "limitation": "This row establishes classification and precedence for its exact shape only; live SES acceptance timing and provider/network execution are outside the local matrix.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError/makeSesEmailTransport",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts the exact resulting kind for final identity 0832061345903cd1b9771a9c86e383401a7d08805b54803b79384a9b7ce03343; parameter interpolation leaves a unique reporter name.",
+      "rationale": "Pins semantic-refusal precedence over generic 5xx ambiguity for `LimitExceededException`, avoiding silent loss of safe quota/throttle retries."
+    },
+    {
+      "id": "addition-e9e4c1c0a475",
+      "operation": "addition",
+      "to": ["e9e4c1c0a475afce88430c2db5843d642d7a3272807c472eab826d775fa9db95"],
+      "invariant": "Explicit provider refusal `ThrottlingException` remains retryable even when incidental metadata carries HTTP 503.",
+      "boundary": "The production `classifySesError` function receives a locally constructed Error carrying the named AWS-style name, code, and/or metadata fields; no network call or queue mutation occurs.",
+      "limitation": "This row establishes classification and precedence for its exact shape only; live SES acceptance timing and provider/network execution are outside the local matrix.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError/makeSesEmailTransport",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts the exact resulting kind for final identity e9e4c1c0a475afce88430c2db5843d642d7a3272807c472eab826d775fa9db95; parameter interpolation leaves a unique reporter name.",
+      "rationale": "Pins semantic-refusal precedence over generic 5xx ambiguity for `ThrottlingException`, avoiding silent loss of safe quota/throttle retries."
+    },
+    {
+      "id": "addition-2816a3a2daab",
+      "operation": "addition",
+      "to": ["2816a3a2daab02319908d26bb586a921d8e5cf18c04ae8f264cd2c6f443751cd"],
+      "invariant": "Explicit provider refusal `TooManyRequestsException` remains retryable even when incidental metadata carries HTTP 503.",
+      "boundary": "The production `classifySesError` function receives a locally constructed Error carrying the named AWS-style name, code, and/or metadata fields; no network call or queue mutation occurs.",
+      "limitation": "This row establishes classification and precedence for its exact shape only; live SES acceptance timing and provider/network execution are outside the local matrix.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError/makeSesEmailTransport",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts the exact resulting kind for final identity 2816a3a2daab02319908d26bb586a921d8e5cf18c04ae8f264cd2c6f443751cd; parameter interpolation leaves a unique reporter name.",
+      "rationale": "Pins semantic-refusal precedence over generic 5xx ambiguity for `TooManyRequestsException`, avoiding silent loss of safe quota/throttle retries."
+    },
+    {
+      "id": "addition-663d5cff6875",
+      "operation": "addition",
+      "to": ["663d5cff6875a5cd418ddae52aa46889248d72fbb67a771d51116a5429b3fab4"],
+      "invariant": "An injected sender rejection carrying both `ServiceUnavailableException` and HTTP 503 exits `transport.send` as `EmailTransportError { kind: \"ambiguous\", operation: \"ses:send\" }`.",
+      "boundary": "The production SES adapter invokes an injected sender and maps its rejected promise through Effect; request construction is local and no AWS endpoint is contacted.",
+      "limitation": "This proves adapter error-channel behavior with an injected sender, not live SES acceptance timing, SDK network middleware, IAM, or durable queue state.",
+      "wiring": "apps/service/src/services/email-transport-ses.ts#classifySesError/makeSesEmailTransport",
+      "evidence": "apps/service/src/services/email-transport-ses.test.ts asserts the exact resulting kind for final identity 663d5cff6875a5cd418ddae52aa46889248d72fbb67a771d51116a5429b3fab4; parameter interpolation leaves a unique reporter name.",
+      "rationale": "Adds adapter-surface proof that classifier output is preserved through Effect error mapping, rather than relying only on the pure classifier matrix."
     }
   ],
   "reviewBatches": [
@@ -8161,6 +8636,67 @@
       ],
       "reviewRunIds": ["audit-final-review-service"],
       "residualLimits": "Local deterministic config, decoder, HTTP, and SQLite evidence; live-provider and deployment limits remain."
+    },
+    {
+      "reviewer": "R1 independent sending/durability milestone reviewer (w7:p1C)",
+      "date": "2026-07-14",
+      "artifact": ".progress/test-audit-review-batches/ses-sqlite-squash-r1-sending-durability.md",
+      "artifactSha256": "cb72c6ec38d0046d171c5e12c6bb6b25025fcae605b18f9812c6b782985e871d",
+      "workingReportSha256": "c53f38bbcd7d712bae0dfa7d6ccba0086671952a2629b8729f8fe9cd2e553c08",
+      "fullyRead": [
+        "apps/service/src/services/email-transport-ses.test.ts",
+        "apps/service/src/sending/process-delivery.test.ts",
+        "apps/service/src/services/database.test.ts",
+        "apps/service/src/testing/bun-fixtures.ts",
+        "apps/service/src/services/email-transport-ses.ts",
+        "apps/service/src/sending/process-delivery.ts",
+        "apps/service/src/queue/runner.ts",
+        "apps/service/src/services/database-bun.ts",
+        "apps/service/src/services/email-transport.ts",
+        "apps/service/src/services/database.ts",
+        "apps/service/src/errors.ts"
+      ],
+      "partiallyRead": [],
+      "skipped": [
+        "Command execution was intentionally unavailable to the read-only reviewer; worker/parent validation is separate evidence.",
+        "Live SES acceptance timing, physical power loss, hosted CI, and deployed infrastructure were not reproduced."
+      ],
+      "reviewRunIds": ["R1", "sending-durability-review-20260714-0f2b67", "w7:p1C"],
+      "residualLimits": "No material findings or fixes. Runtime pragma read-back is real local configuration evidence, not a physical power-loss experiment; SES failure timing is injected rather than live."
+    },
+    {
+      "reviewer": "R2 independent schema/migration reviewer, rounds 1–2 (w7:p1E)",
+      "date": "2026-07-14",
+      "artifact": ".progress/test-audit-review-batches/ses-sqlite-squash-r2-migration.md",
+      "artifactSha256": "f4fc30684b33acdd8c205eb5201e28a56ba4dbccccd29ea9849de2e88fd36e95",
+      "workingReportSha256": "c53f38bbcd7d712bae0dfa7d6ccba0086671952a2629b8729f8fe9cd2e553c08",
+      "fullyRead": [
+        "apps/service/src/db/migrate.integration.test.ts",
+        "apps/service/src/db/migrations/sql/0001_initial_schema.sql",
+        "apps/service/src/db/migrate.ts",
+        "apps/service/src/db/migration-files.ts",
+        "apps/service/src/db/migration-check.ts",
+        "apps/service/src/db/destructive-migration.ts",
+        ".progress/ses-sqlite-squash-migration-capture.ts",
+        ".progress/ses-sqlite-squash-baseline-schema.json",
+        ".progress/ses-sqlite-squash-migration-squashed-schema.json",
+        ".progress/ses-sqlite-squash-migration-schema-comparison.md",
+        ".progress/ses-sqlite-squash-migration-validation.md",
+        ".subagents/migration-review-fix-20260714-c7e903.handoff.md"
+      ],
+      "partiallyRead": [],
+      "skipped": [
+        "Command execution was intentionally unavailable to the read-only reviewer; worker/parent validation is separate evidence.",
+        "Interrupted/production-sized/concurrent deployed migration behavior and compatibility with deleted migration histories were outside the fresh-baseline review."
+      ],
+      "reviewRunIds": [
+        "R2-round-1",
+        "W3b-fix",
+        "R2-round-2",
+        "migration-review-20260714-a842d0",
+        "w7:p1E"
+      ],
+      "residualLimits": "Round-1 schema-contract finding and both hardening notes were fixed and confirmed resolved in round 2. Evidence remains local file-backed SQLite and intentionally excludes old-history upgrades."
     }
   ],
   "mutations": [

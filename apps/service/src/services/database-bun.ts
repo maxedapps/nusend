@@ -83,7 +83,13 @@ function applyConnectionPragmas(db: BunDatabase): void {
   db.run("PRAGMA foreign_keys = ON;");
   db.run("PRAGMA busy_timeout = 5000;");
   db.run("PRAGMA journal_mode = WAL;");
-  db.run("PRAGMA synchronous = NORMAL;");
+  db.run("PRAGMA synchronous = FULL;");
+  const synchronous = db.query("PRAGMA synchronous;").get() as {
+    readonly synchronous?: unknown;
+  } | null;
+  if (synchronous?.synchronous !== 2) {
+    throw new Error("SQLite did not apply required synchronous=FULL mode (2).");
+  }
   db.run("PRAGMA trusted_schema = OFF;");
 }
 

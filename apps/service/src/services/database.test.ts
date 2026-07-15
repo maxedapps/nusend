@@ -65,7 +65,7 @@ describe("database service", () => {
   it("bun:sqlite gives Better Auth a dedicated connection with matching pragmas", () => {
     // The dedicated auth connection (SqliteHandle) only exists for file-path
     // databases; assert it carries the same FK/WAL/busy_timeout pragmas as the
-    // app connection so FK enforcement and locking behavior cannot drift.
+    // app connection and that both handles use FULL synchronous mode.
     const result = runBunScenario(
       `
         import { join } from "node:path";
@@ -80,12 +80,16 @@ describe("database service", () => {
     expect(result.status, result.stderr).toBe(0);
     const parsed = JSON.parse(result.stdout.trim()) as {
       appAlive: boolean;
+      appSynchronous: number;
+      authSynchronous: number;
       foreignKeys: number;
       journalMode: string;
       busyTimeout: number;
       appSeesAuthTempTable: boolean;
     };
     expect(parsed.appAlive).toBe(true);
+    expect.soft(parsed.appSynchronous).toBe(2);
+    expect.soft(parsed.authSynchronous).toBe(2);
     expect(parsed.foreignKeys).toBe(1);
     expect(parsed.journalMode).toBe("wal");
     expect(parsed.busyTimeout).toBe(5000);

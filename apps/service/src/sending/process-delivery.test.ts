@@ -12,6 +12,7 @@ import {
   EmailTransportError,
   type PreparedEmail,
 } from "../services/email-transport.ts";
+import { makeSesEmailTransport } from "../services/email-transport-ses.ts";
 import { seedSubscribedContact } from "../testing/contact-fixtures.ts";
 import { fakeEmailTransportLayer, fakeSendingConfigLayer } from "../testing/email-transport.ts";
 import {
@@ -386,6 +387,80 @@ describe("processSendDeliveryJob", () => {
       { attemptNo: 2, errorMessage: null, sesMessageId: "fake-message-2", status: "succeeded" },
     ]);
     expect(fake.state.sent).toHaveLength(2);
+  });
+
+  it("treats an SES ServiceUnavailableException with HTTP 503 as terminal without resending", async () => {
+    let senderCalls = 0;
+    const transport = makeSesEmailTransport(
+      {
+        send: async () => {
+          senderCalls += 1;
+          const error = new Error("service unavailable") as Error & {
+            $metadata: { httpStatusCode: number };
+          };
+          error.name = "ServiceUnavailableException";
+          error.$metadata = { httpStatusCode: 503 };
+          throw error;
+        },
+      },
+      30_000,
+    );
+
+    const outcome = await runTest(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(fixedTime);
+        yield* createMailing(baseInput());
+        const db = yield* Database;
+
+        const firstResult = yield* runSendWorkerOnce({ workerId: "worker_1" });
+        const senderCallsAfterFirst = senderCalls;
+
+        yield* TestClock.adjust("2 minutes");
+        const secondResult = yield* runSendWorkerOnce({ workerId: "worker_2" });
+
+        return {
+          attempts: yield* db.all(
+            "assert:attempts",
+            "SELECT attempt_no AS attemptNo, status, error_message AS errorMessage FROM send_attempts ORDER BY attempt_no ASC;",
+          ),
+          delivery: yield* db.get(
+            "assert:delivery",
+            "SELECT status, last_error AS lastError FROM deliveries;",
+          ),
+          firstResult,
+          job: yield* db.get(
+            "assert:job",
+            "SELECT state, attempts, last_error AS lastError FROM jobs;",
+          ),
+          mailing: yield* db.get("assert:mailing", "SELECT state FROM mailings;"),
+          secondResult,
+          senderCallsAfterFirst,
+          senderCallsAfterSecond: senderCalls,
+        };
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(Layer.succeed(EmailTransport)(transport), fakeSendingConfigLayer()),
+        ),
+      ),
+    );
+
+    expect(outcome.senderCallsAfterFirst).toBe(1);
+    expect(outcome.senderCallsAfterSecond).toBe(1);
+    expect(outcome.firstResult).toMatchObject({ claimed: 1, failed: 0, succeeded: 1 });
+    expect(outcome.attempts).toEqual([
+      {
+        attemptNo: 1,
+        errorMessage: "Email transport ambiguous failure.",
+        status: "ambiguous",
+      },
+    ]);
+    expect(outcome.delivery).toEqual({
+      lastError: "Email transport ambiguous failure.",
+      status: "ambiguous",
+    });
+    expect(outcome.job).toEqual({ attempts: 1, lastError: null, state: "succeeded" });
+    expect(outcome.mailing).toEqual({ state: "completed" });
+    expect(outcome.secondResult).toMatchObject({ claimed: 0, failed: 0, succeeded: 0 });
   });
 
   it("marks delivery failed and mailing completed when a retryable failure exhausts attempts", async () => {

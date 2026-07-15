@@ -30,9 +30,8 @@ export const EmailTransportSesLive: Layer.Layer<
 );
 
 // maxAttempts: 1 disables the SDK's built-in retries. SendEmail is not
-// idempotent, so an SDK retry after SES already accepted a message (lost
-// response) would silently double-send; the queue owns all retries, and
-// classifySesError maps connection resets to `ambiguous`.
+// idempotent, so a retry after SES accepted a message could double-send. The
+// queue retries only outcomes that classify as explicit pre-acceptance refusals.
 export function makeSesClient(region: string): SESv2Client {
   return new SESv2Client({ maxAttempts: 1, region });
 }
@@ -99,16 +98,30 @@ export function classifySesError(cause: unknown): EmailTransportError {
 
   const code = getErrorCode(cause);
 
-  if ((name && retryableErrors.has(name)) || (code && retryableErrors.has(code))) {
-    return new EmailTransportError({ cause, kind: "retryable", operation: "ses:send" });
-  }
-
-  if (isRetryableHttpStatus(cause)) {
-    return new EmailTransportError({ cause, kind: "retryable", operation: "ses:send" });
+  if (
+    (name && postAcceptanceAmbiguityErrors.has(name)) ||
+    (code && postAcceptanceAmbiguityErrors.has(code))
+  ) {
+    return new EmailTransportError({ cause, kind: "ambiguous", operation: "ses:send" });
   }
 
   if (name && permanentErrors.has(name)) {
     return new EmailTransportError({ cause, kind: "permanent", operation: "ses:send" });
+  }
+
+  if (
+    (name && explicitThrottleOrQuotaErrors.has(name)) ||
+    (code && explicitThrottleOrQuotaErrors.has(code))
+  ) {
+    return new EmailTransportError({ cause, kind: "retryable", operation: "ses:send" });
+  }
+
+  if (hasAmbiguousHttpStatus(cause)) {
+    return new EmailTransportError({ cause, kind: "ambiguous", operation: "ses:send" });
+  }
+
+  if ((name && genericPreConnectErrors.has(name)) || (code && genericPreConnectErrors.has(code))) {
+    return new EmailTransportError({ cause, kind: "retryable", operation: "ses:send" });
   }
 
   return new EmailTransportError({ cause, kind: "ambiguous", operation: "ses:send" });
@@ -157,22 +170,18 @@ function isHeaderValueAscii(value: string): boolean {
   return true;
 }
 
-const retryableErrors = new Set([
-  "ECONNREFUSED",
-  "ENETUNREACH",
-  "ENOTFOUND",
-  "EAI_AGAIN",
+const postAcceptanceAmbiguityErrors = new Set([
   "InternalFailure",
   "InternalServerError",
-  // Sending-quota exhaustion: the request was refused, so nothing was sent and it
-  // is safe to retry (not ambiguous). Terminal-failing it would drop every
-  // remaining recipient in a campaign that merely hit the daily quota.
-  "LimitExceededException",
   "ServiceUnavailable",
   "ServiceUnavailableException",
+]);
+const explicitThrottleOrQuotaErrors = new Set([
+  "LimitExceededException",
   "ThrottlingException",
   "TooManyRequestsException",
 ]);
+const genericPreConnectErrors = new Set(["ECONNREFUSED", "ENETUNREACH", "ENOTFOUND", "EAI_AGAIN"]);
 const permanentErrors = new Set([
   "AccountSuspendedException",
   "BadRequestException",
@@ -194,11 +203,15 @@ function getErrorCode(cause: unknown): string | null {
     : null;
 }
 
-function isRetryableHttpStatus(cause: unknown): boolean {
+function hasAmbiguousHttpStatus(cause: unknown): boolean {
   if (typeof cause !== "object" || cause === null || !("$metadata" in cause)) return false;
 
   const metadata = (cause as { $metadata?: { httpStatusCode?: unknown } }).$metadata;
-  return typeof metadata?.httpStatusCode === "number" && metadata.httpStatusCode >= 500;
+  return (
+    typeof metadata?.httpStatusCode === "number" &&
+    metadata.httpStatusCode >= 500 &&
+    metadata.httpStatusCode <= 599
+  );
 }
 
 function timeoutSignal(timeoutMs: number): AbortSignal | undefined {

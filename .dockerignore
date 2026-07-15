@@ -1,0 +1,33 @@
+# Local state and credentials
+.git
+.data
+.env
+.env.*
+!.env.example
+
+# Host dependencies and generated output are rebuilt in-image
+node_modules
+**/node_modules
+packages/api-contract/dist
+
+# Non-runtime repository material
+.plans
+.progress
+.subagents
+.agents
+docs
+e2e
+scripts
+PROJECT.md
+README.md
+vitest.config.ts
+tsconfig.json
+
+# Keep the runtime source tree small
+**/*.test.ts
+**/*.integration.test.ts
+apps/service/src/testing
+
+# Deployment assets use their own image build contexts
+compose.yaml
+deploy

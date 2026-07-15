@@ -1,6 +1,6 @@
 # Auth and API Keys
 
-Nusend uses Better Auth for Google browser sessions only. Programmatic and CLI access use first-party Nusend API keys. Migration `0005` intentionally invalidates legacy Better Auth plugin API keys; recreate them through Nusend after upgrading.
+Nusend uses Better Auth for Google browser sessions only. Programmatic and CLI access use first-party Nusend API keys.
 
 ## Owner bootstrap
 

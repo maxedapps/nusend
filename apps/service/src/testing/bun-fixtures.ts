@@ -8,12 +8,15 @@ import { Database } from "../services/database.ts";
 import { DatabaseBunLive, SqliteHandle } from "../services/database-bun.ts";
 
 // Reads FK/WAL/busy_timeout off the dedicated Better Auth connection
-// (SqliteHandle) of a file-path bun database, plus an app-connection ping.
+// (SqliteHandle) of a file-path bun database, plus app-connection health and
+// synchronous mode from both real handles.
 // Lives here so a bun-scenario script can call it without importing `effect`
 // itself (a direct bare `effect` import from the out-of-tree scenario file
 // resolves to a different effect copy than the in-tree project files).
 export async function readAuthConnectionPragmas(databasePath: string): Promise<{
   appAlive: boolean;
+  appSynchronous: number;
+  authSynchronous: number;
   foreignKeys: number;
   journalMode: string;
   busyTimeout: number;
@@ -23,6 +26,12 @@ export async function readAuthConnectionPragmas(databasePath: string): Promise<{
   try {
     const handle = await runtime.runPromise(SqliteHandle);
     const appAlive = await runtime.runPromise(Effect.flatMap(Database, (db) => db.ping));
+    const appSynchronousRow = await runtime.runPromise(
+      Effect.flatMap(Database, (db) =>
+        db.get<{ synchronous: number }>("test:app-synchronous", "PRAGMA synchronous;"),
+      ),
+    );
+    if (appSynchronousRow === null) throw new Error("app synchronous pragma returned no row");
     const read = <T>(name: string) => handle.query(`PRAGMA ${name};`).get() as T;
 
     // Prove the app and auth handles are genuinely separate connections (not the
@@ -42,6 +51,8 @@ export async function readAuthConnectionPragmas(databasePath: string): Promise<{
     return {
       appAlive,
       appSeesAuthTempTable,
+      appSynchronous: appSynchronousRow.synchronous,
+      authSynchronous: read<{ synchronous: number }>("synchronous").synchronous,
       busyTimeout: read<{ timeout: number }>("busy_timeout").timeout,
       foreignKeys: read<{ foreign_keys: number }>("foreign_keys").foreign_keys,
       journalMode: read<{ journal_mode: string }>("journal_mode").journal_mode,

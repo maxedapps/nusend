@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the Nusend backup daily
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 UTC
+Persistent=true
+RandomizedDelaySec=15m
+Unit=nusend-backup.service
+
+[Install]
+WantedBy=timers.target

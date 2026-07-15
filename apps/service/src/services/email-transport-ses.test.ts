@@ -88,11 +88,9 @@ describe("SES email transport", () => {
   });
 
   it("maps timeout-shaped send rejection to ambiguous through transport.send", async () => {
-    const error = new Error("timed out");
-    error.name = "TimeoutError";
     const transport = makeSesEmailTransport(
       {
-        send: async () => Promise.reject(error),
+        send: async () => Promise.reject(sesError({ name: "TimeoutError" })),
       },
       30_000,
     );
@@ -104,18 +102,122 @@ describe("SES email transport", () => {
     });
   });
 
-  it("classifies known SES errors conservatively", () => {
-    expect(classifySesError(named("TooManyRequestsException")).kind).toBe("retryable");
-    expect(classifySesError(coded("ENOTFOUND")).kind).toBe("retryable");
-    expect(
-      classifySesError({ $metadata: { httpStatusCode: 503 }, name: "ServiceFailure" }).kind,
-    ).toBe("retryable");
-    expect(classifySesError(named("BadRequestException")).kind).toBe("permanent");
-    expect(classifySesError(named("MessageRejected")).kind).toBe("permanent");
-    expect(classifySesError(named("AbortError")).kind).toBe("ambiguous");
-    expect(classifySesError(named("SomethingUnknown")).kind).toBe("ambiguous");
-    // Quota exhaustion means nothing was sent — retry, do not terminally fail.
-    expect(classifySesError(named("LimitExceededException")).kind).toBe("retryable");
+  it("maps a ServiceUnavailableException with HTTP 503 to ambiguous through transport.send", async () => {
+    const transport = makeSesEmailTransport(
+      {
+        send: async () =>
+          Promise.reject(sesError({ name: "ServiceUnavailableException", status: 503 })),
+      },
+      30_000,
+    );
+
+    await expect(Effect.runPromise(transport.send(prepared))).rejects.toMatchObject({
+      _tag: "EmailTransportError",
+      kind: "ambiguous",
+      operation: "ses:send",
+    });
+  });
+
+  it.each([
+    ["name", "InternalFailure"],
+    ["code", "InternalFailure"],
+    ["name", "InternalServerError"],
+    ["code", "InternalServerError"],
+    ["name", "ServiceUnavailable"],
+    ["code", "ServiceUnavailable"],
+    ["name", "ServiceUnavailableException"],
+    ["code", "ServiceUnavailableException"],
+  ] as const)("classifies SES provider %s %s as ambiguous", (signal, value) => {
+    const cause = signal === "name" ? sesError({ name: value }) : sesError({ code: value });
+    expect(classifySesError(cause).kind).toBe("ambiguous");
+  });
+
+  it.each([500, 503, 599])("classifies SES metadata HTTP status %i as ambiguous", (status) => {
+    expect(classifySesError(sesError({ status })).kind).toBe("ambiguous");
+  });
+
+  it.each([499, 600])(
+    "keeps pre-connect code retryable with out-of-range HTTP status %i",
+    (status) => {
+      expect(classifySesError(sesError({ code: "ECONNREFUSED", status })).kind).toBe("retryable");
+    },
+  );
+
+  it.each(["AbortError", "TimeoutError", "RequestTimeout"])(
+    "classifies timeout/abort name %s as ambiguous",
+    (name) => {
+      expect(classifySesError(sesError({ name })).kind).toBe("ambiguous");
+    },
+  );
+
+  it.each([
+    ["name", "ECONNREFUSED"],
+    ["code", "ECONNREFUSED"],
+    ["name", "ENETUNREACH"],
+    ["code", "ENETUNREACH"],
+    ["name", "ENOTFOUND"],
+    ["code", "ENOTFOUND"],
+    ["name", "EAI_AGAIN"],
+    ["code", "EAI_AGAIN"],
+  ] as const)("classifies pre-connect %s %s as retryable", (signal, value) => {
+    const cause = signal === "name" ? sesError({ name: value }) : sesError({ code: value });
+    expect(classifySesError(cause).kind).toBe("retryable");
+  });
+
+  it.each([
+    ["name", "ThrottlingException"],
+    ["code", "ThrottlingException"],
+    ["name", "TooManyRequestsException"],
+    ["code", "TooManyRequestsException"],
+    ["name", "LimitExceededException"],
+    ["code", "LimitExceededException"],
+  ] as const)("classifies provider refusal %s %s as retryable", (signal, value) => {
+    const cause = signal === "name" ? sesError({ name: value }) : sesError({ code: value });
+    expect(classifySesError(cause).kind).toBe("retryable");
+  });
+
+  it.each(["BadRequestException", "MessageRejected"])(
+    "classifies plain named provider rejection %s as permanent",
+    (name) => {
+      expect(classifySesError(sesError({ name })).kind).toBe("permanent");
+    },
+  );
+
+  it.each(["ThrottlingException", "TooManyRequestsException", "LimitExceededException"])(
+    "keeps provider refusal %s retryable with incidental HTTP 503",
+    (name) => {
+      expect(classifySesError(sesError({ name, status: 503 })).kind).toBe("retryable");
+    },
+  );
+
+  it.each([
+    "InternalFailure",
+    "InternalServerError",
+    "ServiceUnavailable",
+    "ServiceUnavailableException",
+  ])("keeps internal/service name %s ambiguous with generic network code", (name) => {
+    expect(classifySesError(sesError({ code: "ECONNREFUSED", name })).kind).toBe("ambiguous");
+  });
+
+  it.each([
+    {
+      cause: sesError({ code: "ECONNREFUSED", name: "BadRequestException" }),
+      label: "BadRequestException + ECONNREFUSED",
+    },
+    {
+      cause: sesError({ name: "MessageRejected", status: 503 }),
+      label: "MessageRejected + HTTP 503",
+    },
+    {
+      cause: sesError({ code: "EAI_AGAIN", name: "BadRequestException", status: 599 }),
+      label: "BadRequestException + EAI_AGAIN + HTTP 599",
+    },
+  ])("keeps permanent provider rejection $label permanent", ({ cause }) => {
+    expect(classifySesError(cause).kind).toBe("permanent");
+  });
+
+  it("classifies an unknown named error as ambiguous", () => {
+    expect(classifySesError(sesError({ name: "SomethingUnknown" })).kind).toBe("ambiguous");
   });
 
   it("pins the SES client to a single attempt so lost responses cannot double-send", async () => {
@@ -229,14 +331,17 @@ describe("SES email transport", () => {
   });
 });
 
-function named(name: string): Error {
-  const error = new Error(name);
-  error.name = name;
-  return error;
-}
-
-function coded(code: string): Error & { code: string } {
-  const error = new Error(code) as Error & { code: string };
-  error.code = code;
+function sesError(options: {
+  code?: string;
+  name?: string;
+  status?: number;
+}): Error & { $metadata?: { httpStatusCode: number }; code?: string } {
+  const error = new Error(options.name ?? options.code ?? "SES error") as Error & {
+    $metadata?: { httpStatusCode: number };
+    code?: string;
+  };
+  if (options.name !== undefined) error.name = options.name;
+  if (options.code !== undefined) error.code = options.code;
+  if (options.status !== undefined) error.$metadata = { httpStatusCode: options.status };
   return error;
 }
