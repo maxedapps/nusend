@@ -3,13 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import {
-  configDirectory,
-  configPath,
-  credentialsPath,
-  localStateLockPath,
-  localStateReaperMutexPath,
-} from "./paths.js";
+import { configDirectory, statePath } from "./paths.js";
 
 const tempDirs: string[] = [];
 
@@ -24,10 +18,7 @@ describe("CLI path resolution", () => {
     const env = { XDG_CONFIG_HOME: directory };
 
     expect(configDirectory(env)).toBe(join(directory, "nusend"));
-    expect(configPath(env)).toBe(join(directory, "nusend", "config.json"));
-    expect(credentialsPath(env)).toBe(join(directory, "nusend", "credentials.json"));
-    expect(localStateLockPath(env)).toBe(join(directory, "nusend", "local-state.lock"));
-    expect(localStateReaperMutexPath(env)).toBe(join(directory, "nusend", "local-state-reaper"));
+    expect(statePath(env)).toBe(join(directory, "nusend", "state.json"));
   });
 
   it("uses the Unix HOME fallback without XDG_CONFIG_HOME", () => {

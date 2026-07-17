@@ -1,16 +1,18 @@
 import { printJson } from "../output/format.js";
-import { readOption, requireApi, UsageError, type CommandContext } from "./context.js";
+import { requireApi, type CommandContext } from "./context.js";
+import type { CliCommand } from "./options.js";
 
-export async function runMailingsCommand(args: string[], context: CommandContext): Promise<void> {
+type MailingsCommand = Extract<CliCommand, { readonly kind: `mailings-${string}` }>;
+
+export async function runMailingsCommand(
+  command: MailingsCommand,
+  context: CommandContext,
+): Promise<void> {
   const api = requireApi(context);
-  const [subcommand, id] = args;
-  switch (subcommand) {
-    case "list": {
-      const result = await api.listMailings({
-        limit: readOption(args, "--limit"),
-        offset: readOption(args, "--offset"),
-      });
-      if (context.options.json) printJson(result);
+  switch (command.kind) {
+    case "mailings-list": {
+      const result = await api.listMailings({ limit: command.limit, offset: command.offset });
+      if (context.json) printJson(result);
       else {
         for (const mailing of result.items) {
           const total = Object.values(mailing.counts).reduce((sum, count) => sum + count, 0);
@@ -23,10 +25,9 @@ export async function runMailingsCommand(args: string[], context: CommandContext
       }
       return;
     }
-    case "get": {
-      if (!id) throw new UsageError("mailings get requires <id>.", 2);
-      const result = await api.getMailing(id);
-      if (context.options.json) {
+    case "mailings-get": {
+      const result = await api.getMailing(command.id);
+      if (context.json) {
         printJson(result);
       } else {
         const mailing = result.mailing;
@@ -40,9 +41,6 @@ export async function runMailingsCommand(args: string[], context: CommandContext
           console.log(`ambiguous=${mailing.counts.ambiguous}`);
         }
       }
-      return;
     }
-    default:
-      throw new UsageError("Unknown mailings command.", 2);
   }
 }

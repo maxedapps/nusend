@@ -26,7 +26,7 @@ export function runDriverParityCycle(
     const db = yield* Database;
     for (const parsed of readMigrationFiles()) {
       const migration = Result.getOrThrow(parsed);
-      yield* db.exec(`parity:migrate:${migration.version}`, migration.upSql);
+      yield* db.exec(`parity:migrate:${migration.version}`, migration.sql);
     }
 
     yield* db.run(

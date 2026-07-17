@@ -5,6 +5,8 @@
 import { Result, Schema, SchemaGetter } from "effect";
 
 import { RequestValidationError } from "../errors.ts";
+import { isPlainObject, validationFail } from "../http/body.ts";
+import { EmailSchema, maxEmailLength } from "../lib/email.ts";
 import { parseLenientDateToIso } from "../lib/iso-time.ts";
 
 export const maxExplicitRecipients = 1000;
@@ -13,7 +15,7 @@ export const maxMailingNameLength = 120;
 export const maxMailingSubjectLength = 200;
 export const maxMailingHtmlLength = 200_000;
 export const maxMailingTextLength = 200_000;
-export const maxRecipientEmailLength = 320;
+export const maxRecipientEmailLength = maxEmailLength;
 export const maxListIdLength = 200;
 export const maxRecipientVarsJsonBytes = 10_000;
 
@@ -62,27 +64,6 @@ function trimmedToNull(maxLength: number) {
     );
 }
 
-// Same acceptance rules as the pre-Schema validator: at least one character
-// before and after a single "@", no whitespace.
-const emailFilter = Schema.makeFilter<string>((email) => {
-  const atIndex = email.indexOf("@");
-  const valid =
-    email.length > 0 &&
-    atIndex > 0 &&
-    atIndex === email.lastIndexOf("@") &&
-    atIndex !== email.length - 1 &&
-    !/\s/.test(email);
-
-  return valid || "must be a valid email address";
-});
-
-const Email = Schema.String.pipe(
-  Schema.decodeTo(Schema.String, {
-    decode: SchemaGetter.transform((value: string) => value.trim().toLowerCase()),
-    encode: SchemaGetter.passthrough(),
-  }),
-).check(emailFilter, Schema.isMaxLength(maxRecipientEmailLength));
-
 const VarsJson = Schema.Record(Schema.String, Schema.Unknown)
   .pipe(
     Schema.decodeTo(Schema.String, {
@@ -99,7 +80,7 @@ const VarsJson = Schema.Record(Schema.String, Schema.Unknown)
   );
 
 const Recipient = Schema.Struct({
-  email: Email,
+  email: EmailSchema,
   vars: Schema.optional(VarsJson),
 });
 
@@ -150,24 +131,24 @@ export function decodeCreateMailingRequest(
   value: unknown,
 ): Result.Result<CreateMailingInput, RequestValidationError> {
   if (!isPlainObject(value)) {
-    return fail("Request body must be a JSON object.");
+    return validationFail("Request body must be a JSON object.");
   }
 
   const hasRecipients = Object.hasOwn(value, "recipients") && value.recipients !== undefined;
   const hasListId = Object.hasOwn(value, "listId") && value.listId !== undefined;
 
   if (hasRecipients === hasListId) {
-    return fail("Provide exactly one recipient source: recipients or listId.");
+    return validationFail("Provide exactly one recipient source: recipients or listId.");
   }
 
   if (value.purpose === "transactional" && hasListId) {
-    return fail("Transactional mailings must use recipients and cannot use listId.");
+    return validationFail("Transactional mailings must use recipients and cannot use listId.");
   }
 
   const decoded = Schema.decodeUnknownResult(CreateMailingRequest)(value, { errors: "all" });
 
   if (Result.isFailure(decoded)) {
-    return fail(decoded.failure.message);
+    return validationFail(decoded.failure.message);
   }
 
   const request = decoded.success;
@@ -187,18 +168,6 @@ export function decodeCreateMailingRequest(
     subject: request.subject,
     text: request.text ?? null,
   });
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-
-  const prototype = Object.getPrototypeOf(value);
-
-  return prototype === Object.prototype || prototype === null;
-}
-
-function fail(message: string): Result.Result<never, RequestValidationError> {
-  return Result.fail(new RequestValidationError({ message }));
 }
 
 function utf8ByteLength(value: string): number {

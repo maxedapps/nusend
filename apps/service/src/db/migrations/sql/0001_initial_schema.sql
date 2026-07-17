@@ -1,4 +1,3 @@
--- migrate:up
 CREATE TABLE users (
   id TEXT NOT NULL PRIMARY KEY,
   name TEXT NOT NULL,
@@ -315,24 +314,3 @@ CREATE TABLE worker_runs (
 );
 
 CREATE INDEX worker_runs_finished_at_idx ON worker_runs(finished_at);
-
--- migrate:down
-DROP TABLE IF EXISTS ses_events;
-DROP TABLE IF EXISTS ses_simulator_runs;
-DROP TABLE IF EXISTS send_attempts;
-DROP TABLE IF EXISTS jobs;
-DROP TABLE IF EXISTS mailing_idempotency_keys;
-DROP TABLE IF EXISTS deliveries;
-DROP TABLE IF EXISTS device_authorizations;
-DROP TABLE IF EXISTS api_keys;
-DROP TABLE IF EXISTS sessions;
-DROP TABLE IF EXISTS accounts;
-DROP TABLE IF EXISTS list_memberships;
-DROP TABLE IF EXISTS suppressions;
-DROP TABLE IF EXISTS mailings;
-DROP TABLE IF EXISTS ses_notifications;
-DROP TABLE IF EXISTS worker_runs;
-DROP TABLE IF EXISTS contacts;
-DROP TABLE IF EXISTS lists;
-DROP TABLE IF EXISTS verifications;
-DROP TABLE IF EXISTS users;

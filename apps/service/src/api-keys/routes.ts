@@ -1,13 +1,13 @@
 import { CreateApiKeyRequestSchema, type CreateApiKeyRequest } from "@nusend/api-contract";
 import { Effect, Result, Schema } from "effect";
 import { Hono } from "hono";
-import { bodyLimit } from "hono/body-limit";
 
 import { requirePrincipal } from "../auth/middleware.ts";
 import type { Principal } from "../auth/principal.ts";
 import { RequestValidationError } from "../errors.ts";
-import { paginationMeta, parsePagination } from "../http/query.ts";
-import { errorEnvelope, runRoute, type AppRuntime } from "../http/respond.ts";
+import { jsonBodyLimit, readJsonBody } from "../http/body.ts";
+import { paginationMeta, parsePagination, parseRouteId } from "../http/query.ts";
+import { runRoute, type AppRuntime } from "../http/respond.ts";
 import { ApiKeys } from "./service.ts";
 
 type ApiKeyRoutesOptions = {
@@ -16,11 +16,7 @@ type ApiKeyRoutesOptions = {
 
 export function createApiKeyRoutes(options: ApiKeyRoutesOptions): Hono {
   const routes = new Hono();
-  const jsonLimit = bodyLimit({
-    maxSize: 32_768,
-    onError: (context) =>
-      context.json(errorEnvelope("request_too_large", "Request body is too large."), 413),
-  });
+  const jsonLimit = jsonBodyLimit(32_768);
   const requireApiKeysRead = requirePrincipal({
     permissions: { api_keys: ["read"] },
     runtime: options.runtime,
@@ -64,10 +60,11 @@ export function createApiKeyRoutes(options: ApiKeyRoutesOptions): Hono {
   routes.delete("/:id", requireApiKeysWrite, (context) => {
     const principal = context.get("principal") as Principal;
     const program = Effect.gen(function* () {
+      const id = yield* parseRouteId(context.req.param("id"), "API key id");
       const apiKeys = yield* ApiKeys;
       yield* apiKeys.revoke({
         actorPermissions: principal.kind === "session" ? "owner" : principal.permissions,
-        id: context.req.param("id"),
+        id,
         userId: principal.userId,
       });
     });
@@ -78,10 +75,11 @@ export function createApiKeyRoutes(options: ApiKeyRoutesOptions): Hono {
   routes.post("/:id/rotate", requireApiKeysWrite, (context) => {
     const principal = context.get("principal") as Principal;
     const program = Effect.gen(function* () {
+      const id = yield* parseRouteId(context.req.param("id"), "API key id");
       const apiKeys = yield* ApiKeys;
       const apiKey = yield* apiKeys.rotate({
         actorPermissions: principal.kind === "session" ? "owner" : principal.permissions,
-        id: context.req.param("id"),
+        id,
         userId: principal.userId,
       });
       return { apiKey };
@@ -91,13 +89,6 @@ export function createApiKeyRoutes(options: ApiKeyRoutesOptions): Hono {
   });
 
   return routes;
-}
-
-function readJsonBody(request: Request): Effect.Effect<unknown, RequestValidationError> {
-  return Effect.tryPromise({
-    try: () => request.json() as Promise<unknown>,
-    catch: () => new RequestValidationError({ message: "Request body must be valid JSON." }),
-  });
 }
 
 function decodeCreateApiKeyRequest(

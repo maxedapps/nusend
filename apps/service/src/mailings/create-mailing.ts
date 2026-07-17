@@ -12,6 +12,7 @@ import {
 import { currentIso } from "../lib/iso-time.ts";
 import { Database, type DatabaseService } from "../services/database.ts";
 import { IdGenerator, type IdGeneratorService } from "../services/ids.ts";
+import { suppressionScopeNeedsListId, suppressionScopeSql } from "../suppressions/match.ts";
 import type { CreateMailingInput, MailingPurpose } from "./schema.ts";
 
 export const maxListRecipients = 5000;
@@ -292,15 +293,13 @@ function findSuppressedEmails(
   if (input.emails.length === 0) return Effect.succeed(new Set());
 
   return Effect.gen(function* () {
-    const isMarketing = input.purpose === "marketing";
-    const scopePredicate = isMarketing
-      ? "(scope IN ('all', 'marketing') OR (scope = 'list' AND list_id = $listId))"
-      : "scope = 'all'";
+    const scopePredicate = suppressionScopeSql(input.purpose);
+    const needsListId = suppressionScopeNeedsListId(input.purpose);
     const rows = yield* Effect.forEach(
       chunks(input.emails, suppressionBatchSize),
       (chunk, index) => {
         const params = createParams(chunk, "email");
-        const queryParams = isMarketing ? { ...params, listId: input.listId } : params;
+        const queryParams = needsListId ? { ...params, listId: input.listId } : params;
 
         return db.all<{ email: string }>(
           `suppressions:find:${index}`,

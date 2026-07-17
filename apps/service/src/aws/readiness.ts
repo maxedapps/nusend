@@ -41,87 +41,55 @@ export function runSesReadinessChecks(
 > {
   return Effect.gen(function* () {
     const settings = (yield* SesOperationsConfig).config;
-    const checks: ReadinessCheck[] = [];
-    const publicBaseUrl = validatePublicBaseUrl(settings.publicBaseUrl);
-    const expectedWebhookUrl =
-      publicBaseUrl.status === "ok"
-        ? `${Option.getOrThrow(settings.publicBaseUrl)}${sesSnsWebhookPath}`
-        : null;
-
-    // Config issues are authoritative: a corresponding local check could
-    // duplicate or contradict the diagnostic, so it is dropped. Invalid
-    // tracking-event input also shadows the derived enabled/disabled summary.
-    const configIssueIds = new Set(settings.configIssues.map((issue) => issue.id));
-    const shadowedLocalCheckIds = new Set(configIssueIds);
-    if (configIssueIds.has("config.tracking_events")) {
-      shadowedLocalCheckIds.add("config.tracking");
-    }
-    const localChecks: ReadinessCheck[] = [
-      publicBaseUrl,
-      optionCheck({
-        action: "Set AWS_REGION to the SES region used by Nusend.",
-        id: "config.aws_region",
-        option: settings.awsRegion,
-        title: "AWS region",
-      }),
-      optionCheck({
-        action: "Set NUSEND_SES_FROM_EMAIL to a verified SES sender.",
-        id: "config.from_email",
-        option: settings.fromEmail,
-        title: "From email",
-      }),
-      optionCheck({
-        action: "Set NUSEND_SES_TRANSACTIONAL_CONFIGURATION_SET.",
-        id: "config.configuration_set.transactional",
-        option: settings.transactionalConfigurationSet,
-        title: "Transactional configuration set",
-      }),
-      optionCheck({
-        action: "Set NUSEND_SES_MARKETING_CONFIGURATION_SET.",
-        id: "config.configuration_set.marketing",
-        option: settings.marketingConfigurationSet,
-        title: "Marketing configuration set",
-      }),
-      settings.unsubscribeSecretConfigured
-        ? ok(
-            "config.unsubscribe_secret",
-            "Unsubscribe secret",
-            "Unsubscribe signing secret is configured.",
-          )
-        : warning(
-            "config.unsubscribe_secret",
-            "Unsubscribe secret",
-            "Unsubscribe signing secret is missing.",
-            "Set NUSEND_UNSUBSCRIBE_SECRET before marketing sends.",
-          ),
-      trackingConfigCheck(settings.trackingEvents, settings.trackingCustomRedirectDomain),
-      settings.feedbackTopicArns.length > 0
-        ? ok(
-            "config.feedback_topics",
-            "SNS feedback topics",
-            "Feedback topic ARNs are configured.",
-            {
-              count: settings.feedbackTopicArns.length,
-            },
-          )
-        : warning(
-            "config.feedback_topics",
-            "SNS feedback topics",
-            "No SNS feedback TopicArn allowlist is configured.",
-            "Set NUSEND_SES_FEEDBACK_TOPIC_ARNS to one or more SNS topic ARNs.",
-          ),
-      workerBudgetCheck(
-        settings.workerBatchSize,
-        settings.requestTimeoutMs,
-        settings.workerLeaseSeconds,
-      ),
-      yield* schemaCheck(),
-      yield* latestFeedbackCheck(),
-    ];
-    checks.push(
-      ...settings.configIssues.map(configIssueCheck),
-      ...localChecks.filter((check) => !shadowedLocalCheckIds.has(check.id)),
+    const checks: ReadinessCheck[] = settings.configIssues.map(configIssueCheck);
+    const expectedWebhookUrl = Option.getOrNull(
+      Option.map(settings.publicBaseUrl, (baseUrl) => `${baseUrl}${sesSnsWebhookPath}`),
     );
+
+    if (Option.isSome(settings.publicBaseUrl)) {
+      checks.push(ok("config.public_base_url", "Public base URL", "Public base URL is valid."));
+    }
+    if (Option.isSome(settings.awsRegion)) {
+      checks.push(ok("config.aws_region", "AWS region", "AWS region is configured."));
+    }
+    if (Option.isSome(settings.fromEmail)) {
+      checks.push(ok("config.from_email", "From email", "From email is configured."));
+    }
+    if (Option.isSome(settings.transactionalConfigurationSet)) {
+      checks.push(
+        ok(
+          "config.configuration_set.transactional",
+          "Transactional configuration set",
+          "Transactional configuration set is configured.",
+        ),
+      );
+    }
+    if (Option.isSome(settings.marketingConfigurationSet)) {
+      checks.push(
+        ok(
+          "config.configuration_set.marketing",
+          "Marketing configuration set",
+          "Marketing configuration set is configured.",
+        ),
+      );
+    }
+    if (settings.unsubscribeSecretConfigured) {
+      checks.push(
+        ok(
+          "config.unsubscribe_secret",
+          "Unsubscribe secret",
+          "Unsubscribe signing secret is configured.",
+        ),
+      );
+    }
+    if (settings.feedbackTopicArns.length > 0) {
+      checks.push(
+        ok("config.feedback_topics", "SNS feedback topics", "Feedback topic ARNs are configured.", {
+          count: settings.feedbackTopicArns.length,
+        }),
+      );
+    }
+    checks.push(yield* schemaCheck(), yield* latestFeedbackCheck());
 
     if (options.includeAws === false) {
       checks.push(
@@ -158,99 +126,15 @@ export function runSesReadinessChecks(
   });
 }
 
-function configIssueCheck(issue: { id: string; message: string }): ReadinessCheck {
-  return error(
-    issue.id,
-    "Configuration issue",
-    issue.message,
-    "Fix the invalid environment variable value and restart Nusend.",
-  );
-}
-
-function optionCheck(input: {
-  action: string;
-  id: string;
-  option: Option.Option<string>;
-  title: string;
+function configIssueCheck(issue: {
+  readonly id: string;
+  readonly message: string;
+  readonly status?: "error" | "warning";
 }): ReadinessCheck {
-  return Option.isSome(input.option)
-    ? ok(input.id, input.title, `${input.title} is configured.`)
-    : warning(input.id, input.title, `${input.title} is missing.`, input.action);
-}
-
-function validatePublicBaseUrl(value: Option.Option<string>): ReadinessCheck {
-  if (Option.isNone(value)) {
-    return warning(
-      "config.public_base_url",
-      "Public base URL",
-      "Public base URL is missing.",
-      "Set NUSEND_PUBLIC_BASE_URL to your public HTTPS Nusend base URL.",
-    );
-  }
-
-  try {
-    const url = new URL(value.value);
-    if (url.protocol !== "https:" || url.search !== "" || url.hash !== "") {
-      return error(
-        "config.public_base_url",
-        "Public base URL",
-        "Public base URL must be an absolute HTTPS URL without query or fragment.",
-        "Set NUSEND_PUBLIC_BASE_URL to a clean HTTPS origin/path.",
-      );
-    }
-    return ok("config.public_base_url", "Public base URL", "Public base URL is valid.");
-  } catch {
-    return error(
-      "config.public_base_url",
-      "Public base URL",
-      "Public base URL is not a valid absolute URL.",
-      "Set NUSEND_PUBLIC_BASE_URL to a clean HTTPS origin/path.",
-    );
-  }
-}
-
-function trackingConfigCheck(
-  trackingEvents: readonly string[],
-  customRedirectDomain: Option.Option<string>,
-): ReadinessCheck {
-  if (trackingEvents.length === 0) {
-    return ok("config.tracking", "SES engagement tracking", "Open/click tracking is disabled.");
-  }
-
-  if (Option.isNone(customRedirectDomain)) {
-    return warning(
-      "config.tracking",
-      "SES engagement tracking",
-      "Open/click tracking is enabled without a custom redirect domain.",
-      "Configure NUSEND_SES_TRACKING_CUSTOM_REDIRECT_DOMAIN if you want branded tracking links.",
-    );
-  }
-
-  return ok(
-    "config.tracking",
-    "SES engagement tracking",
-    "Tracking events and custom redirect domain are configured.",
-  );
-}
-
-function workerBudgetCheck(
-  batchSize: number,
-  requestTimeoutMs: number,
-  leaseSeconds: number,
-): ReadinessCheck {
-  const valid = batchSize * requestTimeoutMs + 10_000 < leaseSeconds * 1000;
-  return valid
-    ? ok(
-        "config.worker_budget",
-        "Worker lease budget",
-        "Worker timeout and lease settings are compatible.",
-      )
-    : error(
-        "config.worker_budget",
-        "Worker lease budget",
-        "Worker lease must exceed batch size times SES request timeout by at least 10 seconds.",
-        "Increase NUSEND_SEND_WORKER_LEASE_SECONDS or lower batch size/request timeout.",
-      );
+  const action = "Fix the documented environment variable and restart Nusend.";
+  return issue.status === "warning"
+    ? warning(issue.id, "Configuration", issue.message, action)
+    : error(issue.id, "Configuration", issue.message, action);
 }
 
 function schemaCheck(): Effect.Effect<ReadinessCheck, DatabaseError, DatabaseService> {

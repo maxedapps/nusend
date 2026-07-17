@@ -1,7 +1,7 @@
 export const helpText = `Nusend CLI
 
 Usage:
-  nusend [--profile <name>] [--base-url <url>] [--json] <command>
+  nusend [--base-url <url>] [--json] <command>
 
 Commands:
   login <base-url> [--name <client-name>] [--permission resource:action ...]

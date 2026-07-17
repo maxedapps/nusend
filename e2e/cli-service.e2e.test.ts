@@ -137,10 +137,7 @@ describe("CLI and service", () => {
         expect(verification.verification.userCode).toMatch(/^[A-Z0-9]{4}-[A-Z0-9]{4}$/);
         const stdoutJson = logs.filter((line) => line.startsWith("{"));
         expect(stdoutJson).toHaveLength(1);
-        expect(JSON.parse(stdoutJson[0] ?? "")).toMatchObject({
-          profile: "default",
-          stored: true,
-        });
+        expect(JSON.parse(stdoutJson[0] ?? "")).toMatchObject({ stored: true });
       },
     );
   });

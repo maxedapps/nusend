@@ -3,9 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { configDirectory, configPath } from "../config/paths.js";
-import { loadConfig } from "../config/profiles.js";
-import { FileCredentialStore } from "../credentials/file-store.js";
+import { loadLocalState } from "../config/local-state.js";
+import { configDirectory, statePath } from "../config/paths.js";
 import { runCli, runMain } from "../main.js";
 
 const originalFetch = globalThis.fetch;
@@ -20,14 +19,8 @@ afterEach(async () => {
 });
 
 describe("login command", () => {
-  it("polls pending and slow_down, stores first, and preserves active profile", async () => {
+  it("polls pending and slow_down, then stores one service credential", async () => {
     const env = await tempEnv();
-    await mkdir(configDirectory(env), { mode: 0o700, recursive: true });
-    await writeFile(
-      configPath(env),
-      `${JSON.stringify({ activeProfile: "existing", profiles: { existing: { baseUrl: "https://old.example.com" } } })}\n`,
-      { mode: 0o600 },
-    );
     const responses = [
       startResponse(0.001),
       { intervalSeconds: 0.002, status: "authorization_pending" },
@@ -47,7 +40,7 @@ describe("login command", () => {
     const sleeps: number[] = [];
 
     await expect(
-      runCli(["--json", "--profile", "new", "login", "https://mail.example.com"], env, {
+      runCli(["--json", "login", "https://mail.example.com"], env, {
         now: () => 0,
         sleep: async (milliseconds) => {
           sleeps.push(milliseconds);
@@ -59,7 +52,6 @@ describe("login command", () => {
     expect(log).toHaveBeenCalledTimes(1);
     expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toMatchObject({
       apiKey: { id: "key_1" },
-      profile: "new",
       stored: true,
     });
     expect(stderrLinesAtFirstPoll).toBe(1);
@@ -72,55 +64,32 @@ describe("login command", () => {
         userCode: "ABCD-2345",
       },
     });
-    await expect(new FileCredentialStore(env).read("new")).resolves.toMatchObject({
-      apiKey: "nusend_raw_secret",
-    });
-    await expect(loadConfig(env)).resolves.toMatchObject({
-      activeProfile: "existing",
-      profiles: { new: { baseUrl: "https://mail.example.com" } },
+    await expect(loadLocalState(env)).resolves.toMatchObject({
+      baseUrl: "https://mail.example.com",
+      credential: { apiKey: "nusend_raw_secret" },
     });
   });
 
-  it("preserves a profile written concurrently during the device-approval wait", async () => {
+  it("reaches login and rewrites corrupt state.json via the CLI entry path", async () => {
     const env = await tempEnv();
     await mkdir(configDirectory(env), { mode: 0o700, recursive: true });
-    await writeFile(
-      configPath(env),
-      `${JSON.stringify({ activeProfile: "existing", profiles: { existing: { baseUrl: "https://old.example.com" } } })}\n`,
-      { mode: 0o600 },
-    );
-    const responses = [startResponse(0), approvedResponse()];
+    await writeFile(statePath(env), "not-valid-json\n", { mode: 0o600 });
     globalThis.fetch = vi.fn(async (input: Request | URL | string) => {
       const url = input instanceof Request ? input.url : String(input);
-      if (url.endsWith("/token")) {
-        // Simulate a concurrent `login --profile other` writing the config file
-        // while we wait for approval.
-        await writeFile(
-          configPath(env),
-          `${JSON.stringify({
-            activeProfile: "existing",
-            profiles: {
-              existing: { baseUrl: "https://old.example.com" },
-              other: { baseUrl: "https://other.example.com" },
-            },
-          })}\n`,
-          { mode: 0o600 },
-        );
-      }
-      return Response.json(responses.shift());
+      return Response.json(url.endsWith("/token") ? approvedResponse() : startResponse(0));
     }) as unknown as typeof fetch;
     vi.spyOn(console, "log").mockImplementation(() => undefined);
 
-    await runCli(["--profile", "new", "login", "https://mail.example.com"], env, noWaitRuntime());
+    await expect(
+      runCli(["--json", "login", "https://mail.example.com"], env, {
+        now: () => 0,
+        sleep: async () => undefined,
+      }),
+    ).resolves.toEqual({ exitCode: 0 });
 
-    // The concurrently-written "other" profile survives the merge (not clobbered
-    // by the process-start snapshot).
-    await expect(loadConfig(env)).resolves.toMatchObject({
-      profiles: {
-        existing: { baseUrl: "https://old.example.com" },
-        new: { baseUrl: "https://mail.example.com" },
-        other: { baseUrl: "https://other.example.com" },
-      },
+    await expect(loadLocalState(env)).resolves.toMatchObject({
+      baseUrl: "https://mail.example.com",
+      credential: { apiKey: "nusend_raw_secret" },
     });
   });
 

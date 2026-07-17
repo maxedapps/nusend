@@ -67,7 +67,7 @@ export function createMigratedBunDatabase(): BunDatabase {
   db.run("PRAGMA foreign_keys = ON;");
 
   for (const parsed of readMigrationFiles()) {
-    db.run(Result.getOrThrow(parsed).upSql);
+    db.run(Result.getOrThrow(parsed).sql);
   }
 
   return db;

@@ -3,6 +3,7 @@ import { Effect, Option } from "effect";
 import type { DatabaseError } from "../errors.ts";
 import { Database, type DatabaseService } from "../services/database.ts";
 import { EmailSendingConfig, type EmailSendingConfigService } from "../services/email-transport.ts";
+import { suppressionScopeNeedsListId, suppressionScopeSql } from "../suppressions/match.ts";
 import { UnsubscribeConfig, type UnsubscribeConfigService } from "../unsubscribe/config.ts";
 import type { DeliveryContext } from "./schema.ts";
 
@@ -26,18 +27,15 @@ export function runPolicyGates(
   return Effect.gen(function* () {
     const db = yield* Database;
     const isMarketing = context.mailing.purpose === "marketing";
+    const purpose = isMarketing ? "marketing" : "transactional";
     const suppression = yield* db.get<{ ok: number }>(
       "sending:policy:suppression",
       `SELECT 1 AS ok
        FROM suppressions
        WHERE email = $email COLLATE NOCASE
-         AND ${
-           isMarketing
-             ? "(scope IN ('all', 'marketing') OR (scope = 'list' AND list_id = $listId))"
-             : "scope = 'all'"
-         }
+         AND ${suppressionScopeSql(purpose)}
        LIMIT 1;`,
-      isMarketing
+      suppressionScopeNeedsListId(purpose)
         ? { email: context.delivery.email, listId: context.mailing.listId }
         : { email: context.delivery.email },
     );

@@ -77,7 +77,7 @@ export function DatabaseNodeLive(
 
 function applyMigrations(db: DatabaseSync): void {
   for (const parsed of readMigrationFiles()) {
-    db.exec(Result.getOrThrow(parsed).upSql);
+    db.exec(Result.getOrThrow(parsed).sql);
   }
 }
 
@@ -441,6 +441,15 @@ export async function seedTestUser(
   );
 }
 
+/**
+ * Default TestClock origin for route tests. Uses wall clock so CLI e2e login
+ * (which compares server expiresAt against Date.now()) stays valid, while
+ * still treating fixture dates like 2000-01-01 as past.
+ */
+export function defaultTestClockMs(): number {
+  return Date.now();
+}
+
 // The real Hono app wired to an in-process runtime (node:sqlite + fake auth).
 // The runtime is passed to `run` so tests can seed and assert database state.
 export async function withTestApp<T>(
@@ -450,6 +459,8 @@ export async function withTestApp<T>(
   const runtime = makeTestRuntime(options);
 
   try {
+    // Align Clock with wall time so device-auth TTL matches CLI local expiry.
+    await runtime.runPromise(TestClock.setTime(defaultTestClockMs()));
     return await run(createApp({ runtime }), runtime);
   } finally {
     await runtime.dispose();

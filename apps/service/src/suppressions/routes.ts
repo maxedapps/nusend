@@ -1,10 +1,9 @@
-import { Effect, Result } from "effect";
+import { Effect } from "effect";
 import { Hono } from "hono";
-import { bodyLimit } from "hono/body-limit";
 
 import { requirePrincipal } from "../auth/middleware.ts";
-import { RequestValidationError } from "../errors.ts";
-import { errorEnvelope, runRoute, type AppRuntime } from "../http/respond.ts";
+import { jsonBodyLimit, readJsonBody, resultToEffect } from "../http/body.ts";
+import { runRoute, type AppRuntime } from "../http/respond.ts";
 import { listSuppressions } from "./read-model.ts";
 import { createManualSuppression, deleteManualSuppression } from "./write.ts";
 import {
@@ -12,7 +11,6 @@ import {
   maxSuppressionRequestBodyBytes,
   parseSuppressionId,
   parseSuppressionsListQuery,
-  type CreateSuppressionInput,
 } from "./schema.ts";
 
 type SuppressionsRoutesOptions = {
@@ -29,16 +27,12 @@ export function createSuppressionsRoutes(options: SuppressionsRoutesOptions): Ho
     permissions: { suppressions: ["write"] },
     runtime: options.runtime,
   });
-  const jsonLimit = bodyLimit({
-    maxSize: maxSuppressionRequestBodyBytes,
-    onError: (context) =>
-      context.json(errorEnvelope("request_too_large", "Request body is too large."), 413),
-  });
+  const jsonLimit = jsonBodyLimit(maxSuppressionRequestBodyBytes);
 
   routes.post("/", jsonLimit, requireSuppressionsWrite, (context) => {
     const program = Effect.gen(function* () {
       const body = yield* readJsonBody(context.req.raw);
-      const input = yield* decodeToEffect(decodeCreateSuppressionBody(body));
+      const input = yield* resultToEffect(decodeCreateSuppressionBody(body));
       return yield* createManualSuppression(input);
     });
 
@@ -66,17 +60,4 @@ export function createSuppressionsRoutes(options: SuppressionsRoutesOptions): Ho
   });
 
   return routes;
-}
-
-function readJsonBody(request: Request): Effect.Effect<unknown, RequestValidationError> {
-  return Effect.tryPromise({
-    try: () => request.json() as Promise<unknown>,
-    catch: () => new RequestValidationError({ message: "Request body must be valid JSON." }),
-  });
-}
-
-function decodeToEffect(
-  decoded: Result.Result<CreateSuppressionInput, RequestValidationError>,
-): Effect.Effect<CreateSuppressionInput, RequestValidationError> {
-  return Result.isFailure(decoded) ? Effect.fail(decoded.failure) : Effect.succeed(decoded.success);
 }

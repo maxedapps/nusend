@@ -1,17 +1,17 @@
 # Production readiness
 
-The selected remediation implemented in July 2026 improves suppression/list safety, explicit send ambiguity, device/webhook controls, configured-only tracking readiness, and CLI local-state/polling behavior. It is **not** full production-readiness closure and does not make broader marketing production volume ready.
+Nusend includes suppression/list safety, explicit send ambiguity, device/webhook controls, configured-only tracking readiness, and fail-closed CLI state. It is **not** ready for broad production marketing volume.
 
 Open release gates remain:
 
-1. A reviewed supervisor/reverse-proxy deployment and backup/restore/disaster-recovery procedure with tested recovery.
+1. Live staging proof of the documented deployment, backup, restore, and disaster-recovery procedures.
 2. Secure transport defaults, not only the current conditional auth URL/trusted-origin HTTPS validation when `NODE_ENV=production`.
 3. Bounded SES notification/event retention, capacity planning, and disk monitoring.
 4. Live AWS SES/SNS simulator feedback validation on the deployed instance.
 5. Live Gmail "Show original" verification that DKIM covers `List-Unsubscribe` and `List-Unsubscribe-Post`.
 6. Operational monitoring/alerting for worker freshness, dead/ambiguous deliveries, webhook retries, and SNS DLQ messages.
 
-Hosted CI and release automation are intentionally absent. Local commands such as `pnpm check`, build, and audit validation are the repository validation contract; passing them is not evidence that hosted automation or a release pipeline ran.
+Hosted CI and release automation are intentionally absent. `pnpm check` and `pnpm build` are the repository validation contract; passing them is not evidence that hosted automation or a release pipeline ran.
 
 Before production sending, also verify:
 

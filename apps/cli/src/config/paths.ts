@@ -14,18 +14,6 @@ export function configDirectory(
   return join(env.XDG_CONFIG_HOME ?? join(env.HOME ?? homedir(), ".config"), "nusend");
 }
 
-export function configPath(env: PathEnvironment = process.env): string {
-  return join(configDirectory(env), "config.json");
-}
-
-export function credentialsPath(env: PathEnvironment = process.env): string {
-  return join(configDirectory(env), "credentials.json");
-}
-
-export function localStateLockPath(env: PathEnvironment = process.env): string {
-  return join(configDirectory(env), "local-state.lock");
-}
-
-export function localStateReaperMutexPath(env: PathEnvironment = process.env): string {
-  return join(configDirectory(env), "local-state-reaper");
+export function statePath(env: PathEnvironment = process.env): string {
+  return join(configDirectory(env), "state.json");
 }

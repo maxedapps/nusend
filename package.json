@@ -5,17 +5,12 @@
   "scripts": {
     "format": "oxfmt --write --no-error-on-unmatched-pattern \"**/*.{js,jsx,ts,tsx,mjs,cjs,json,jsonc}\"",
     "format:check": "oxfmt --check --no-error-on-unmatched-pattern \"**/*.{js,jsx,ts,tsx,mjs,cjs,json,jsonc}\"",
-    "build": "pnpm --filter @nusend/api-contract build && pnpm --filter @nusend/cli build",
+    "build": "pnpm --filter @nusend/cli build",
     "lint": "oxlint",
     "typecheck": "pnpm -r --if-present typecheck && tsc --noEmit -p e2e/tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test",
-    "audit:test": "vitest run scripts/test-quality-audit/core.test.mjs",
-    "audit:validate": "node scripts/test-quality-audit/cli.mjs validate --strict --manifest docs/test-audit/manifest.json",
-    "audit:render": "node scripts/test-quality-audit/cli.mjs render --manifest docs/test-audit/manifest.json --out docs/test-audit/audit.md --write",
-    "audit:render:check": "node scripts/test-quality-audit/cli.mjs render --manifest docs/test-audit/manifest.json --out docs/test-audit/audit.md --check",
-    "audit:independent": "node scripts/test-quality-audit/independent-check.mjs --mode final --manifest docs/test-audit/manifest.json"
+    "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test"
   },
   "devDependencies": {
     "@types/bun": "^1.3.14",

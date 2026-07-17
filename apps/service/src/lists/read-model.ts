@@ -2,6 +2,7 @@ import { Effect, Schema } from "effect";
 
 import { DatabaseError, ListNotFoundError } from "../errors.ts";
 import { paginationMeta, type Pagination, type PaginationMeta } from "../http/query.ts";
+import { decodeDbRow, decodeDbRows } from "../http/sql-decode.ts";
 import { Database, type DatabaseService, type SqlParams } from "../services/database.ts";
 import type { ListContactsQuery } from "./schema.ts";
 
@@ -55,7 +56,7 @@ export function listLists(
       { limit: pagination.limit + 1, offset: pagination.offset },
     );
     const hasMore = rows.length > pagination.limit;
-    const decoded = yield* decodeRows(ListRow, hasMore ? rows.slice(0, pagination.limit) : rows);
+    const decoded = yield* decodeDbRows(ListRow, hasMore ? rows.slice(0, pagination.limit) : rows);
     return {
       items: decoded.map(toListItem),
       pagination: paginationMeta(pagination, hasMore),
@@ -80,7 +81,7 @@ export function getListRow(
     db
       .get("lists:get", listSelectSql("WHERE l.id = $listId GROUP BY l.id LIMIT 1;"), { listId })
       .pipe(
-        Effect.flatMap((row) => (row === null ? Effect.succeed(null) : decodeRow(ListRow, row))),
+        Effect.flatMap((row) => (row === null ? Effect.succeed(null) : decodeDbRow(ListRow, row))),
       ),
   );
 }
@@ -120,7 +121,10 @@ export function listListContacts(
     );
 
     const hasMore = rows.length > query.limit;
-    const decoded = yield* decodeRows(ListContactRow, hasMore ? rows.slice(0, query.limit) : rows);
+    const decoded = yield* decodeDbRows(
+      ListContactRow,
+      hasMore ? rows.slice(0, query.limit) : rows,
+    );
     return {
       items: decoded.map(toListContactItem),
       pagination: paginationMeta(query, hasMore),
@@ -160,18 +164,4 @@ function toListContactItem(row: ListContactRow) {
     subscribedAt: row.subscribedAt,
     unsubscribedAt: row.unsubscribedAt,
   };
-}
-
-function decodeRow<S extends Schema.ConstraintDecoder<unknown, never>>(
-  schema: S,
-  row: unknown,
-): Effect.Effect<S["Type"]> {
-  return Schema.decodeUnknownEffect(schema)(row).pipe(Effect.orDie);
-}
-
-function decodeRows<S extends Schema.ConstraintDecoder<unknown, never>>(
-  schema: S,
-  rows: readonly unknown[],
-): Effect.Effect<readonly S["Type"][]> {
-  return Effect.forEach(rows, (row) => decodeRow(schema, row));
 }

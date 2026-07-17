@@ -8,6 +8,7 @@ import { Effect, Schema } from "effect";
 
 import { DatabaseError, NotFoundError } from "../errors.ts";
 import { paginationMeta, type Pagination } from "../http/query.ts";
+import { decodeDbRow, decodeDbRows } from "../http/sql-decode.ts";
 import { Database, type DatabaseService, type SqlParams } from "../services/database.ts";
 
 const MailingRow = Schema.Struct({
@@ -68,7 +69,7 @@ export function listMailings(
       { limit: pagination.limit + 1, offset: pagination.offset },
     );
     const hasMore = pageRows.length > pagination.limit;
-    const rows = yield* decodeRows(
+    const rows = yield* decodeDbRows(
       MailingRow,
       hasMore ? pageRows.slice(0, pagination.limit) : pageRows,
     );
@@ -125,7 +126,7 @@ export function getMailingDetail(
       return yield* Effect.fail(new NotFoundError({ message: "Mailing not found." }));
     }
 
-    const mailing = yield* decodeRow(MailingDetailRow, raw);
+    const mailing = yield* decodeDbRow(MailingDetailRow, raw);
     const counts = yield* readCounts(db, [mailing.id]);
     return {
       mailing: {
@@ -158,7 +159,7 @@ function readCounts(
        GROUP BY mailing_id, status;`,
       params,
     );
-    const rows = yield* decodeRows(CountRow, raw);
+    const rows = yield* decodeDbRows(CountRow, raw);
     const byMailing = new Map<string, MailingCounts>();
 
     for (const row of rows) {
@@ -168,18 +169,4 @@ function readCounts(
 
     return byMailing;
   });
-}
-
-function decodeRow<S extends Schema.ConstraintDecoder<unknown, never>>(
-  schema: S,
-  row: unknown,
-): Effect.Effect<S["Type"]> {
-  return Schema.decodeUnknownEffect(schema)(row).pipe(Effect.orDie);
-}
-
-function decodeRows<S extends Schema.ConstraintDecoder<unknown, never>>(
-  schema: S,
-  rows: readonly unknown[],
-): Effect.Effect<readonly S["Type"][]> {
-  return Effect.forEach(rows, (row) => decodeRow(schema, row));
 }

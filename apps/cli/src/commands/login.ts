@@ -3,43 +3,40 @@ import type { PermissionSet } from "@nusend/api-contract/permissions";
 
 import { NusendHttpClient } from "../client/http.js";
 import { NusendApi } from "../client/nusend-api.js";
-import { updateLoginState } from "../config/local-state.js";
-import { normalizeBaseUrl } from "../config/profiles.js";
+import { normalizeBaseUrl, writeLoginState } from "../config/local-state.js";
 import { printJson } from "../output/format.js";
-import {
-  commandPositionals,
-  httpTimeoutMsFromEnv,
-  permissionsFromArgs,
-  readOption,
-  selectedProfile,
-  UsageError,
-  type CommandContext,
-} from "./context.js";
+import { httpTimeoutMsFromEnv, UsageError, type CommandContext } from "./context.js";
+import type { CliCommand } from "./options.js";
 
-export async function runLoginCommand(args: string[], context: CommandContext): Promise<void> {
-  const positional = commandPositionals(args, ["--name", "--permission"]);
+type LoginCommand = Extract<CliCommand, { readonly kind: "login" }>;
+
+export async function runLoginCommand(
+  command: LoginCommand,
+  context: CommandContext,
+): Promise<void> {
   const baseUrl = normalizeLoginBaseUrl(
-    positional[0] ?? context.options.baseUrl ?? context.env.NUSEND_BASE_URL ?? "",
+    command.baseUrlInput ?? command.baseUrl ?? context.env.NUSEND_BASE_URL ?? "",
   );
-  const name = readOption(args, "--name") ?? `nusend-cli on ${hostname() || "local"}`;
-  const permissions = permissionsFromArgs(args, defaultLoginPermissions());
   const api = new NusendApi(
     new NusendHttpClient({ baseUrl, timeoutMs: httpTimeoutMsFromEnv(context.env) }),
   );
-  const started = await api.startDeviceAuthorization({ clientName: name, permissions });
+  const started = await api.startDeviceAuthorization({
+    clientName: command.clientName ?? `nusend-cli on ${hostname() || "local"}`,
+    permissions: command.permissions ?? defaultLoginPermissions(),
+  });
   const expiresAt = Date.parse(started.expiresAt);
   if (!Number.isFinite(expiresAt)) {
     throw new Error("Device authorization response contained an invalid expiration timestamp.");
   }
 
-  if (context.options.json) {
+  if (context.json) {
     console.error(
       JSON.stringify({
         verification: {
+          expiresAt: started.expiresAt,
           uri: started.verificationUri,
           uriComplete: started.verificationUriComplete ?? null,
           userCode: started.userCode,
-          expiresAt: started.expiresAt,
         },
       }),
     );
@@ -50,41 +47,17 @@ export async function runLoginCommand(args: string[], context: CommandContext): 
     console.log(`Code: ${started.userCode}`);
   }
 
-  await pollUntilApproved(
-    api,
-    started.deviceCode,
-    started.intervalSeconds,
-    expiresAt,
-    baseUrl,
-    context,
-  );
-}
-
-async function pollUntilApproved(
-  api: NusendApi,
-  deviceCode: string,
-  initialIntervalSeconds: number,
-  expiresAt: number,
-  baseUrl: string,
-  context: CommandContext,
-): Promise<void> {
-  let intervalMs = safePollIntervalMs(initialIntervalSeconds);
-
+  let intervalMs = safePollIntervalMs(started.intervalSeconds);
   while (true) {
     const beforeSleep = context.runtime.now();
     assertNotLocallyExpired(beforeSleep, expiresAt);
-    // eslint-disable-next-line no-await-in-loop -- protocol polling must remain sequential.
+    // eslint-disable-next-line no-await-in-loop -- protocol polling is sequential.
     await context.runtime.sleep(Math.min(intervalMs, expiresAt - beforeSleep));
-
-    // A token request is never started at or after local expiry. Once started,
-    // the server remains authoritative and an approved response is accepted.
     assertNotLocallyExpired(context.runtime.now(), expiresAt);
     // eslint-disable-next-line no-await-in-loop -- each response determines the next poll.
-    const polled = await api.pollDeviceAuthorization(deviceCode);
+    const polled = await api.pollDeviceAuthorization(started.deviceCode);
     if (polled.status === "approved") {
-      const profile = selectedProfile(context);
-      // eslint-disable-next-line no-await-in-loop -- approval terminates the loop after persistence.
-      await updateLoginState(
+      await writeLoginState(
         {
           baseUrl,
           credential: {
@@ -93,19 +66,16 @@ async function pollUntilApproved(
             createdAt: polled.apiKey.createdAt,
             preview: polled.apiKey.preview,
           },
-          profile,
         },
         context.env,
       );
-
-      if (context.options.json) {
+      if (context.json) {
         printJson({
-          profile,
-          stored: true,
           apiKey: { id: polled.apiKey.id, preview: polled.apiKey.preview },
+          stored: true,
         });
       } else {
-        console.log(`Logged in as profile ${profile} with key ${polled.apiKey.preview}.`);
+        console.log(`Logged in with key ${polled.apiKey.preview}.`);
       }
       return;
     }

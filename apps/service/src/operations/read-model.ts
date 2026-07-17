@@ -1,6 +1,7 @@
 import { Effect, Schema } from "effect";
 
 import { DatabaseError, NotFoundError } from "../errors.ts";
+import { decodeDbRow, decodeDbRows } from "../http/sql-decode.ts";
 import { JobState, JobStateValues, type JobState as JobStateType } from "../queue/schema.ts";
 import { Database, type DatabaseService, type SqlParams } from "../services/database.ts";
 import {
@@ -160,22 +161,22 @@ export function getOperationsSummary(): Effect.Effect<
     ]);
 
     const jobs = zeroCounts(JobStateValues);
-    for (const row of yield* decodeRows(JobCountRow, jobRows)) jobs[row.state] = row.count;
+    for (const row of yield* decodeDbRows(JobCountRow, jobRows)) jobs[row.state] = row.count;
 
     const deliveries = zeroCounts(DeliveryStatusValues);
-    for (const row of yield* decodeRows(DeliveryCountRow, deliveryRows)) {
+    for (const row of yield* decodeDbRows(DeliveryCountRow, deliveryRows)) {
       deliveries[row.status] = row.count;
     }
 
     const sendAttempts = zeroCounts(SendAttemptStatusValues);
-    for (const row of yield* decodeRows(AttemptCountRow, attemptRows)) {
+    for (const row of yield* decodeDbRows(AttemptCountRow, attemptRows)) {
       sendAttempts[row.status] = row.count;
     }
 
     return {
       deliveries,
       jobs,
-      recentIssues: yield* decodeRows(RecentIssueRow, recentIssueRows),
+      recentIssues: yield* decodeDbRows(RecentIssueRow, recentIssueRows),
       sendAttempts,
     };
   });
@@ -236,7 +237,7 @@ export function listDeliveries(
       params,
     );
 
-    const decoded = yield* decodeRows(DeliveryListRow, rows);
+    const decoded = yield* decodeDbRows(DeliveryListRow, rows);
     return { items: decoded.map(toDeliveryListItem) };
   });
 }
@@ -291,8 +292,8 @@ export function getDeliveryDetail(
 
     return toDeliveryDetail(
       deliveryRow,
-      jobRow === null ? null : yield* decodeRow(JobDetailRow, jobRow),
-      yield* decodeRows(SendAttemptRow, attemptRows),
+      jobRow === null ? null : yield* decodeDbRow(JobDetailRow, jobRow),
+      yield* decodeDbRows(SendAttemptRow, attemptRows),
     );
   });
 }
@@ -329,7 +330,7 @@ function getDeliveryDetailRow(
     )
     .pipe(
       Effect.flatMap((row) =>
-        row === null ? Effect.succeed(null) : decodeRow(DeliveryDetailRow, row),
+        row === null ? Effect.succeed(null) : decodeDbRow(DeliveryDetailRow, row),
       ),
     );
 }
@@ -435,20 +436,6 @@ function toDeliveryDetail(
 
 function zeroCounts<const T extends readonly string[]>(values: T): Record<T[number], number> {
   return Object.fromEntries(values.map((value) => [value, 0])) as Record<T[number], number>;
-}
-
-function decodeRow<S extends Schema.ConstraintDecoder<unknown, never>>(
-  schema: S,
-  row: unknown,
-): Effect.Effect<S["Type"]> {
-  return Schema.decodeUnknownEffect(schema)(row).pipe(Effect.orDie);
-}
-
-function decodeRows<S extends Schema.ConstraintDecoder<unknown, never>>(
-  schema: S,
-  rows: readonly unknown[],
-): Effect.Effect<readonly S["Type"][]> {
-  return Effect.forEach(rows, (row) => decodeRow(schema, row));
 }
 
 function required<T>(value: T | null, name: string): T {

@@ -1,13 +1,14 @@
 import { Effect, Result, Schema, SchemaGetter } from "effect";
 
 import { RequestValidationError } from "../errors.ts";
+import { isPlainObject, validationFail } from "../http/body.ts";
 import {
   parseOptionalString,
   parsePagination,
   parseRouteId,
   type Pagination,
 } from "../http/query.ts";
-import { maxEmailLength, normalizeValidEmail } from "../lib/email.ts";
+import { EmailSchema, maxEmailLength, normalizeValidEmail } from "../lib/email.ts";
 
 export const maxListRequestBodyBytes = 64 * 1024;
 export const maxListImportRequestBodyBytes = 1_000_000;
@@ -30,16 +31,9 @@ const TrimmedName = Schema.String.pipe(
   }),
 ).check(Schema.isMinLength(1), Schema.isMaxLength(maxListNameLength));
 
-const Email = Schema.String.pipe(
-  Schema.decodeTo(Schema.String, {
-    decode: SchemaGetter.transform((value: string) => normalizeValidEmail(value) ?? ""),
-    encode: SchemaGetter.passthrough(),
-  }),
-).check(Schema.makeFilter<string>((value) => value.length > 0 || "must be a valid email address"));
-
 const ListNameBody = Schema.Struct({ name: TrimmedName });
 const ImportContactsBody = Schema.Struct({
-  contacts: Schema.Array(Schema.Struct({ email: Email })).check(
+  contacts: Schema.Array(Schema.Struct({ email: EmailSchema })).check(
     Schema.makeFilter<readonly { readonly email: string }[]>(
       (contacts) => contacts.length >= 1 || "must contain at least one contact",
     ),
@@ -54,19 +48,19 @@ const ImportContactsBody = Schema.Struct({
 export function decodeListNameBody(
   value: unknown,
 ): Result.Result<ListNameInput, RequestValidationError> {
-  if (!isPlainObject(value)) return fail("Request body must be a JSON object.");
+  if (!isPlainObject(value)) return validationFail("Request body must be a JSON object.");
   const decoded = Schema.decodeUnknownResult(ListNameBody)(value, { errors: "all" });
   return Result.isFailure(decoded)
-    ? fail(decoded.failure.message)
+    ? validationFail(decoded.failure.message)
     : Result.succeed({ name: decoded.success.name });
 }
 
 export function decodeImportListContactsBody(
   value: unknown,
 ): Result.Result<ImportListContactsInput, RequestValidationError> {
-  if (!isPlainObject(value)) return fail("Request body must be a JSON object.");
+  if (!isPlainObject(value)) return validationFail("Request body must be a JSON object.");
   const decoded = Schema.decodeUnknownResult(ImportContactsBody)(value, { errors: "all" });
-  if (Result.isFailure(decoded)) return fail(decoded.failure.message);
+  if (Result.isFailure(decoded)) return validationFail(decoded.failure.message);
   return Result.succeed({ contacts: decoded.success.contacts });
 }
 
@@ -100,14 +94,4 @@ export function parseListId(value: string): Effect.Effect<string, RequestValidat
 
 export function parseContactId(value: string): Effect.Effect<string, RequestValidationError> {
   return parseRouteId(value, "Contact id");
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
-}
-
-function fail(message: string): Result.Result<never, RequestValidationError> {
-  return Result.fail(new RequestValidationError({ message }));
 }

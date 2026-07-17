@@ -32,14 +32,24 @@ export function parsePagination(
   });
 }
 
-export function parseLimit(value: string | null): Effect.Effect<number, RequestValidationError> {
-  if (value === null || value === "") return Effect.succeed(defaultPageLimit);
-  if (!/^\d+$/.test(value))
-    return invalid(`limit must be an integer between 1 and ${maxPageLimit}.`);
+type ParseLimitOptions = {
+  readonly default?: number;
+  readonly max?: number;
+};
+
+export function parseLimit(
+  value: string | null,
+  options?: ParseLimitOptions,
+): Effect.Effect<number, RequestValidationError> {
+  const defaultLimit = options?.default ?? defaultPageLimit;
+  const maxLimit = options?.max ?? maxPageLimit;
+
+  if (value === null || value === "") return Effect.succeed(defaultLimit);
+  if (!/^\d+$/.test(value)) return invalid(`limit must be an integer between 1 and ${maxLimit}.`);
 
   const limit = Number(value);
-  if (!Number.isSafeInteger(limit) || limit < 1 || limit > maxPageLimit) {
-    return invalid(`limit must be an integer between 1 and ${maxPageLimit}.`);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > maxLimit) {
+    return invalid(`limit must be an integer between 1 and ${maxLimit}.`);
   }
 
   return Effect.succeed(limit);

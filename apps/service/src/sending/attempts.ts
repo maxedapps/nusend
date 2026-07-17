@@ -1,3 +1,19 @@
+// Attempt + delivery pair writes.
+//
+// Transition matrix (latest attempt only for pair outcomes):
+//   queued delivery  + claim     → sending + insert started attempt
+//   started + sending            → succeeded + sent          (recordSendSuccess)
+//   ambiguous + ambiguous        → succeeded + sent          (reconcile same MessageId)
+//   started + sending            → failed + failed|suppressed|queued  (permanent/retryable)
+//   started + sending            → ambiguous + ambiguous     (recordAmbiguousFailure)
+//   started + sending (stale)    → ambiguous + ambiguous     (recordStaleSendingAsAmbiguous)
+//   queued delivery, no attempt  → failed                    (markDeliveryFailedForDeadJob)
+//   terminal delivery            → SupersededTerminal (no-op)
+//
+// Write-first under one BEGIN IMMEDIATE transaction: UPDATE attempt, then delivery;
+// fallback-read only on zero-row / incompatibility. Half-pair after commit must not
+// happen — both writes share one txn. Pre-dispatch failures never mark ambiguous
+// (processor concern). Success may reconcile ambiguous→sent with compatible MessageId.
 import { Effect } from "effect";
 
 import { DatabaseError } from "../errors.ts";
@@ -101,88 +117,28 @@ export function recordSendSuccess(options: {
     return yield* db.transaction(
       Effect.gen(function* () {
         const now = yield* currentIso;
-        const before = yield* readPairState(db, options);
-        if (isAlreadySent(before, options.messageId)) return "AlreadyRecorded";
 
-        const normal = before.attemptStatus === "started" && before.deliveryStatus === "sending";
-        const reconciliation =
-          before.attemptStatus === "ambiguous" && before.deliveryStatus === "ambiguous";
-        const exactLatest =
-          before.attemptNo !== null && before.attemptNo === before.latestAttemptNo;
-        const compatible =
-          compatibleMessageId(before.attemptMessageId, options.messageId) &&
-          compatibleMessageId(before.deliveryMessageId, options.messageId);
+        // Normal path: started attempt + sending delivery.
+        const recorded = yield* writeSuccessPair(db, {
+          ...options,
+          expectedAttemptStatus: "started",
+          expectedDeliveryStatus: "sending",
+          now,
+        });
+        if (recorded === "wrote") return "Recorded";
+        if (recorded === "already") return "AlreadyRecorded";
 
-        if ((!normal && !reconciliation) || !exactLatest || !compatible) {
-          return yield* classifyIncompatible(before, "sending:success:inconsistent");
-        }
+        // Reconcile path: ambiguous pair with compatible MessageId.
+        const reconciled = yield* writeSuccessPair(db, {
+          ...options,
+          expectedAttemptStatus: "ambiguous",
+          expectedDeliveryStatus: "ambiguous",
+          now,
+        });
+        if (reconciled === "wrote") return "Reconciled";
+        if (reconciled === "already") return "AlreadyRecorded";
 
-        const attempt = yield* db.get<{ id: string }>(
-          "sending:attempt:succeed",
-          `UPDATE send_attempts
-           SET status = 'succeeded', ses_message_id = $messageId,
-               error_message = NULL, finished_at = $now
-           WHERE id = $attemptId
-             AND delivery_id = $deliveryId
-             AND status = $expectedAttemptStatus
-             AND (ses_message_id IS NULL OR ses_message_id = $messageId)
-             AND attempt_no = (
-               SELECT MAX(candidate.attempt_no)
-               FROM send_attempts candidate
-               WHERE candidate.delivery_id = $deliveryId
-             )
-           RETURNING id;`,
-          {
-            attemptId: options.attemptId,
-            deliveryId: options.deliveryId,
-            expectedAttemptStatus: reconciliation ? "ambiguous" : "started",
-            messageId: options.messageId,
-            now,
-          },
-        );
-        if (!attempt) return yield* readBackSuccess(db, options);
-
-        const delivery = yield* db.get<{ id: string }>(
-          "sending:delivery:succeed",
-          `UPDATE deliveries
-           SET status = 'sent', ses_message_id = $messageId,
-               last_error = NULL, updated_at = $now
-           WHERE id = $deliveryId
-             AND status = $expectedDeliveryStatus
-             AND (ses_message_id IS NULL OR ses_message_id = $messageId)
-             AND EXISTS (
-               SELECT 1
-               FROM send_attempts exact
-               WHERE exact.id = $attemptId
-                 AND exact.delivery_id = $deliveryId
-                 AND exact.status = 'succeeded'
-                 AND exact.ses_message_id = $messageId
-                 AND exact.attempt_no = (
-                   SELECT MAX(candidate.attempt_no)
-                   FROM send_attempts candidate
-                   WHERE candidate.delivery_id = $deliveryId
-                 )
-             )
-           RETURNING id;`,
-          {
-            attemptId: options.attemptId,
-            deliveryId: options.deliveryId,
-            expectedDeliveryStatus: reconciliation ? "ambiguous" : "sending",
-            messageId: options.messageId,
-            now,
-          },
-        );
-        if (!delivery) {
-          const readBack = yield* readPairState(db, options);
-          if (isAlreadySent(readBack, options.messageId)) return "AlreadyRecorded";
-          return yield* inconsistent("sending:success:half-pair");
-        }
-
-        const after = yield* readPairState(db, options);
-        if (!isAlreadySent(after, options.messageId)) {
-          return yield* inconsistent("sending:success:read-back");
-        }
-        return reconciliation ? "Reconciled" : "Recorded";
+        return yield* readBackSuccess(db, options);
       }),
     );
   });
@@ -280,16 +236,27 @@ export function recordStaleSendingAsAmbiguous(options: {
     return yield* db.transaction(
       Effect.gen(function* () {
         const now = yield* currentIso;
-        const before = yield* readLatestPairState(db, options.deliveryId);
-        if (
-          before.attemptStatus === "ambiguous" &&
-          before.deliveryStatus === "ambiguous" &&
-          before.attemptNo === before.latestAttemptNo
-        ) {
-          return "AlreadyRecorded";
-        }
-        if (before.attemptStatus !== "started" || before.deliveryStatus !== "sending") {
-          return yield* classifyIncompatible(before, "sending:stale:inconsistent");
+        const latest = yield* db.get<{ id: string; status: string }>(
+          "sending:attempt:latest-for-stale",
+          `SELECT id, status
+           FROM send_attempts
+           WHERE delivery_id = $deliveryId
+           ORDER BY attempt_no DESC
+           LIMIT 1;`,
+          { deliveryId: options.deliveryId },
+        );
+
+        if (!latest) {
+          const delivery = yield* db.get<{ status: DeliveryStatus }>(
+            "sending:stale:delivery-only",
+            "SELECT status FROM deliveries WHERE id = $deliveryId;",
+            { deliveryId: options.deliveryId },
+          );
+          if (!delivery) return yield* inconsistent("sending:pair:missing-delivery");
+          return yield* classifyIncompatible(
+            { deliveryStatus: delivery.status },
+            "sending:stale:inconsistent",
+          );
         }
 
         const attempt = yield* db.get<{ id: string }>(
@@ -304,9 +271,13 @@ export function recordStaleSendingAsAmbiguous(options: {
                FROM send_attempts candidate
                WHERE candidate.delivery_id = $deliveryId
              )
+             AND EXISTS (
+               SELECT 1 FROM deliveries d
+               WHERE d.id = $deliveryId AND d.status = 'sending'
+             )
            RETURNING id;`,
           {
-            attemptId: before.attemptId,
+            attemptId: latest.id,
             deliveryId: options.deliveryId,
             errorMessage,
             now,
@@ -334,35 +305,100 @@ export function recordStaleSendingAsAmbiguous(options: {
              )
            RETURNING id;`,
           {
-            attemptId: before.attemptId,
+            attemptId: latest.id,
             deliveryId: options.deliveryId,
             errorMessage,
             now,
           },
         );
-        if (!delivery) {
-          const readBack = yield* readLatestPairState(db, options.deliveryId);
-          if (
-            readBack.attemptStatus === "ambiguous" &&
-            readBack.deliveryStatus === "ambiguous" &&
-            readBack.attemptNo === readBack.latestAttemptNo
-          ) {
-            return "AlreadyRecorded";
-          }
-          return yield* inconsistent("sending:stale:half-pair");
-        }
-
-        const after = yield* readLatestPairState(db, options.deliveryId);
-        if (
-          after.attemptStatus !== "ambiguous" ||
-          after.deliveryStatus !== "ambiguous" ||
-          after.attemptNo !== after.latestAttemptNo
-        ) {
-          return yield* inconsistent("sending:stale:read-back");
-        }
+        if (!delivery) return yield* readBackStale(db, options.deliveryId);
         return "Recorded";
       }),
     );
+  });
+}
+
+/** Private pair primitive: attempt UPDATE then delivery UPDATE. */
+type WriteSuccessOutcome = "wrote" | "already" | "miss";
+
+function writeSuccessPair(
+  db: DatabaseService,
+  options: {
+    attemptId: string;
+    deliveryId: string;
+    expectedAttemptStatus: "started" | "ambiguous";
+    expectedDeliveryStatus: "sending" | "ambiguous";
+    messageId: string;
+    now: string;
+  },
+): Effect.Effect<WriteSuccessOutcome, DatabaseError> {
+  return Effect.gen(function* () {
+    const attempt = yield* db.get<{ id: string }>(
+      "sending:attempt:succeed",
+      `UPDATE send_attempts
+       SET status = 'succeeded', ses_message_id = $messageId,
+           error_message = NULL, finished_at = $now
+       WHERE id = $attemptId
+         AND delivery_id = $deliveryId
+         AND status = $expectedAttemptStatus
+         AND (ses_message_id IS NULL OR ses_message_id = $messageId)
+         AND attempt_no = (
+           SELECT MAX(candidate.attempt_no)
+           FROM send_attempts candidate
+           WHERE candidate.delivery_id = $deliveryId
+         )
+         AND EXISTS (
+           SELECT 1 FROM deliveries d
+           WHERE d.id = $deliveryId AND d.status = $expectedDeliveryStatus
+         )
+       RETURNING id;`,
+      {
+        attemptId: options.attemptId,
+        deliveryId: options.deliveryId,
+        expectedAttemptStatus: options.expectedAttemptStatus,
+        expectedDeliveryStatus: options.expectedDeliveryStatus,
+        messageId: options.messageId,
+        now: options.now,
+      },
+    );
+    if (!attempt) return "miss";
+
+    const delivery = yield* db.get<{ id: string }>(
+      "sending:delivery:succeed",
+      `UPDATE deliveries
+       SET status = 'sent', ses_message_id = $messageId,
+           last_error = NULL, updated_at = $now
+       WHERE id = $deliveryId
+         AND status = $expectedDeliveryStatus
+         AND (ses_message_id IS NULL OR ses_message_id = $messageId)
+         AND EXISTS (
+           SELECT 1
+           FROM send_attempts exact
+           WHERE exact.id = $attemptId
+             AND exact.delivery_id = $deliveryId
+             AND exact.status = 'succeeded'
+             AND exact.ses_message_id = $messageId
+             AND exact.attempt_no = (
+               SELECT MAX(candidate.attempt_no)
+               FROM send_attempts candidate
+               WHERE candidate.delivery_id = $deliveryId
+             )
+         )
+       RETURNING id;`,
+      {
+        attemptId: options.attemptId,
+        deliveryId: options.deliveryId,
+        expectedDeliveryStatus: options.expectedDeliveryStatus,
+        messageId: options.messageId,
+        now: options.now,
+      },
+    );
+    if (!delivery) {
+      const readBack = yield* readPairState(db, options);
+      if (isAlreadySent(readBack, options.messageId)) return "already";
+      return yield* inconsistent("sending:success:half-pair");
+    }
+    return "wrote";
   });
 }
 
@@ -380,16 +416,6 @@ function recordFailure(options: {
     return yield* db.transaction(
       Effect.gen(function* () {
         const now = yield* currentIso;
-        const before = yield* readPairState(db, options);
-        if (isAlreadyFailed(before, options, errorMessage)) return "AlreadyRecorded";
-        if (
-          before.attemptStatus !== "started" ||
-          before.deliveryStatus !== "sending" ||
-          before.attemptNo === null ||
-          before.attemptNo !== before.latestAttemptNo
-        ) {
-          return yield* classifyIncompatible(before, "sending:failure:inconsistent");
-        }
 
         const attempt = yield* db.get<{ id: string }>(
           "sending:attempt:fail",
@@ -402,6 +428,10 @@ function recordFailure(options: {
                SELECT MAX(candidate.attempt_no)
                FROM send_attempts candidate
                WHERE candidate.delivery_id = $deliveryId
+             )
+             AND EXISTS (
+               SELECT 1 FROM deliveries d
+               WHERE d.id = $deliveryId AND d.status = 'sending'
              )
            RETURNING id;`,
           {
@@ -447,11 +477,6 @@ function recordFailure(options: {
           if (isAlreadyFailed(readBack, options, errorMessage)) return "AlreadyRecorded";
           return yield* inconsistent("sending:failure:half-pair");
         }
-
-        const after = yield* readPairState(db, options);
-        if (!isAlreadyFailed(after, options, errorMessage)) {
-          return yield* inconsistent("sending:failure:read-back");
-        }
         return "Recorded";
       }),
     );
@@ -490,12 +515,11 @@ function readPairState(
 function readLatestPairState(
   db: DatabaseService,
   deliveryId: string,
-): Effect.Effect<PairState & { readonly attemptId: string | null }, DatabaseError> {
+): Effect.Effect<PairState, DatabaseError> {
   return Effect.gen(function* () {
-    const row = yield* db.get<PairState & { attemptId: string | null }>(
+    const row = yield* db.get<PairState>(
       "sending:pair:read-latest",
       `SELECT
-         a.id AS attemptId,
          a.status AS attemptStatus,
          a.attempt_no AS attemptNo,
          a.ses_message_id AS attemptMessageId,
@@ -590,10 +614,6 @@ function isAlreadyFailed(
     state.attemptNo !== null &&
     state.attemptNo === state.latestAttemptNo
   );
-}
-
-function compatibleMessageId(current: string | null, incoming: string): boolean {
-  return current === null || current === incoming;
 }
 
 function classifyIncompatible(

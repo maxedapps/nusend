@@ -68,7 +68,7 @@ dc --profile ops run --rm --no-deps migrate \
 - `changed`: the applied migration checksum differs from the image; stop and restore the matching reviewed image/migration or database. Do not edit the recorded checksum.
 - `missing`: the database records a migration absent from the image.
 
-Nusend's current `0001_initial_schema` is a **fresh-database-only baseline**. A database with former `0001`–`0009` history is expected to refuse checksum/missing-history validation. There is no automatic in-place bridge. Never bypass the check, automatically delete the DB, or assume `db:rollback` is safe. Preserve the complete stopped DB/WAL/SHM set and perform a separately reviewed fresh import or exact restore.
+Before launch, `0001_initial_schema.sql` is the editable fresh-database baseline: delete and recreate only disposable local databases after changing it. After launch, applied files are immutable and schema changes use forward `0002+` migrations. For a non-disposable database, preserve the complete stopped DB/WAL/SHM set and use a reviewed exact restore or recreate/import procedure.
 
 A mistyped DB path can create an empty SQLite file. Verify `/etc/nusend/compose.env`, the forced container path `/var/lib/nusend/nusend.sqlite`, host ownership `10001:10001`, directory `0700`, and file `0600` before migrating anything.
 
@@ -130,7 +130,7 @@ The backup/restore gate requires `PRAGMA quick_check` to return exactly `ok` and
 - Do not upload, promote, or cut over to the failed snapshot.
 - Preserve the source, staging output, exact snapshot ID, logs, and existing known-good snapshots.
 - Keep API/worker stopped for a restore failure; do not delete DB/WAL/SHM sidecars or run repair commands against the only copy.
-- Determine whether the live source, restored object, storage, or schema is damaged. Validate a different selected exact ID non-destructively.
+- Determine whether the live source, restored object, storage, or schema is damaged. Validate a different selected exact ID at a separate path.
 - Escalate to a reviewed SQLite recovery/export procedure; `quick_check` success alone does not override foreign-key rows.
 
 Never substitute a raw live DB copy or “latest” snapshot for the failed exact ID.
@@ -177,15 +177,15 @@ Ensure all required Better Auth variables are set together and `NUSEND_API_KEY_H
 - `401 unauthenticated`: the key is invalid, revoked, expired, or hashed with a different `NUSEND_API_KEY_HASH_SECRET`.
 - `403 forbidden`: the key is valid but lacks the route permission.
 
-## CLI credential file rejected
+## CLI state permissions rejected
 
-On Unix, Nusend refuses broad credential-directory/file permissions. Run `nusend config repair-permissions` (directory `0700`; config/credentials `0600`).
+On Unix, Nusend refuses broad state-directory/file permissions. Run `nusend config repair-permissions` (directory `0700`; `state.json` `0600`).
 
-## CLI local state is busy
+## CLI state file corrupt or unreadable
 
-A config/credential mutation waits up to five seconds for the shared lock, then fails without modifying files. Let the other CLI process finish and retry. Nusend automatically reaps only a proven dead same-host owner after its publication grace period; it never steals live, foreign-host, malformed, too-young, or permission-indeterminate owners.
+`state.json` holds one service URL and credential. Login may replace readable malformed JSON/schema after authorization, but filesystem failures and broad Unix permissions fail closed without changing bytes. Other stored-state commands require a valid file; delete a malformed disposable file and log in again. With both `NUSEND_API_KEY` and a base URL from `--base-url` or `NUSEND_BASE_URL`, the CLI bypasses disk entirely.
 
-If the error requests operator inspection for a reaper mutex, lock release, or tombstone, stop every Nusend CLI process using that config directory first. Inspect the lock/reaper/tombstone metadata and filesystem support before removing anything; do not blindly delete an unfamiliar owner. Network-mounted config directories are unsupported. `EPERM`/`ENOTSUP` during publication indicates the filesystem cannot provide the required safe local locking semantics.
+Concurrent CLI mutation is unsupported. Each write is still atomic, so the last completed writer wins without exposing partial JSON.
 
 ## Device login stuck
 

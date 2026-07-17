@@ -4,8 +4,6 @@ import type { DatabaseError } from "../errors.ts";
 import { currentIso } from "../lib/iso-time.ts";
 import { Database, type DatabaseService } from "../services/database.ts";
 
-export const terminalDeliveryStatuses = ["sent", "failed", "suppressed", "ambiguous"] as const;
-
 // `completed` means all send processing for the mailing is terminal. It does
 // not mean recipient inbox delivery has been confirmed by SES events.
 export function markMailingSending(

@@ -12,6 +12,7 @@ import {
   RateLimitedError,
   RequestValidationError,
 } from "../errors.ts";
+import { addMillisecondsFrom, currentIso, currentTimeMillis, toIso } from "../lib/iso-time.ts";
 import { Database, type DatabaseService } from "../services/database.ts";
 import { IdGenerator, type IdGeneratorService } from "../services/ids.ts";
 import {
@@ -95,7 +96,7 @@ export function makeDeviceAuthorizationsService(input: {
   return {
     approve: ({ userCode, userId }) =>
       Effect.gen(function* () {
-        const approvedAt = new Date().toISOString();
+        const approvedAt = yield* currentIso;
         const updated = yield* input.db.get<{ id: string }>(
           "deviceAuth:approve",
           `UPDATE device_authorizations
@@ -122,7 +123,7 @@ export function makeDeviceAuthorizationsService(input: {
       }),
     deny: ({ userCode }) =>
       Effect.gen(function* () {
-        const deniedAt = new Date().toISOString();
+        const deniedAt = yield* currentIso;
         const updated = yield* input.db.get<{ id: string }>(
           "deviceAuth:deny",
           `UPDATE device_authorizations
@@ -154,7 +155,7 @@ export function makeDeviceAuthorizationsService(input: {
            WHERE user_code_hash = $userCodeHash;`,
           { userCodeHash: hashDeviceAuthCode(normalizedUserCode, input.hashSecret) },
         );
-        const now = new Date().toISOString();
+        const now = yield* currentIso;
         if (!row || isExpired(row, now) || row.denied_at || row.consumed_at) return null;
         return {
           clientName: row.client_name,
@@ -181,10 +182,10 @@ export function makeDeviceAuthorizationsService(input: {
 
         const deviceCode = generateDeviceCode();
         const userCode = generateUserCode();
-        const now = new Date();
-        const nowIso = now.toISOString();
-        const expiresAt = new Date(now.getTime() + deviceAuthorizationTtlMs).toISOString();
-        const staleBefore = new Date(now.getTime() - staleAuthorizationRetentionMs).toISOString();
+        const nowMs = yield* currentTimeMillis;
+        const nowIso = toIso(nowMs);
+        const expiresAt = addMillisecondsFrom(nowMs, deviceAuthorizationTtlMs);
+        const staleBefore = addMillisecondsFrom(nowMs, -staleAuthorizationRetentionMs);
         const requesterFingerprintHash = hashDeviceAuthCode(
           requesterFingerprint?.trim() || "direct",
           input.hashSecret,
@@ -262,7 +263,7 @@ export function makeDeviceAuthorizationsService(input: {
     token: (deviceCode) =>
       Effect.gen(function* () {
         const deviceCodeHash = hashDeviceAuthCode(deviceCode, input.hashSecret);
-        const preflightNow = new Date().toISOString();
+        const preflightNow = yield* currentIso;
         const preflightRow = yield* findTokenRow(
           input.db,
           "deviceAuth:findByDeviceCodeForTokenPreflight",
@@ -276,7 +277,7 @@ export function makeDeviceAuthorizationsService(input: {
         // before either recording a poll or creating and consuming an approved key.
         return yield* input.db.transaction(
           Effect.gen(function* () {
-            const now = new Date().toISOString();
+            const now = yield* currentIso;
             const row = yield* findTokenRow(
               input.db,
               "deviceAuth:findByDeviceCodeForTokenMutation",
@@ -302,7 +303,7 @@ export function makeDeviceAuthorizationsService(input: {
             );
             const apiKey = yield* input.apiKeys.create({
               actorPermissions: "owner",
-              expiresAt: new Date(Date.parse(now) + deviceApiKeyTtlMs).toISOString(),
+              expiresAt: addMillisecondsFrom(Date.parse(now), deviceApiKeyTtlMs),
               name: `CLI: ${decision.row.client_name}`,
               permissions,
               userId: decision.row.approved_by_user_id,
@@ -348,8 +349,10 @@ function classifyTokenRow(row: DeviceAuthorizationRow | null, now: string): Toke
   // Approval always proceeds to the transactional re-read, regardless of prior
   // poll timing. Only a still-pending early poll is completed by this preflight.
   if (row.approved_at && row.approved_by_user_id) return { kind: "Mutation", row };
-  const lastPollMs = row.last_poll_at ? Date.parse(row.last_poll_at) : 0;
-  const tooSoon = lastPollMs > 0 && Date.parse(now) - lastPollMs < pollIntervalSeconds * 1_000;
+  // Use null presence (not epoch==0) so TestClock at t=0 still rate-limits polls.
+  const tooSoon =
+    row.last_poll_at !== null &&
+    Date.parse(now) - Date.parse(row.last_poll_at) < pollIntervalSeconds * 1_000;
   return tooSoon
     ? {
         kind: "Outcome",

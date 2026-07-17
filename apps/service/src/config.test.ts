@@ -3,10 +3,10 @@ import { ConfigProvider, Effect, Option, Redacted } from "effect";
 import { describe, expect, it } from "vitest";
 
 import {
-  sendingConfig,
+  deploymentConfig,
+  sendingConfigFromDeployment,
   serviceConfig,
-  sesOperationsConfig,
-  unsubscribeConfig,
+  type DeploymentConfig,
   type SendingConfig,
   type ServiceConfig,
   type SesOperationsConfig,
@@ -21,30 +21,28 @@ function load(fixture: Record<string, string>): Promise<ServiceConfig> {
   );
 }
 
-function loadSending(fixture: Record<string, string>): Promise<SendingConfig> {
+function loadDeployment(fixture: Record<string, string>): Promise<DeploymentConfig> {
   return Effect.runPromise(
-    sendingConfig.pipe(
+    deploymentConfig.pipe(
       Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(fixture)),
     ),
   );
 }
 
-function loadSesOperations(fixture: Record<string, string>): Promise<SesOperationsConfig> {
-  return Effect.runPromise(
-    sesOperationsConfig.pipe(
-      Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(fixture)),
-    ),
+function loadSending(fixture: Record<string, string>): Promise<SendingConfig> {
+  return loadDeployment(fixture).then((deployment) =>
+    Effect.runPromise(sendingConfigFromDeployment(deployment)),
   );
+}
+
+function loadSesOperations(fixture: Record<string, string>): Promise<SesOperationsConfig> {
+  return loadDeployment(fixture).then((deployment) => deployment.sesOperations);
 }
 
 function loadUnsubscribe(
   fixture: Record<string, string>,
 ): Promise<Option.Option<UnsubscribeConfig>> {
-  return Effect.runPromise(
-    unsubscribeConfig.pipe(
-      Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromUnknown(fixture)),
-    ),
-  );
+  return loadDeployment(fixture).then((deployment) => deployment.unsubscribe);
 }
 
 const validAuthFixture = {
@@ -96,18 +94,14 @@ describe("serviceConfig", () => {
     expect(config.databasePath).toBe(":memory:");
   });
 
-  it("falls back to PORT only when NUSEND_PORT is absent", async () => {
-    const config = await load({ NUSEND_PORT: "  ", PORT: "4100" });
+  it("ignores PORT and uses the default when NUSEND_PORT is absent", async () => {
+    const config = await load({ PORT: "4444" });
 
-    expect(config.port).toBe(4100);
+    expect(config.port).toBe(3000);
   });
 
   it.each(["70000", "abc", "3.5"])("rejects invalid port %s", async (port) => {
     await expect(load({ NUSEND_PORT: port })).rejects.toThrow(/NUSEND_PORT/);
-  });
-
-  it("does not fall through to PORT when NUSEND_PORT is invalid", async () => {
-    await expect(load({ NUSEND_PORT: "abc", PORT: "4100" })).rejects.toThrow(/NUSEND_PORT/);
   });
 
   it("loads auth config", async () => {
@@ -241,7 +235,15 @@ describe("sesOperationsConfig", () => {
     expect(loaded.workerLeaseSeconds).toBe(300);
     expect(loaded.workerPollMs).toBe(5000);
     expect(loaded.trackingEvents).toEqual([]);
-    expect(loaded.configIssues).toEqual([]);
+    expect(loaded.configIssues.map((issue) => issue.id)).toEqual([
+      "config.aws_region",
+      "config.from_email",
+      "config.configuration_set.transactional",
+      "config.configuration_set.marketing",
+      "config.public_base_url",
+      "config.unsubscribe_secret",
+      "config.feedback_topics",
+    ]);
   });
 
   it("reports invalid SES operations config as diagnostics without failing startup", async () => {
@@ -277,13 +279,13 @@ describe("sesOperationsConfig", () => {
 
     expect(Option.getOrThrow(loaded.awsRegion)).toBe("us-east-1");
     expect(Option.getOrThrow(loaded.publicBaseUrl)).toBe("https://mail.example.com");
-    expect(loaded.configIssues).toEqual([
-      {
+    expect(loaded.configIssues).toContainEqual(
+      expect.objectContaining({
         id: "config.tracking_events",
         message:
           "NUSEND_SES_TRACKING_EVENTS contains unsupported values: invalid. Use only open and click.",
-      },
-    ]);
+      }),
+    );
     expect(loaded.feedbackTopicArns).toEqual(["arn:aws:sns:us-east-1:123456789012:nusend-prod"]);
     expect(loaded.trackingEvents).toEqual(["open", "click"]);
     expect(Option.getOrThrow(loaded.trackingCustomRedirectDomain)).toBe("tracking.example.com");
@@ -295,20 +297,20 @@ describe("sesOperationsConfig", () => {
     });
 
     expect(loaded.trackingEvents).toEqual([]);
-    expect(loaded.configIssues).toEqual([
-      {
+    expect(loaded.configIssues).toContainEqual(
+      expect.objectContaining({
         id: "config.tracking_events",
         message:
           "NUSEND_SES_TRACKING_EVENTS contains unsupported values: delivery, rendering. Use only open and click.",
-      },
-    ]);
+      }),
+    );
   });
 
-  it("accepts blank tracking events as disabled without a config issue", async () => {
+  it("accepts blank tracking events as disabled without a tracking issue", async () => {
     const loaded = await loadSesOperations({ NUSEND_SES_TRACKING_EVENTS: " , " });
 
     expect(loaded.trackingEvents).toEqual([]);
-    expect(loaded.configIssues).toEqual([]);
+    expect(loaded.configIssues.some((issue) => issue.id === "config.tracking_events")).toBe(false);
   });
 });
 
@@ -322,81 +324,82 @@ describe("unsubscribeConfig", () => {
     ).toBe(true);
   });
 
-  it("rejects partial config", async () => {
-    await expect(
-      loadUnsubscribe({ NUSEND_PUBLIC_BASE_URL: "https://example.com" }),
-    ).rejects.toThrow(/NUSEND_UNSUBSCRIBE_SECRET/);
-    await expect(loadUnsubscribe({ NUSEND_UNSUBSCRIBE_SECRET: "x".repeat(32) })).rejects.toThrow(
-      /NUSEND_PUBLIC_BASE_URL/,
+  it("keeps API parsing available while reporting partial unsubscribe config", async () => {
+    for (const fixture of [
+      { NUSEND_UNSUBSCRIBE_SECRET: "x".repeat(32) },
+      { NUSEND_UNSUBSCRIBE_PREVIOUS_SECRET: "y".repeat(32) },
+    ] as Record<string, string>[]) {
+      const deployment = await loadDeployment(fixture);
+      expect(Option.isNone(deployment.unsubscribe)).toBe(true);
+      expect(deployment.sesOperations.configIssues).toContainEqual(
+        expect.objectContaining({ blocksWorker: true, id: "config.unsubscribe" }),
+      );
+    }
+  });
+
+  it.each([
+    ["http://example.com", /absolute HTTPS URL/],
+    ["not-a-url", /absolute HTTPS URL/],
+    ["https://example.com?tenant=one", /query string or fragment/],
+    ["https://example.com#unsubscribe", /query string or fragment/],
+  ])("reports invalid public base URL %s", async (publicBaseUrl, message) => {
+    const deployment = await loadDeployment({
+      NUSEND_PUBLIC_BASE_URL: publicBaseUrl,
+      NUSEND_UNSUBSCRIBE_SECRET: "x".repeat(32),
+    });
+
+    expect(Option.isNone(deployment.unsubscribe)).toBe(true);
+    expect(deployment.sesOperations.configIssues.map((issue) => issue.message).join("\n")).toMatch(
+      message,
     );
-    await expect(
-      loadUnsubscribe({ NUSEND_UNSUBSCRIBE_PREVIOUS_SECRET: "y".repeat(32) }),
-    ).rejects.toThrow(/NUSEND_PUBLIC_BASE_URL/);
-  });
-
-  it("rejects non-HTTPS public base URLs", async () => {
-    await expect(
-      loadUnsubscribe({
-        NUSEND_PUBLIC_BASE_URL: "http://example.com",
-        NUSEND_UNSUBSCRIBE_SECRET: "x".repeat(32),
-      }),
-    ).rejects.toThrow(/absolute HTTPS URL/);
-    await expect(
-      loadUnsubscribe({
-        NUSEND_PUBLIC_BASE_URL: "not-a-url",
-        NUSEND_UNSUBSCRIBE_SECRET: "x".repeat(32),
-      }),
-    ).rejects.toThrow(/absolute HTTPS URL/);
-  });
-
-  it("rejects public base URLs with query strings or fragments", async () => {
-    await expect(
-      loadUnsubscribe({
-        NUSEND_PUBLIC_BASE_URL: "https://example.com?tenant=one",
-        NUSEND_UNSUBSCRIBE_SECRET: "x".repeat(32),
-      }),
-    ).rejects.toThrow(/query string or fragment/);
-    await expect(
-      loadUnsubscribe({
-        NUSEND_PUBLIC_BASE_URL: "https://example.com#unsubscribe",
-        NUSEND_UNSUBSCRIBE_SECRET: "x".repeat(32),
-      }),
-    ).rejects.toThrow(/query string or fragment/);
   });
 
   it.each(["&", "'", '"', "<", ">"])(
-    "rejects public base URLs with HTML-escapable character %s",
+    "reports public base URLs with HTML-escapable character %s",
     async (character) => {
-      await expect(
-        loadUnsubscribe({
-          NUSEND_PUBLIC_BASE_URL: `https://example.com/base${character}path`,
-          NUSEND_UNSUBSCRIBE_SECRET: "x".repeat(32),
-        }),
-      ).rejects.toThrow(/HTML-escapable characters/);
+      const deployment = await loadDeployment({
+        NUSEND_PUBLIC_BASE_URL: `https://example.com/base${character}path`,
+        NUSEND_UNSUBSCRIBE_SECRET: "x".repeat(32),
+      });
+
+      expect(Option.isNone(deployment.unsubscribe)).toBe(true);
+      expect(
+        deployment.sesOperations.configIssues.map((issue) => issue.message).join("\n"),
+      ).toMatch(/HTML-escapable characters/);
     },
   );
 
-  it("rejects short or repeated secrets", async () => {
-    await expect(
-      loadUnsubscribe({
+  it.each([
+    {
+      fixture: {
         NUSEND_PUBLIC_BASE_URL: "https://example.com",
         NUSEND_UNSUBSCRIBE_SECRET: "short",
-      }),
-    ).rejects.toThrow(/NUSEND_UNSUBSCRIBE_SECRET/);
-    await expect(
-      loadUnsubscribe({
+      },
+      message: /NUSEND_UNSUBSCRIBE_SECRET/,
+    },
+    {
+      fixture: {
         NUSEND_PUBLIC_BASE_URL: "https://example.com",
         NUSEND_UNSUBSCRIBE_PREVIOUS_SECRET: "y".repeat(31),
         NUSEND_UNSUBSCRIBE_SECRET: "x".repeat(32),
-      }),
-    ).rejects.toThrow(/NUSEND_UNSUBSCRIBE_PREVIOUS_SECRET/);
-    await expect(
-      loadUnsubscribe({
+      },
+      message: /NUSEND_UNSUBSCRIBE_PREVIOUS_SECRET/,
+    },
+    {
+      fixture: {
         NUSEND_PUBLIC_BASE_URL: "https://example.com",
         NUSEND_UNSUBSCRIBE_PREVIOUS_SECRET: "x".repeat(32),
         NUSEND_UNSUBSCRIBE_SECRET: "x".repeat(32),
-      }),
-    ).rejects.toThrow(/must differ/);
+      },
+      message: /must differ/,
+    },
+  ])("reports invalid unsubscribe secrets", async ({ fixture, message }) => {
+    const deployment = await loadDeployment(fixture as Record<string, string>);
+
+    expect(Option.isNone(deployment.unsubscribe)).toBe(true);
+    expect(deployment.sesOperations.configIssues.map((issue) => issue.message).join("\n")).toMatch(
+      message,
+    );
   });
 
   it("loads valid config with canonical base URL and previous secret", async () => {
@@ -436,15 +439,19 @@ describe("sendingConfig", () => {
     });
   });
 
-  it("defaults optional sending settings", async () => {
+  it("requires transactional feedback while defaulting optional sending settings", async () => {
     await expect(
-      loadSending({ AWS_REGION: "us-east-1", NUSEND_SES_FROM_EMAIL: "sender@example.com" }),
+      loadSending({
+        AWS_REGION: "us-east-1",
+        NUSEND_SES_FROM_EMAIL: "sender@example.com",
+        NUSEND_SES_TRANSACTIONAL_CONFIGURATION_SET: "transactional-set",
+      }),
     ).resolves.toEqual({
       fromEmail: "sender@example.com",
       marketingConfigurationSet: null,
       region: "us-east-1",
       requestTimeoutMs: 30000,
-      transactionalConfigurationSet: null,
+      transactionalConfigurationSet: "transactional-set",
       workerBatchSize: 1,
       workerLeaseSeconds: 300,
       workerPollMs: 5000,
@@ -490,6 +497,7 @@ describe("sendingConfig", () => {
       const sending = await loadSending({
         AWS_REGION: "us-east-1",
         NUSEND_SES_FROM_EMAIL: "sender@example.com",
+        NUSEND_SES_TRANSACTIONAL_CONFIGURATION_SET: "transactional-set",
         ...env,
       });
 
@@ -520,17 +528,29 @@ describe("sendingConfig", () => {
         loadSending({
           AWS_REGION: "us-east-1",
           NUSEND_SES_FROM_EMAIL: "sender@example.com",
+          NUSEND_SES_TRANSACTIONAL_CONFIGURATION_SET: "transactional-set",
           [envName]: value,
         }),
       ).rejects.toThrow(envName);
     },
   );
 
-  it("requires sender email and AWS region", async () => {
-    await expect(loadSending({ AWS_REGION: "us-east-1" })).rejects.toThrow(/NUSEND_SES_FROM_EMAIL/);
-    await expect(loadSending({ NUSEND_SES_FROM_EMAIL: "sender@example.com" })).rejects.toThrow(
-      /AWS_REGION/,
-    );
+  it("requires sender email, AWS region, and transactional configuration set", async () => {
+    await expect(
+      loadSending({
+        AWS_REGION: "us-east-1",
+        NUSEND_SES_TRANSACTIONAL_CONFIGURATION_SET: "transactional-set",
+      }),
+    ).rejects.toThrow(/NUSEND_SES_FROM_EMAIL/);
+    await expect(
+      loadSending({
+        NUSEND_SES_FROM_EMAIL: "sender@example.com",
+        NUSEND_SES_TRANSACTIONAL_CONFIGURATION_SET: "transactional-set",
+      }),
+    ).rejects.toThrow(/AWS_REGION/);
+    await expect(
+      loadSending({ AWS_REGION: "us-east-1", NUSEND_SES_FROM_EMAIL: "sender@example.com" }),
+    ).rejects.toThrow(/NUSEND_SES_TRANSACTIONAL_CONFIGURATION_SET/);
   });
 
   it("rejects timeout settings that are too close to the worker lease", async () => {
@@ -540,6 +560,7 @@ describe("sendingConfig", () => {
         NUSEND_SEND_WORKER_LEASE_SECONDS: "40",
         NUSEND_SES_FROM_EMAIL: "sender@example.com",
         NUSEND_SES_REQUEST_TIMEOUT_MS: "30000",
+        NUSEND_SES_TRANSACTIONAL_CONFIGURATION_SET: "transactional-set",
       }),
     ).rejects.toThrow(/NUSEND_SEND_WORKER_LEASE_SECONDS/);
   });
@@ -552,6 +573,7 @@ describe("sendingConfig", () => {
         NUSEND_SEND_WORKER_LEASE_SECONDS: "300",
         NUSEND_SES_FROM_EMAIL: "sender@example.com",
         NUSEND_SES_REQUEST_TIMEOUT_MS: "30000",
+        NUSEND_SES_TRANSACTIONAL_CONFIGURATION_SET: "transactional-set",
       }),
     ).rejects.toThrow(/NUSEND_SEND_WORKER_LEASE_SECONDS/);
   });

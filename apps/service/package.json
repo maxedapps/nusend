@@ -5,7 +5,6 @@
   "scripts": {
     "auth:bootstrap": "bun src/auth/bootstrap.ts",
     "db:migrate": "bun src/db/migrate.ts up",
-    "db:rollback": "bun src/db/migrate.ts down",
     "db:status": "bun src/db/migrate.ts status",
     "dev": "bun --hot src/main.ts",
     "start": "bun src/main.ts",

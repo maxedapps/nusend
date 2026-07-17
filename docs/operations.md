@@ -166,4 +166,4 @@ Before an app, Caddy, restic, base-image, Cloudflare-IP, Docker, or host update:
 4. follow the stop-worker, stop-API, deliberate-migration, API/Caddy-health, start-worker order;
 5. recheck logs, direct-origin rejection, client IP, timer, and a worker cycle.
 
-Rollback must use the retained full-bundle transaction in [`deployment.md`](./deployment.md#10-production-update-and-rollback-transaction): prior checkout, Compose/Caddy files, immutable app and backup digests, systemd units, and changed firewall state. Proceed only when the current schema is compatible; never assume a destructive DB rollback is safe.
+Application rollback must use the retained full-bundle transaction in [`deployment.md`](./deployment.md#10-production-update-and-rollback-transaction): prior checkout, Compose/Caddy files, immutable app and backup digests, systemd units, and changed firewall state. Proceed only when the current schema is compatible; database schema changes move forward or recover from an exact matching backup.

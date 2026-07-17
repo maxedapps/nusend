@@ -28,9 +28,6 @@ type AppOptions = {
   // Canonical public origin (BETTER_AUTH_URL) for proxy-correct same-origin
   // checks and verification URLs; falls back to the request origin when unset.
   publicOrigin?: string;
-  // Narrow test hook: register a throwing probe inside the real production
-  // middleware/onError composition before the not-found fallback is installed.
-  registerBeforeFallback?: (app: Hono) => void;
 };
 
 export function createApp(options: AppOptions): Hono {
@@ -86,8 +83,6 @@ export function createApp(options: AppOptions): Hono {
       (response) => response,
     ),
   );
-
-  options.registerBeforeFallback?.(app);
 
   app.route(
     "/cli",

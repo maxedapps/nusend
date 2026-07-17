@@ -1,10 +1,9 @@
-import { Effect, Result } from "effect";
+import { Effect } from "effect";
 import { Hono } from "hono";
-import { bodyLimit } from "hono/body-limit";
 
 import { requirePrincipal } from "../auth/middleware.ts";
-import { RequestValidationError } from "../errors.ts";
-import { errorEnvelope, runRoute, type AppRuntime } from "../http/respond.ts";
+import { jsonBodyLimit, readJsonBody, resultToEffect } from "../http/body.ts";
+import { runRoute, type AppRuntime } from "../http/respond.ts";
 import { parsePagination } from "../http/query.ts";
 import { getList, listListContacts, listLists } from "./read-model.ts";
 import {
@@ -22,8 +21,6 @@ import {
   parseContactId,
   parseListContactsQuery,
   parseListId,
-  type ImportListContactsInput,
-  type ListNameInput,
 } from "./schema.ts";
 
 type ListsRoutesOptions = {
@@ -40,21 +37,13 @@ export function createListsRoutes(options: ListsRoutesOptions): Hono {
     permissions: { lists: ["write"] },
     runtime: options.runtime,
   });
-  const jsonLimit = bodyLimit({
-    maxSize: maxListRequestBodyBytes,
-    onError: (context) =>
-      context.json(errorEnvelope("request_too_large", "Request body is too large."), 413),
-  });
-  const importLimit = bodyLimit({
-    maxSize: maxListImportRequestBodyBytes,
-    onError: (context) =>
-      context.json(errorEnvelope("request_too_large", "Request body is too large."), 413),
-  });
+  const jsonLimit = jsonBodyLimit(maxListRequestBodyBytes);
+  const importLimit = jsonBodyLimit(maxListImportRequestBodyBytes);
 
   routes.post("/", jsonLimit, requireListsWrite, (context) => {
     const program = Effect.gen(function* () {
       const body = yield* readJsonBody(context.req.raw);
-      const input = yield* decodeListNameToEffect(decodeListNameBody(body));
+      const input = yield* resultToEffect(decodeListNameBody(body));
       return yield* createList(input.name);
     });
 
@@ -83,7 +72,7 @@ export function createListsRoutes(options: ListsRoutesOptions): Hono {
     const program = Effect.gen(function* () {
       const id = yield* parseListId(context.req.param("id"));
       const body = yield* readJsonBody(context.req.raw);
-      const input = yield* decodeListNameToEffect(decodeListNameBody(body));
+      const input = yield* resultToEffect(decodeListNameBody(body));
       return yield* updateList(id, input.name);
     });
 
@@ -113,7 +102,7 @@ export function createListsRoutes(options: ListsRoutesOptions): Hono {
     const program = Effect.gen(function* () {
       const id = yield* parseListId(context.req.param("id"));
       const body = yield* readJsonBody(context.req.raw);
-      const input = yield* decodeImportToEffect(decodeImportListContactsBody(body));
+      const input = yield* resultToEffect(decodeImportListContactsBody(body));
       return yield* importListContacts(
         id,
         input.contacts.map((contact) => contact.email),
@@ -134,23 +123,4 @@ export function createListsRoutes(options: ListsRoutesOptions): Hono {
   });
 
   return routes;
-}
-
-function readJsonBody(request: Request): Effect.Effect<unknown, RequestValidationError> {
-  return Effect.tryPromise({
-    try: () => request.json() as Promise<unknown>,
-    catch: () => new RequestValidationError({ message: "Request body must be valid JSON." }),
-  });
-}
-
-function decodeListNameToEffect(
-  decoded: Result.Result<ListNameInput, RequestValidationError>,
-): Effect.Effect<ListNameInput, RequestValidationError> {
-  return Result.isFailure(decoded) ? Effect.fail(decoded.failure) : Effect.succeed(decoded.success);
-}
-
-function decodeImportToEffect(
-  decoded: Result.Result<ImportListContactsInput, RequestValidationError>,
-): Effect.Effect<ImportListContactsInput, RequestValidationError> {
-  return Result.isFailure(decoded) ? Effect.fail(decoded.failure) : Effect.succeed(decoded.success);
 }

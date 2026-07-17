@@ -6,7 +6,7 @@ import { createMailing } from "../mailings/create-mailing.ts";
 import { Database } from "../services/database.ts";
 import { fakeEmailTransportLayer, fakeSendingConfigLayer } from "../testing/email-transport.ts";
 import { runTest } from "../testing/layers.ts";
-import { runSendWorkerOnce } from "./worker.ts";
+import { runSendWorkerOnce } from "../queue/runner.ts";
 
 const fixedTime = Date.parse("2026-07-03T12:00:00.000Z");
 

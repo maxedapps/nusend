@@ -1,13 +1,14 @@
 import { Effect, Result, Schema, SchemaGetter } from "effect";
 
 import { RequestValidationError } from "../errors.ts";
+import { isPlainObject, validationFail } from "../http/body.ts";
 import {
   parseOptionalString,
   parsePagination,
   parseRouteId,
   type Pagination,
 } from "../http/query.ts";
-import { maxEmailLength, normalizeValidEmail } from "../lib/email.ts";
+import { EmailSchema, maxEmailLength, normalizeValidEmail } from "../lib/email.ts";
 
 export const maxSuppressionRequestBodyBytes = 64 * 1024;
 export const maxSuppressionIdLength = 200;
@@ -30,13 +31,6 @@ export type SuppressionsListQuery = Pagination & {
   readonly scope: SuppressionScope | null;
 };
 
-const Email = Schema.String.pipe(
-  Schema.decodeTo(Schema.String, {
-    decode: SchemaGetter.transform((value: string) => normalizeValidEmail(value) ?? ""),
-    encode: SchemaGetter.passthrough(),
-  }),
-).check(Schema.makeFilter<string>((value) => value.length > 0 || "must be a valid email address"));
-
 const ListId = Schema.NullOr(Schema.String)
   .pipe(
     Schema.decodeTo(Schema.NullOr(Schema.String), {
@@ -53,7 +47,7 @@ const ListId = Schema.NullOr(Schema.String)
   );
 
 const CreateSuppressionBody = Schema.Struct({
-  email: Email,
+  email: EmailSchema,
   listId: Schema.optional(ListId),
   scope: Schema.Literals(suppressionScopes),
 });
@@ -61,17 +55,17 @@ const CreateSuppressionBody = Schema.Struct({
 export function decodeCreateSuppressionBody(
   value: unknown,
 ): Result.Result<CreateSuppressionInput, RequestValidationError> {
-  if (!isPlainObject(value)) return fail("Request body must be a JSON object.");
+  if (!isPlainObject(value)) return validationFail("Request body must be a JSON object.");
   const decoded = Schema.decodeUnknownResult(CreateSuppressionBody)(value, { errors: "all" });
-  if (Result.isFailure(decoded)) return fail(decoded.failure.message);
+  if (Result.isFailure(decoded)) return validationFail(decoded.failure.message);
 
   const input = decoded.success;
   const listId = input.listId ?? null;
   if (input.scope === "list" && listId === null) {
-    return fail("listId is required when scope is list.");
+    return validationFail("listId is required when scope is list.");
   }
   if (input.scope !== "list" && listId !== null) {
-    return fail("listId is only allowed when scope is list.");
+    return validationFail("listId is only allowed when scope is list.");
   }
 
   return Result.succeed({ email: input.email, listId, scope: input.scope });
@@ -118,14 +112,4 @@ function parseEnum<const T extends readonly string[]>(
   return Effect.fail(
     new RequestValidationError({ message: `${name} must be one of: ${values.join(", ")}.` }),
   );
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
-}
-
-function fail(message: string): Result.Result<never, RequestValidationError> {
-  return Result.fail(new RequestValidationError({ message }));
 }

@@ -18,7 +18,7 @@ import {
   UnauthenticatedError,
 } from "../errors.ts";
 import { makeTestRuntime, type CapturedLog } from "../testing/layers.ts";
-import { runRoute, type RouteError } from "./respond.ts";
+import { respondUnexpectedError, runRoute, type RouteError } from "./respond.ts";
 
 async function respondWith(
   failure: Effect.Effect<never, RouteError>,
@@ -154,6 +154,61 @@ describe("runRoute error mapping", () => {
     expect(formattedLog(errors[0]!)).toContain('"defectType":"Unknown"');
     expect(formattedLogs(logs)).not.toContain("defect-tag-sentinel");
     expect(formattedLogs(logs)).not.toContain("unexpected crash detail");
+  });
+
+  it("sanitizes unexpected Hono errors at the production error responder boundary", async () => {
+    const logs: CapturedLog[] = [];
+    const runtime = makeTestRuntime({ logSink: logs });
+
+    try {
+      const app = new Hono();
+      app.post("/unsubscribe/:token", () => {
+        throw Object.assign(new Error("defect-message-sentinel"), {
+          _tag: "defect-tag-sentinel",
+        });
+      });
+      app.onError((error, context) => respondUnexpectedError(context, runtime, error));
+
+      const response = await app.fetch(
+        new Request(
+          "http://localhost/unsubscribe/unsubscribe-token-sentinel?query=query-sentinel",
+          {
+            body: "body-sentinel",
+            headers: {
+              cookie: "session=cookie-sentinel",
+              "content-type": "text/plain",
+              "x-api-key": "api-key-sentinel",
+              "x-header": "header-sentinel",
+            },
+            method: "POST",
+          },
+        ),
+      );
+
+      expect(response.status).toBe(500);
+      await expect(response.json()).resolves.toEqual({
+        error: { code: "internal_error", message: "Internal error." },
+      });
+      const formatted = formattedLogs(logs);
+      expect(formatted).toContain('"event":"internal_failure"');
+      expect(formatted).toContain('"method":"POST"');
+      expect(formatted).toContain('"path":"/unsubscribe/:token"');
+      expect(formatted).toContain('"defectType":"Error"');
+      for (const secret of [
+        "defect-message-sentinel",
+        "defect-tag-sentinel",
+        "unsubscribe-token-sentinel",
+        "query-sentinel",
+        "cookie-sentinel",
+        "api-key-sentinel",
+        "header-sentinel",
+        "body-sentinel",
+      ]) {
+        expect(formatted).not.toContain(secret);
+      }
+    } finally {
+      await runtime.dispose();
+    }
   });
 
   it("runs onSuccess for successful programs", async () => {

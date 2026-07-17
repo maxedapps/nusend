@@ -1,6 +1,7 @@
-import { Effect, Option } from "effect";
+import { ConfigProvider, Effect, Option } from "effect";
 import { describe, expect, it } from "vitest";
 
+import { deploymentConfig } from "../config.ts";
 import { AwsAdminError } from "./errors.ts";
 import { runSesReadinessChecks } from "./readiness.ts";
 import type { SesAdminService } from "./ses-admin.ts";
@@ -12,6 +13,18 @@ describe("runSesReadinessChecks", () => {
     const result = await runTest(runSesReadinessChecks({ includeAws: false }), {
       sesOperations: fakeSesOperationsConfig({
         awsRegion: Option.none(),
+        configIssues: [
+          {
+            id: "config.aws_region",
+            message: "AWS region is missing.",
+            status: "warning",
+          },
+          {
+            id: "config.public_base_url",
+            message: "Public base URL is missing.",
+            status: "warning",
+          },
+        ],
         feedbackTopicArns: [],
         fromEmail: Option.none(),
         marketingConfigurationSet: Option.none(),
@@ -42,6 +55,32 @@ describe("runSesReadinessChecks", () => {
     expect(result.expectedWebhookUrl).toBe("https://mail.example.com/api/webhooks/aws/sns/ses");
   });
 
+  it("reports issues from the shared deployment parse without reparsing values", async () => {
+    const deployment = await Effect.runPromise(
+      deploymentConfig.pipe(
+        Effect.provideService(
+          ConfigProvider.ConfigProvider,
+          ConfigProvider.fromUnknown({
+            NUSEND_PUBLIC_BASE_URL: "http://mail.example.com",
+            NUSEND_SEND_WORKER_BATCH_SIZE: "51",
+          }),
+        ),
+      ),
+    );
+    const result = await runTest(runSesReadinessChecks({ includeAws: false }), {
+      sesOperations: deployment.sesOperations,
+    });
+
+    expect(result.checks.find((check) => check.id === "config.public_base_url")).toMatchObject({
+      status: "error",
+    });
+    expect(result.checks.find((check) => check.id === "config.worker_batch_size")).toMatchObject({
+      status: "error",
+    });
+    const ids = result.checks.map((check) => check.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
   it("surfaces collected config diagnostics as readiness errors", async () => {
     const result = await runTest(runSesReadinessChecks({ includeAws: false }), {
       sesOperations: fakeSesOperationsConfig({
@@ -68,7 +107,7 @@ describe("runSesReadinessChecks", () => {
 
     expect(result.status).toBe("error");
     expect(result.checks.find((check) => check.id === "config.tracking_events")).toMatchObject({
-      action: "Fix the invalid environment variable value and restart Nusend.",
+      action: "Fix the documented environment variable and restart Nusend.",
       message,
       status: "error",
     });
@@ -82,6 +121,7 @@ describe("runSesReadinessChecks", () => {
           { id: "config.public_base_url", message: "invalid public base URL" },
           { id: "config.worker_budget", message: "invalid worker budget" },
         ],
+        publicBaseUrl: Option.none(),
       }),
     });
 

@@ -135,13 +135,7 @@ describe.sequential("real Bun service entrypoints", () => {
   ])(
     "refuses to start the $label against a stale schema",
     async ({ args, forbidden }) => {
-      const fixture = await createMigratedFixture();
-      const rollback = spawnSync("bun", ["src/db/migrate.ts", "down"], {
-        cwd: serviceRoot,
-        encoding: "utf8",
-        env: { ...fixture.env, NUSEND_CONFIRM_DESTRUCTIVE_ROLLBACK: "1" },
-      });
-      expect(rollback.status, `${rollback.stdout}\n${rollback.stderr}`).toBe(0);
+      const fixture = await createServiceFixture(false);
 
       const process = startBun(args, fixture.env);
       const exit = await process.waitForExit(10_000);
@@ -162,6 +156,10 @@ type ServiceFixture = {
 };
 
 async function createMigratedFixture(): Promise<ServiceFixture> {
+  return createServiceFixture(true);
+}
+
+async function createServiceFixture(migrateDatabase: boolean): Promise<ServiceFixture> {
   const directory = mkdtempSync(join(tmpdir(), "nusend-main-integration-"));
   temporaryDirectories.push(directory);
   const port = await allocatePort();
@@ -176,17 +174,20 @@ async function createMigratedFixture(): Promise<ServiceFixture> {
     AWS_REGION: "us-east-1",
     NUSEND_DB_PATH: join(directory, "smoke.sqlite"),
     NUSEND_SES_FROM_EMAIL: "sender@example.com",
+    NUSEND_SES_TRANSACTIONAL_CONFIGURATION_SET: "transactional-set",
     NUSEND_HOST: "127.0.0.1",
     NUSEND_PORT: String(port),
     NUSEND_SES_REQUEST_TIMEOUT_MS: "1000",
     NUSEND_SEND_WORKER_LEASE_SECONDS: "30",
   };
-  const migrate = spawnSync("bun", ["src/db/migrate.ts", "up"], {
-    cwd: serviceRoot,
-    encoding: "utf8",
-    env,
-  });
-  expect(migrate.status, `${migrate.stdout}\n${migrate.stderr}`).toBe(0);
+  if (migrateDatabase) {
+    const migrate = spawnSync("bun", ["src/db/migrate.ts", "up"], {
+      cwd: serviceRoot,
+      encoding: "utf8",
+      env,
+    });
+    expect(migrate.status, `${migrate.stdout}\n${migrate.stderr}`).toBe(0);
+  }
   return { env, origin };
 }
 

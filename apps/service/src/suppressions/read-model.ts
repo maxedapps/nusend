@@ -2,6 +2,7 @@ import { Effect, Schema } from "effect";
 
 import { DatabaseError, NotFoundError } from "../errors.ts";
 import { paginationMeta, type PaginationMeta } from "../http/query.ts";
+import { decodeDbRow, decodeDbRows } from "../http/sql-decode.ts";
 import { Database, type DatabaseService, type SqlParams } from "../services/database.ts";
 import type { SuppressionsListQuery } from "./schema.ts";
 
@@ -15,10 +16,6 @@ const SuppressionRow = Schema.Struct({
 });
 
 export type Suppression = typeof SuppressionRow.Type;
-
-export type SuppressionResponse = {
-  readonly suppression: Suppression;
-};
 
 export type SuppressionsListResponse = {
   readonly items: readonly Suppression[];
@@ -66,7 +63,7 @@ export function listSuppressions(
     );
 
     const hasMore = rows.length > query.limit;
-    const items = yield* decodeRows(SuppressionRow, hasMore ? rows.slice(0, query.limit) : rows);
+    const items = yield* decodeDbRows(SuppressionRow, hasMore ? rows.slice(0, query.limit) : rows);
     return { items, pagination: paginationMeta(query, hasMore) };
   });
 }
@@ -91,7 +88,7 @@ export function getSuppressionById(
       )
       .pipe(
         Effect.flatMap((row) =>
-          row === null ? Effect.succeed(null) : decodeRow(SuppressionRow, row),
+          row === null ? Effect.succeed(null) : decodeDbRow(SuppressionRow, row),
         ),
       ),
   );
@@ -107,18 +104,4 @@ export function requireSuppressionById(
     }
     return suppression;
   });
-}
-
-function decodeRow<S extends Schema.ConstraintDecoder<unknown, never>>(
-  schema: S,
-  row: unknown,
-): Effect.Effect<S["Type"]> {
-  return Schema.decodeUnknownEffect(schema)(row).pipe(Effect.orDie);
-}
-
-function decodeRows<S extends Schema.ConstraintDecoder<unknown, never>>(
-  schema: S,
-  rows: readonly unknown[],
-): Effect.Effect<readonly S["Type"][]> {
-  return Effect.forEach(rows, (row) => decodeRow(schema, row));
 }

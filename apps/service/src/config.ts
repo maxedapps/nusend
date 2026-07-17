@@ -2,10 +2,8 @@
 // ConfigProvider: production boundaries provide ConfigProvider.fromEnv(), tests
 // provide ConfigProvider.fromUnknown(fixture).
 //
-// Env semantics ported exactly from the pre-Effect config: empty/whitespace-only
-// values count as missing; the port fallback is presence-based (an invalid
-// NUSEND_PORT fails hard instead of falling through to PORT or the default); the
-// auth group is all-or-nothing with a hard failure on partial configuration.
+// Empty/whitespace-only values count as missing. Auth configuration is
+// all-or-nothing with a hard failure on partial configuration.
 import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Config, ConfigProvider, Effect, Option, Redacted } from "effect";
@@ -231,12 +229,7 @@ export const serviceConfig: Effect.Effect<ServiceConfig, Config.ConfigError> = E
   function* () {
     const host = Option.getOrElse(yield* trimmedOption("NUSEND_HOST"), () => "0.0.0.0");
 
-    const nusendPort = yield* trimmedOption("NUSEND_PORT");
-    const fallbackPort = yield* trimmedOption("PORT");
-    const portValue = Option.getOrElse(
-      Option.orElse(nusendPort, () => fallbackPort),
-      () => "3000",
-    );
+    const portValue = Option.getOrElse(yield* trimmedOption("NUSEND_PORT"), () => "3000");
     const port = Number(portValue);
     if (!Number.isInteger(port) || port < 1 || port > 65_535) {
       return yield* configFailure("NUSEND_PORT must be an integer between 1 and 65535.");
@@ -267,25 +260,39 @@ export const serviceConfig: Effect.Effect<ServiceConfig, Config.ConfigError> = E
   },
 );
 
-export const sesOperationsConfig: Effect.Effect<ParsedSesOperationsConfig, Config.ConfigError> =
+type SharedWorkerNumericConfig = {
+  readonly issues: SesOperationsConfigIssue[];
+  readonly requestTimeoutMs: number;
+  readonly workerBatchSize: number;
+  readonly workerLeaseSeconds: number;
+  readonly workerPollMs: number;
+};
+
+export type DeploymentConfig = {
+  readonly service: ServiceConfig;
+  readonly sesOperations: ParsedSesOperationsConfig;
+  readonly unsubscribe: Option.Option<ParsedUnsubscribeConfig>;
+};
+
+const sharedWorkerNumericConfig: Effect.Effect<SharedWorkerNumericConfig, Config.ConfigError> =
   Effect.gen(function* () {
     const issues: SesOperationsConfigIssue[] = [];
-    const requestTimeoutMs = parseOperationsInteger(
+    const requestTimeoutMs = parseSoftInteger(
       numericConfigSpecs.requestTimeoutMs,
       yield* trimmedOption(numericConfigSpecs.requestTimeoutMs.envName),
       issues,
     );
-    const workerBatchSize = parseOperationsInteger(
+    const workerBatchSize = parseSoftInteger(
       numericConfigSpecs.workerBatchSize,
       yield* trimmedOption(numericConfigSpecs.workerBatchSize.envName),
       issues,
     );
-    const workerLeaseSeconds = parseOperationsInteger(
+    const workerLeaseSeconds = parseSoftInteger(
       numericConfigSpecs.workerLeaseSeconds,
       yield* trimmedOption(numericConfigSpecs.workerLeaseSeconds.envName),
       issues,
     );
-    const workerPollMs = parseOperationsInteger(
+    const workerPollMs = parseSoftInteger(
       numericConfigSpecs.workerPollMs,
       yield* trimmedOption(numericConfigSpecs.workerPollMs.envName),
       issues,
@@ -298,41 +305,171 @@ export const sesOperationsConfig: Effect.Effect<ParsedSesOperationsConfig, Confi
         requestTimeoutMs,
       })
     ) {
-      issues.push({ id: "config.worker_budget", message: sendWorkerLeaseBudgetMessage });
+      issues.push({
+        blocksWorker: true,
+        id: "config.worker_budget",
+        message: sendWorkerLeaseBudgetMessage,
+        status: "error",
+      });
     }
 
-    const publicBaseUrl = normalizeOperationsPublicBaseUrl(
-      yield* trimmedOption("NUSEND_PUBLIC_BASE_URL"),
-      issues,
-    );
-    const trackingEvents = parseTrackingEvents(
-      Option.getOrElse(yield* trimmedOption("NUSEND_SES_TRACKING_EVENTS"), () => ""),
-      issues,
-    );
-
     return {
-      awsRegion: yield* trimmedOption("AWS_REGION"),
-      configIssues: issues,
-      feedbackTopicArns: uniqueCsv(
-        Option.getOrElse(yield* trimmedOption("NUSEND_SES_FEEDBACK_TOPIC_ARNS"), () => ""),
-      ),
-      fromEmail: yield* trimmedOption("NUSEND_SES_FROM_EMAIL"),
-      marketingConfigurationSet: yield* trimmedOption("NUSEND_SES_MARKETING_CONFIGURATION_SET"),
-      publicBaseUrl,
+      issues,
       requestTimeoutMs,
-      trackingCustomRedirectDomain: yield* trimmedOption(
-        "NUSEND_SES_TRACKING_CUSTOM_REDIRECT_DOMAIN",
-      ),
-      trackingEvents,
-      transactionalConfigurationSet: yield* trimmedOption(
-        "NUSEND_SES_TRANSACTIONAL_CONFIGURATION_SET",
-      ),
-      unsubscribeSecretConfigured: Option.isSome(yield* trimmedOption("NUSEND_UNSUBSCRIBE_SECRET")),
       workerBatchSize,
       workerLeaseSeconds,
       workerPollMs,
     };
   });
+
+/** One deployment parse consumed once by the API, send worker, and simulator entrypoints. */
+export const deploymentConfig: Effect.Effect<DeploymentConfig, Config.ConfigError> = Effect.gen(
+  function* () {
+    const service = yield* serviceConfig;
+    const shared = yield* sharedWorkerNumericConfig;
+    const issues = [...shared.issues];
+
+    const awsRegion = yield* trimmedOption("AWS_REGION");
+    const fromEmail = yield* trimmedOption("NUSEND_SES_FROM_EMAIL");
+    const transactionalConfigurationSet = yield* trimmedOption(
+      "NUSEND_SES_TRANSACTIONAL_CONFIGURATION_SET",
+    );
+    const marketingConfigurationSet = yield* trimmedOption(
+      "NUSEND_SES_MARKETING_CONFIGURATION_SET",
+    );
+    const publicBaseUrlInput = yield* trimmedOption("NUSEND_PUBLIC_BASE_URL");
+    const unsubscribeSecret = yield* trimmedOption("NUSEND_UNSUBSCRIBE_SECRET");
+    const previousUnsubscribeSecret = yield* trimmedOption("NUSEND_UNSUBSCRIBE_PREVIOUS_SECRET");
+    const feedbackTopicArns = uniqueCsv(
+      Option.getOrElse(yield* trimmedOption("NUSEND_SES_FEEDBACK_TOPIC_ARNS"), () => ""),
+    );
+    const trackingEvents = parseTrackingEvents(
+      Option.getOrElse(yield* trimmedOption("NUSEND_SES_TRACKING_EVENTS"), () => ""),
+      issues,
+    );
+    const trackingCustomRedirectDomain = yield* trimmedOption(
+      "NUSEND_SES_TRACKING_CUSTOM_REDIRECT_DOMAIN",
+    );
+
+    addMissingIssue(issues, awsRegion, {
+      blocksWorker: true,
+      id: "config.aws_region",
+      message: "AWS_REGION is required for the send worker.",
+    });
+    addMissingIssue(issues, fromEmail, {
+      blocksWorker: true,
+      id: "config.from_email",
+      message: "NUSEND_SES_FROM_EMAIL is required for the send worker.",
+    });
+    addMissingIssue(issues, transactionalConfigurationSet, {
+      blocksWorker: true,
+      id: "config.configuration_set.transactional",
+      message: "NUSEND_SES_TRANSACTIONAL_CONFIGURATION_SET is required for the send worker.",
+      status: "error",
+    });
+    addMissingIssue(issues, marketingConfigurationSet, {
+      id: "config.configuration_set.marketing",
+      message: "Marketing configuration set is missing.",
+    });
+
+    const publicBaseUrl = normalizePublicBaseUrl(publicBaseUrlInput, issues);
+    if (Option.isNone(publicBaseUrlInput)) {
+      issues.push({
+        id: "config.public_base_url",
+        message: "Public base URL is missing.",
+        status: "warning",
+      });
+    }
+
+    const unsubscribe = parseUnsubscribeConfig(
+      publicBaseUrlInput,
+      publicBaseUrl,
+      unsubscribeSecret,
+      previousUnsubscribeSecret,
+      issues,
+    );
+    if (
+      Option.isNone(unsubscribe) &&
+      Option.isNone(unsubscribeSecret) &&
+      Option.isNone(previousUnsubscribeSecret)
+    ) {
+      issues.push({
+        id: "config.unsubscribe_secret",
+        message: "Unsubscribe signing secret is missing.",
+        status: "warning",
+      });
+    }
+
+    if (feedbackTopicArns.length === 0) {
+      issues.push({
+        id: "config.feedback_topics",
+        message: "No SNS feedback TopicArn allowlist is configured.",
+        status: "warning",
+      });
+    }
+    if (trackingEvents.length > 0 && Option.isNone(trackingCustomRedirectDomain)) {
+      issues.push({
+        id: "config.tracking",
+        message: "Open/click tracking is enabled without a custom redirect domain.",
+        status: "warning",
+      });
+    }
+
+    return {
+      service,
+      sesOperations: {
+        awsRegion,
+        configIssues: issues,
+        feedbackTopicArns,
+        fromEmail,
+        marketingConfigurationSet,
+        publicBaseUrl,
+        requestTimeoutMs: shared.requestTimeoutMs,
+        trackingCustomRedirectDomain,
+        trackingEvents,
+        transactionalConfigurationSet,
+        unsubscribeSecretConfigured: Option.isSome(unsubscribe),
+        workerBatchSize: shared.workerBatchSize,
+        workerLeaseSeconds: shared.workerLeaseSeconds,
+        workerPollMs: shared.workerPollMs,
+      },
+      unsubscribe,
+    };
+  },
+);
+
+export function sendingConfigFromDeployment(
+  deployment: DeploymentConfig,
+): Effect.Effect<SendingConfig, Config.ConfigError> {
+  const blockingIssue = deployment.sesOperations.configIssues.find(
+    (issue) => issue.blocksWorker === true,
+  );
+  if (blockingIssue) return configFailure(blockingIssue.message);
+
+  return Effect.succeed({
+    fromEmail: Option.getOrThrow(deployment.sesOperations.fromEmail),
+    marketingConfigurationSet: Option.getOrNull(deployment.sesOperations.marketingConfigurationSet),
+    region: Option.getOrThrow(deployment.sesOperations.awsRegion),
+    requestTimeoutMs: deployment.sesOperations.requestTimeoutMs,
+    transactionalConfigurationSet: Option.getOrThrow(
+      deployment.sesOperations.transactionalConfigurationSet,
+    ),
+    workerBatchSize: deployment.sesOperations.workerBatchSize,
+    workerLeaseSeconds: deployment.sesOperations.workerLeaseSeconds,
+    workerPollMs: deployment.sesOperations.workerPollMs,
+  });
+}
+
+function addMissingIssue(
+  issues: SesOperationsConfigIssue[],
+  value: Option.Option<string>,
+  issue: Omit<SesOperationsConfigIssue, "status"> & {
+    readonly status?: SesOperationsConfigIssue["status"];
+  },
+): void {
+  if (Option.isSome(value)) return;
+  issues.push({ ...issue, status: issue.status ?? "warning" });
+}
 
 function uniqueCsv(value: string): string[] {
   return [
@@ -358,12 +495,13 @@ function parseTrackingEvents(
     issues.push({
       id: "config.tracking_events",
       message: `NUSEND_SES_TRACKING_EVENTS contains unsupported values: ${unsupported.join(", ")}. Use only open and click.`,
+      status: "error",
     });
   }
   return valid;
 }
 
-function parseOperationsInteger(
+function parseSoftInteger(
   spec: NumericConfigSpec,
   value: Option.Option<string>,
   issues: SesOperationsConfigIssue[],
@@ -371,174 +509,125 @@ function parseOperationsInteger(
   if (Option.isNone(value)) return spec.defaultValue;
   const parsed = Number(value.value);
   if (validNumericConfigValue(spec, parsed)) return parsed;
-  issues.push({ id: spec.issueId, message: spec.message });
+  issues.push({
+    blocksWorker: true,
+    id: spec.issueId,
+    message: spec.message,
+    status: "error",
+  });
   return spec.defaultValue;
-}
-
-function parseSendingInteger(
-  spec: NumericConfigSpec,
-  value: Option.Option<string>,
-): Effect.Effect<number, Config.ConfigError> {
-  if (Option.isNone(value)) return Effect.succeed(spec.defaultValue);
-  const parsed = Number(value.value);
-  return validNumericConfigValue(spec, parsed)
-    ? Effect.succeed(parsed)
-    : configFailure(spec.message);
 }
 
 function validNumericConfigValue(spec: NumericConfigSpec, value: number): boolean {
   return Number.isInteger(value) && value >= spec.min && (spec.max === null || value <= spec.max);
 }
 
-function normalizeOperationsPublicBaseUrl(
+type PublicBaseUrlValidation =
+  | { readonly kind: "None" }
+  | { readonly kind: "Valid"; readonly normalized: string }
+  | { readonly kind: "Invalid"; readonly message: string };
+
+function validatePublicBaseUrl(value: Option.Option<string>): PublicBaseUrlValidation {
+  if (Option.isNone(value)) return { kind: "None" };
+  const raw = value.value;
+  const parsed = parseAbsoluteUrl(raw);
+  if (!parsed || parsed.protocol !== "https:") {
+    return { kind: "Invalid", message: "NUSEND_PUBLIC_BASE_URL must be an absolute HTTPS URL." };
+  }
+  if (parsed.search !== "" || parsed.hash !== "") {
+    return {
+      kind: "Invalid",
+      message: "NUSEND_PUBLIC_BASE_URL must not include a query string or fragment.",
+    };
+  }
+  if (/[&'"<>]/.test(raw)) {
+    return {
+      kind: "Invalid",
+      message: "NUSEND_PUBLIC_BASE_URL must not include HTML-escapable characters.",
+    };
+  }
+  return { kind: "Valid", normalized: parsed.toString().replace(/\/$/, "") };
+}
+
+function normalizePublicBaseUrl(
   value: Option.Option<string>,
   issues: SesOperationsConfigIssue[],
 ): Option.Option<string> {
-  if (Option.isNone(value)) return Option.none();
-
-  const parsed = parseAbsoluteUrl(value.value);
-  if (!parsed || parsed.protocol !== "https:") {
+  const result = validatePublicBaseUrl(value);
+  if (result.kind === "Valid") return Option.some(result.normalized);
+  if (result.kind === "Invalid") {
     issues.push({
+      blocksWorker: true,
       id: "config.public_base_url",
-      message: "NUSEND_PUBLIC_BASE_URL must be an absolute HTTPS URL.",
+      message: result.message,
+      status: "error",
     });
-    return value;
   }
-  if (parsed.search !== "" || parsed.hash !== "") {
-    issues.push({
-      id: "config.public_base_url",
-      message: "NUSEND_PUBLIC_BASE_URL must not include a query string or fragment.",
-    });
-    return value;
-  }
-  if (/[&'"<>]/.test(value.value)) {
-    issues.push({
-      id: "config.public_base_url",
-      message: "NUSEND_PUBLIC_BASE_URL must not include HTML-escapable characters.",
-    });
-    return value;
-  }
-
-  return Option.some(parsed.toString().replace(/\/$/, ""));
+  return Option.none();
 }
 
-export const unsubscribeConfig: Effect.Effect<
-  Option.Option<ParsedUnsubscribeConfig>,
-  Config.ConfigError
-> = Effect.gen(function* () {
-  const publicBaseUrl = yield* trimmedOption("NUSEND_PUBLIC_BASE_URL");
-  const currentSecret = yield* trimmedOption("NUSEND_UNSUBSCRIBE_SECRET");
-  const previousSecret = yield* trimmedOption("NUSEND_UNSUBSCRIBE_PREVIOUS_SECRET");
-
-  if ([publicBaseUrl, currentSecret, previousSecret].every(Option.isNone)) {
-    return Option.none<ParsedUnsubscribeConfig>();
+function parseUnsubscribeConfig(
+  publicBaseUrlInput: Option.Option<string>,
+  publicBaseUrl: Option.Option<string>,
+  currentSecret: Option.Option<string>,
+  previousSecret: Option.Option<string>,
+  issues: SesOperationsConfigIssue[],
+): Option.Option<ParsedUnsubscribeConfig> {
+  if (Option.isNone(currentSecret) && Option.isNone(previousSecret)) {
+    return Option.none();
   }
 
   const missing: string[] = [];
-  if (Option.isNone(publicBaseUrl)) missing.push("NUSEND_PUBLIC_BASE_URL");
+  if (Option.isNone(publicBaseUrlInput)) missing.push("NUSEND_PUBLIC_BASE_URL");
   if (Option.isNone(currentSecret)) missing.push("NUSEND_UNSUBSCRIBE_SECRET");
   if (missing.length > 0) {
-    return yield* configFailure(
-      `Unsubscribe is partially configured. Missing: ${missing.join(", ")}.`,
-    );
+    issues.push({
+      blocksWorker: true,
+      id: "config.unsubscribe",
+      message: `Unsubscribe is partially configured. Missing: ${missing.join(", ")}.`,
+      status: "error",
+    });
+    return Option.none();
   }
-
-  const parsedBaseUrl = parseAbsoluteUrl(Option.getOrThrow(publicBaseUrl));
-  if (!parsedBaseUrl || parsedBaseUrl.protocol !== "https:") {
-    return yield* configFailure("NUSEND_PUBLIC_BASE_URL must be an absolute HTTPS URL.");
-  }
-  if (parsedBaseUrl.search !== "" || parsedBaseUrl.hash !== "") {
-    return yield* configFailure(
-      "NUSEND_PUBLIC_BASE_URL must not include a query string or fragment.",
-    );
-  }
-  if (/[&'"<>]/.test(Option.getOrThrow(publicBaseUrl))) {
-    return yield* configFailure(
-      "NUSEND_PUBLIC_BASE_URL must not include HTML-escapable characters.",
-    );
-  }
+  if (Option.isNone(publicBaseUrl)) return Option.none();
 
   const current = Option.getOrThrow(currentSecret);
   if (current.length < 32) {
-    return yield* configFailure("NUSEND_UNSUBSCRIBE_SECRET must be at least 32 characters.");
+    issues.push(unsubscribeIssue("NUSEND_UNSUBSCRIBE_SECRET must be at least 32 characters."));
+    return Option.none();
   }
 
   let previous: Redacted.Redacted<string> | null = null;
   if (Option.isSome(previousSecret)) {
     if (previousSecret.value.length < 32) {
-      return yield* configFailure(
-        "NUSEND_UNSUBSCRIBE_PREVIOUS_SECRET must be at least 32 characters.",
+      issues.push(
+        unsubscribeIssue("NUSEND_UNSUBSCRIBE_PREVIOUS_SECRET must be at least 32 characters."),
       );
+      return Option.none();
     }
     if (previousSecret.value === current) {
-      return yield* configFailure(
-        "NUSEND_UNSUBSCRIBE_PREVIOUS_SECRET must differ from NUSEND_UNSUBSCRIBE_SECRET.",
+      issues.push(
+        unsubscribeIssue(
+          "NUSEND_UNSUBSCRIBE_PREVIOUS_SECRET must differ from NUSEND_UNSUBSCRIBE_SECRET.",
+        ),
       );
+      return Option.none();
     }
     previous = Redacted.make(previousSecret.value);
   }
 
-  return Option.some<ParsedUnsubscribeConfig>({
+  return Option.some({
     currentSecret: Redacted.make(current),
     previousSecret: previous,
-    publicBaseUrl: parsedBaseUrl.toString().replace(/\/$/, ""),
+    publicBaseUrl: publicBaseUrl.value,
   });
-});
+}
 
-export const sendingConfig: Effect.Effect<SendingConfig, Config.ConfigError> = Effect.gen(
-  function* () {
-    const fromEmailOption = yield* trimmedOption("NUSEND_SES_FROM_EMAIL");
-    if (Option.isNone(fromEmailOption)) {
-      return yield* configFailure("NUSEND_SES_FROM_EMAIL is required.");
-    }
-    const regionOption = yield* trimmedOption("AWS_REGION");
-    if (Option.isNone(regionOption)) {
-      return yield* configFailure("AWS_REGION is required.");
-    }
-    const fromEmail = fromEmailOption.value;
-    const region = regionOption.value;
-    const transactionalConfigurationSet = Option.getOrNull(
-      yield* trimmedOption("NUSEND_SES_TRANSACTIONAL_CONFIGURATION_SET"),
-    );
-    const marketingConfigurationSet = Option.getOrNull(
-      yield* trimmedOption("NUSEND_SES_MARKETING_CONFIGURATION_SET"),
-    );
-    const requestTimeoutMs = yield* parseSendingInteger(
-      numericConfigSpecs.requestTimeoutMs,
-      yield* trimmedOption(numericConfigSpecs.requestTimeoutMs.envName),
-    );
-    const workerLeaseSeconds = yield* parseSendingInteger(
-      numericConfigSpecs.workerLeaseSeconds,
-      yield* trimmedOption(numericConfigSpecs.workerLeaseSeconds.envName),
-    );
-    const workerBatchSize = yield* parseSendingInteger(
-      numericConfigSpecs.workerBatchSize,
-      yield* trimmedOption(numericConfigSpecs.workerBatchSize.envName),
-    );
-    const workerPollMs = yield* parseSendingInteger(
-      numericConfigSpecs.workerPollMs,
-      yield* trimmedOption(numericConfigSpecs.workerPollMs.envName),
-    );
-
-    if (
-      exceedsSendWorkerLeaseBudget({
-        batchSize: workerBatchSize,
-        leaseSeconds: workerLeaseSeconds,
-        requestTimeoutMs,
-      })
-    ) {
-      return yield* configFailure(sendWorkerLeaseBudgetMessage);
-    }
-
-    return {
-      fromEmail,
-      marketingConfigurationSet,
-      region,
-      requestTimeoutMs,
-      transactionalConfigurationSet,
-      workerBatchSize,
-      workerLeaseSeconds,
-      workerPollMs,
-    };
-  },
-);
+function unsubscribeIssue(message: string): SesOperationsConfigIssue {
+  return {
+    blocksWorker: true,
+    id: "config.unsubscribe",
+    message,
+    status: "error",
+  };
+}

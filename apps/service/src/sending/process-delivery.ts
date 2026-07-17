@@ -12,7 +12,6 @@ import type { IdGeneratorService } from "../services/ids.ts";
 import type { UnsubscribeConfigService } from "../unsubscribe/config.ts";
 import { buildUnsubscribeUrl } from "../unsubscribe/url.ts";
 import {
-  type AttemptWriteResult,
   recordAmbiguousFailure,
   recordPermanentFailure,
   recordRetryableFailure,
@@ -24,20 +23,19 @@ import { loadDeliveryContext } from "./context.ts";
 import { runPolicyGates } from "./policy.ts";
 import { prepareEmail } from "./prepare.ts";
 import { renderDeliveryEmail } from "./render.ts";
-import { SendProcessorError } from "./schema.ts";
+import { SendProcessorError, type DeliveryContext, type StartedAttempt } from "./schema.ts";
 import { classifyTransportFailure } from "./transport-failure.ts";
 
-export function processSendDeliveryJob(
-  job: SendDeliveryJob,
-): Effect.Effect<
-  void,
-  DatabaseError | SendProcessorError,
+type ProcessorServices =
   | DatabaseService
   | EmailSendingConfigService
   | EmailTransportService
   | IdGeneratorService
-  | UnsubscribeConfigService
-> {
+  | UnsubscribeConfigService;
+
+export function processSendDeliveryJob(
+  job: SendDeliveryJob,
+): Effect.Effect<void, DatabaseError | SendProcessorError, ProcessorServices> {
   return Effect.gen(function* () {
     const context = yield* loadDeliveryContext(job);
     if (!context) return;
@@ -48,144 +46,161 @@ export function processSendDeliveryJob(
         yield* recordStaleSendingAsAmbiguous({
           deliveryId: context.delivery.id,
           errorMessage: "Delivery was left sending by a previous attempt; outcome is ambiguous.",
-        }).pipe(Effect.flatMap(handleAttemptWriteResult));
+        }).pipe(Effect.asVoid);
       }
       return;
     }
 
     const attempt = started.attempt;
-    // Tracks whether the external SES call has been dispatched. Only the window
-    // between dispatch and outcome-recording may resolve as ambiguous; a
-    // DatabaseError BEFORE dispatch (e.g. SQLITE_BUSY in a policy re-check) means
-    // nothing was sent, so it must reset the delivery to `queued` (retryable)
-    // rather than leaving it `sending` for the next cycle to fail as ambiguous.
-    const dispatched = { value: false };
 
-    const send = Effect.gen(function* () {
-      const policy = yield* runPolicyGates(context);
-      if (policy.kind === "BlockPermanent") {
-        yield* recordPermanentFailure({
+    // Stage boundary: beforeDispatch never calls SES. Pre-dispatch DatabaseError
+    // resets delivery to queued (retryable). Post-dispatch DB errors surface —
+    // SES may already have accepted the message.
+    const prepared = yield* beforeDispatch(context, attempt).pipe(
+      Effect.catchTag("DatabaseError", (error) =>
+        recordRetryableFailure({
           attemptId: attempt.attemptId,
           deliveryId: context.delivery.id,
-          errorMessage: policy.message,
-          status: policy.status,
-        }).pipe(Effect.flatMap(handleAttemptWriteResult));
-        return;
-      }
-      if (policy.kind === "BlockRetryable") {
-        yield* recordRetryableFailure({
-          attemptId: attempt.attemptId,
-          deliveryId: context.delivery.id,
-          errorMessage: policy.message,
-        }).pipe(Effect.flatMap(handleAttemptWriteResult));
-        return yield* Effect.fail(new SendProcessorError({ message: policy.message }));
-      }
-
-      const unsubscribeUrlExit = yield* Effect.exit(
-        context.mailing.purpose === "marketing"
-          ? buildUnsubscribeUrl(context.delivery.id)
-          : Effect.succeed(undefined),
-      );
-      if (Exit.isFailure(unsubscribeUrlExit)) {
-        const message = causeMessage(unsubscribeUrlExit.cause);
-        yield* recordRetryableFailure({
-          attemptId: attempt.attemptId,
-          deliveryId: context.delivery.id,
-          errorMessage: message,
-        }).pipe(Effect.flatMap(handleAttemptWriteResult));
-        return yield* Effect.fail(new SendProcessorError({ message }));
-      }
-
-      const renderedExit = yield* Effect.exit(
-        renderDeliveryEmail(context, { unsubscribeUrl: unsubscribeUrlExit.value }),
-      );
-      if (Exit.isFailure(renderedExit)) {
-        yield* recordPermanentFailure({
-          attemptId: attempt.attemptId,
-          deliveryId: context.delivery.id,
-          errorMessage: causeMessage(renderedExit.cause),
-        }).pipe(Effect.flatMap(handleAttemptWriteResult));
-        return;
-      }
-
-      const preparedExit = yield* Effect.exit(prepareEmail(context, renderedExit.value));
-      if (Exit.isFailure(preparedExit)) {
-        yield* recordPermanentFailure({
-          attemptId: attempt.attemptId,
-          deliveryId: context.delivery.id,
-          errorMessage: causeMessage(preparedExit.cause),
-        }).pipe(Effect.flatMap(handleAttemptWriteResult));
-        return;
-      }
-
-      const transport = yield* EmailTransport;
-      dispatched.value = true;
-      const sendExit = yield* Effect.exit(Effect.suspend(() => transport.send(preparedExit.value)));
-
-      if (Exit.isSuccess(sendExit)) {
-        yield* recordSendSuccess({
-          attemptId: attempt.attemptId,
-          deliveryId: context.delivery.id,
-          messageId: sendExit.value.messageId,
-        }).pipe(Effect.flatMap(handleAttemptWriteResult));
-        return;
-      }
-
-      const failure = classifyTransportFailure(sendExit.cause);
-      switch (failure.kind) {
-        case "permanent":
-          yield* recordPermanentFailure({
-            attemptId: attempt.attemptId,
-            deliveryId: context.delivery.id,
-            errorMessage: failure.message,
-          }).pipe(Effect.flatMap(handleAttemptWriteResult));
-          return;
-        case "ambiguous":
-          yield* recordAmbiguousFailure({
-            attemptId: attempt.attemptId,
-            deliveryId: context.delivery.id,
-            errorMessage: failure.message,
-          }).pipe(Effect.flatMap(handleAttemptWriteResult));
-          return;
-        case "retryable":
-          yield* recordRetryableFailure({
-            attemptId: attempt.attemptId,
-            deliveryId: context.delivery.id,
-            errorMessage: failure.message,
-          }).pipe(Effect.flatMap(handleAttemptWriteResult));
-          return yield* Effect.fail(new SendProcessorError({ message: failure.message }));
-      }
-    });
-
-    return yield* send.pipe(
-      Effect.catchTag("DatabaseError", (error) => {
-        if (dispatched.value) return Effect.fail(error);
-        const message = `Pre-send database error during ${error.operation}.`;
-        return recordRetryableFailure({
-          attemptId: attempt.attemptId,
-          deliveryId: context.delivery.id,
-          errorMessage: message,
+          errorMessage: `Pre-send database error during ${error.operation}.`,
         }).pipe(
-          Effect.flatMap(handleAttemptWriteResult),
-          Effect.andThen(Effect.fail(new SendProcessorError({ message }))),
-          // If the reset write also fails (database genuinely down), surface the
-          // original error; the delivery stays `sending` and is resolved as
-          // ambiguous on a later cycle (documented residual).
+          Effect.asVoid,
+          Effect.andThen(
+            Effect.fail(
+              new SendProcessorError({
+                message: `Pre-send database error during ${error.operation}.`,
+              }),
+            ),
+          ),
           Effect.catchTag("DatabaseError", () => Effect.fail(error)),
-        );
-      }),
+        ),
+      ),
     );
+    if (prepared.kind === "Stopped") return;
+
+    yield* dispatchAndRecord(context, attempt, prepared.email);
   });
 }
 
-function handleAttemptWriteResult(result: AttemptWriteResult): Effect.Effect<void> {
-  switch (result) {
-    case "Recorded":
-    case "Reconciled":
-    case "AlreadyRecorded":
-    case "SupersededTerminal":
-      return Effect.void;
-  }
+type BeforeDispatchResult =
+  | { readonly kind: "Ready"; readonly email: Parameters<EmailTransportService["send"]>[0] }
+  | { readonly kind: "Stopped" };
+
+function beforeDispatch(
+  context: DeliveryContext,
+  attempt: StartedAttempt,
+): Effect.Effect<
+  BeforeDispatchResult,
+  DatabaseError | SendProcessorError,
+  DatabaseService | EmailSendingConfigService | UnsubscribeConfigService
+> {
+  return Effect.gen(function* () {
+    const policy = yield* runPolicyGates(context);
+    if (policy.kind === "BlockPermanent") {
+      yield* recordPermanentFailure({
+        attemptId: attempt.attemptId,
+        deliveryId: context.delivery.id,
+        errorMessage: policy.message,
+        status: policy.status,
+      }).pipe(Effect.asVoid);
+      return { kind: "Stopped" as const };
+    }
+    if (policy.kind === "BlockRetryable") {
+      yield* recordRetryableFailure({
+        attemptId: attempt.attemptId,
+        deliveryId: context.delivery.id,
+        errorMessage: policy.message,
+      }).pipe(Effect.asVoid);
+      return yield* Effect.fail(new SendProcessorError({ message: policy.message }));
+    }
+
+    const unsubscribeUrlExit = yield* Effect.exit(
+      context.mailing.purpose === "marketing"
+        ? buildUnsubscribeUrl(context.delivery.id)
+        : Effect.succeed(undefined),
+    );
+    if (Exit.isFailure(unsubscribeUrlExit)) {
+      const message = causeMessage(unsubscribeUrlExit.cause);
+      yield* recordRetryableFailure({
+        attemptId: attempt.attemptId,
+        deliveryId: context.delivery.id,
+        errorMessage: message,
+      }).pipe(Effect.asVoid);
+      return yield* Effect.fail(new SendProcessorError({ message }));
+    }
+
+    const renderedExit = yield* Effect.exit(
+      renderDeliveryEmail(context, { unsubscribeUrl: unsubscribeUrlExit.value }),
+    );
+    if (Exit.isFailure(renderedExit)) {
+      yield* recordPermanentFailure({
+        attemptId: attempt.attemptId,
+        deliveryId: context.delivery.id,
+        errorMessage: causeMessage(renderedExit.cause),
+      }).pipe(Effect.asVoid);
+      return { kind: "Stopped" as const };
+    }
+
+    const preparedExit = yield* Effect.exit(prepareEmail(context, renderedExit.value));
+    if (Exit.isFailure(preparedExit)) {
+      yield* recordPermanentFailure({
+        attemptId: attempt.attemptId,
+        deliveryId: context.delivery.id,
+        errorMessage: causeMessage(preparedExit.cause),
+      }).pipe(Effect.asVoid);
+      return { kind: "Stopped" as const };
+    }
+
+    return { kind: "Ready" as const, email: preparedExit.value };
+  });
+}
+
+function dispatchAndRecord(
+  context: DeliveryContext,
+  attempt: StartedAttempt,
+  email: Parameters<EmailTransportService["send"]>[0],
+): Effect.Effect<
+  void,
+  DatabaseError | SendProcessorError,
+  EmailTransportService | DatabaseService
+> {
+  return Effect.gen(function* () {
+    const transport = yield* EmailTransport;
+    const sendExit = yield* Effect.exit(Effect.suspend(() => transport.send(email)));
+
+    if (Exit.isSuccess(sendExit)) {
+      yield* recordSendSuccess({
+        attemptId: attempt.attemptId,
+        deliveryId: context.delivery.id,
+        messageId: sendExit.value.messageId,
+      }).pipe(Effect.asVoid);
+      return;
+    }
+
+    const failure = classifyTransportFailure(sendExit.cause);
+    switch (failure.kind) {
+      case "permanent":
+        yield* recordPermanentFailure({
+          attemptId: attempt.attemptId,
+          deliveryId: context.delivery.id,
+          errorMessage: failure.message,
+        }).pipe(Effect.asVoid);
+        return;
+      case "ambiguous":
+        yield* recordAmbiguousFailure({
+          attemptId: attempt.attemptId,
+          deliveryId: context.delivery.id,
+          errorMessage: failure.message,
+        }).pipe(Effect.asVoid);
+        return;
+      case "retryable":
+        yield* recordRetryableFailure({
+          attemptId: attempt.attemptId,
+          deliveryId: context.delivery.id,
+          errorMessage: failure.message,
+        }).pipe(Effect.asVoid);
+        return yield* Effect.fail(new SendProcessorError({ message: failure.message }));
+    }
+  });
 }
 
 function causeMessage(cause: Cause.Cause<unknown>): string {

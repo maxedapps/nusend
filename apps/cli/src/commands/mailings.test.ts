@@ -32,23 +32,6 @@ describe("mailings commands", () => {
     expect(log.mock.calls.flat().join("\n")).toContain("ambiguous=1");
   });
 
-  it("decodes an old five-count service as zero ambiguity", async () => {
-    globalThis.fetch = vi.fn(async () => {
-      const item = mailingListItem();
-      const { ambiguous: _omitted, ...oldCounts } = item.counts;
-      return Response.json({
-        items: [{ ...item, counts: oldCounts }],
-        pagination: { limit: 50, nextOffset: null, offset: 0 },
-      });
-    }) as unknown as typeof fetch;
-    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
-
-    await expect(runCli(["mailings", "list"], cliEnv())).resolves.toEqual({ exitCode: 0 });
-
-    expect(log.mock.calls.flat().join("\n")).toContain("2/3");
-    expect(log.mock.calls.flat().join("\n")).not.toContain("ambiguous=");
-  });
-
   it("prints full detail as JSON but omits HTML in human mode", async () => {
     globalThis.fetch = vi.fn(async (input: Request | URL | string) => {
       expect(input instanceof Request ? input.url : String(input)).toBe(

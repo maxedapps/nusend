@@ -1,4 +1,4 @@
-import { Effect, Layer, Logger, ManagedRuntime, Option } from "effect";
+import { Effect, Layer, ManagedRuntime, Option } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { createApp } from "./app.ts";
@@ -12,10 +12,8 @@ import {
   FakeAuthLive,
   FakeDeviceAuthorizationsLive,
   fakeSesOperationsConfigLayer,
-  makeTestRuntime,
   sequentialIdsLayer,
   withTestApp,
-  type CapturedLog,
 } from "./testing/layers.ts";
 import { UnsubscribeConfigLive } from "./unsubscribe/config.ts";
 
@@ -99,72 +97,6 @@ describe("createApp", () => {
     });
   });
 
-  it("emits one structured sanitized error plus a 500 access event through production wiring", async () => {
-    const logs: CapturedLog[] = [];
-    const runtime = makeTestRuntime({ logSink: logs });
-    try {
-      const app = createApp({
-        registerBeforeFallback: (probe) => {
-          probe.post("/unsubscribe/:token", () => {
-            throw Object.assign(new Error("defect-message-sentinel"), {
-              _tag: "defect-tag-sentinel",
-            });
-          });
-        },
-        runtime,
-      });
-      const response = await app.fetch(
-        new Request(
-          "http://localhost/unsubscribe/unsubscribe-token-sentinel?query=query-sentinel",
-          {
-            body: "body-sentinel",
-            headers: {
-              cookie: "session=cookie-sentinel",
-              "content-type": "text/plain",
-              "x-api-key": "api-key-sentinel",
-              "x-header": "header-sentinel",
-            },
-            method: "POST",
-          },
-        ),
-      );
-
-      expect(response.status).toBe(500);
-      expect(response.headers.get("content-type")).toContain("application/json");
-      await expect(response.json()).resolves.toEqual({
-        error: { code: "internal_error", message: "Internal error." },
-      });
-
-      const errorEvents = logs.filter((entry) => logText(entry).includes("request failed"));
-      const accessEvents = logs.filter((entry) =>
-        logText(entry).includes("http request completed"),
-      );
-      expect(errorEvents).toHaveLength(1);
-      expect(logText(errorEvents[0]!)).toContain('"event":"internal_failure"');
-      expect(logText(errorEvents[0]!)).toContain('"method":"POST"');
-      expect(logText(errorEvents[0]!)).toContain('"path":"/unsubscribe/:token"');
-      expect(logText(errorEvents[0]!)).toContain('"defectType":"Error"');
-      expect(accessEvents).toHaveLength(1);
-      expect(logText(accessEvents[0]!)).toContain('"status":500');
-
-      const serialized = logs.map(logText).join("\n");
-      for (const secret of [
-        "defect-message-sentinel",
-        "defect-tag-sentinel",
-        "unsubscribe-token-sentinel",
-        "query-sentinel",
-        "cookie-sentinel",
-        "api-key-sentinel",
-        "header-sentinel",
-        "body-sentinel",
-      ]) {
-        expect(serialized).not.toContain(secret);
-      }
-    } finally {
-      await runtime.dispose();
-    }
-  });
-
   it("rejects a non-form POST /cli/activate with a 400 instead of a 500", async () => {
     await withTestApp({ auth: { session: { userId: "user_1" } } }, async (app) => {
       const response = await app.fetch(
@@ -193,10 +125,6 @@ describe("createApp", () => {
     });
   });
 });
-
-function logText(entry: CapturedLog): string {
-  return Logger.formatJson.log(entry);
-}
 
 function unavailableDatabaseLayer(): Layer.Layer<DatabaseService> {
   const dead = Effect.die(new Error("database unavailable"));

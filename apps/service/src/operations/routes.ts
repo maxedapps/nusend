@@ -2,6 +2,7 @@ import { Effect } from "effect";
 import { Hono } from "hono";
 
 import { requirePrincipal } from "../auth/middleware.ts";
+import { parseRouteId } from "../http/query.ts";
 import { runRoute, type AppRuntime } from "../http/respond.ts";
 import { getDeliveryDetail, getOperationsSummary, listDeliveries } from "./read-model.ts";
 import { parseDeliveriesQuery } from "./query.ts";
@@ -30,11 +31,14 @@ export function createOperationsRoutes(options: OperationsRoutesOptions): Hono {
     return runRoute(context, options.runtime, program, (result) => context.json(result));
   });
 
-  routes.get("/deliveries/:id", requireOperationsRead, (context) =>
-    runRoute(context, options.runtime, getDeliveryDetail(context.req.param("id")), (result) =>
-      context.json(result),
-    ),
-  );
+  routes.get("/deliveries/:id", requireOperationsRead, (context) => {
+    const program = Effect.gen(function* () {
+      const id = yield* parseRouteId(context.req.param("id"), "delivery id");
+      return yield* getDeliveryDetail(id);
+    });
+
+    return runRoute(context, options.runtime, program, (result) => context.json(result));
+  });
 
   return routes;
 }

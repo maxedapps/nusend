@@ -5,9 +5,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { CliHttpError } from "./client/errors.js";
 import { UsageError } from "./commands/context.js";
-import { updateLoginState } from "./config/local-state.js";
-import { credentialsPath, localStateReaperMutexPath } from "./config/paths.js";
-import { updateConfig } from "./config/profiles.js";
+import { parseCliCommand } from "./commands/options.js";
+import { configDirectory, statePath } from "./config/paths.js";
 import { isMainEntry, printError, runCli, runMain } from "./main.js";
 
 const originalFetch = globalThis.fetch;
@@ -44,12 +43,31 @@ describe("runCli", () => {
     }
   });
 
-  it("does not acquire local state for help or version", async () => {
-    const directory = await mkdtemp("/tmp/nusend-help-no-lock-");
+  it.each([
+    [["login", "https://mail.example.com"], "login"],
+    [["logout"], "logout"],
+    [["whoami"], "whoami"],
+    [["config", "repair-permissions"], "config-repair-permissions"],
+    [["api-keys", "list"], "api-keys-list"],
+    [["api-keys", "create", "--name", "test"], "api-keys-create"],
+    [["api-keys", "revoke", "key_1"], "api-keys-revoke"],
+    [["api-keys", "rotate", "key_1"], "api-keys-rotate"],
+    [["contacts", "list"], "contacts-list"],
+    [["contacts", "get", "contact_1"], "contacts-get"],
+    [["contacts", "create", "user@example.com"], "contacts-create"],
+    [["contacts", "update", "contact_1", "new@example.com"], "contacts-update"],
+    [["contacts", "delete", "contact_1"], "contacts-delete"],
+    [["mailings", "list"], "mailings-list"],
+    [["mailings", "get", "mailing_1"], "mailings-get"],
+  ] as const)("parses command coverage for %s", (argv, kind) => {
+    expect(parseCliCommand(argv).kind).toBe(kind);
+  });
+
+  it("does not read local state for help or version", async () => {
+    const directory = await mkdtemp("/tmp/nusend-help-no-state-");
     const env = { XDG_CONFIG_HOME: directory };
-    const mutexPath = localStateReaperMutexPath(env);
-    await mkdir(mutexPath, { recursive: true });
-    await writeFile(`${mutexPath}/owner.json`, "malformed");
+    await mkdir(configDirectory(env), { recursive: true });
+    await writeFile(statePath(env), "malformed", { mode: 0o600 });
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
     try {
       await expect(runCli(["--help"], env)).resolves.toEqual({ exitCode: 0 });
@@ -117,10 +135,8 @@ describe("runCli", () => {
       NUSEND_BASE_URL: "https://mail.example.com",
       XDG_CONFIG_HOME: directory,
     };
-    const mutexPath = localStateReaperMutexPath(env);
-    await mkdir(mutexPath, { recursive: true });
-    await writeFile(`${mutexPath}/owner.json`, "malformed");
-    await writeFile(credentialsPath(env), "malformed");
+    await mkdir(configDirectory(env), { recursive: true });
+    await writeFile(statePath(env), "malformed", { mode: 0o600 });
     globalThis.fetch = vi.fn(async () =>
       Response.json({
         principal: {
@@ -135,88 +151,6 @@ describe("runCli", () => {
     try {
       await expect(runCli(["whoami"], env)).resolves.toEqual({ exitCode: 0 });
     } finally {
-      await rm(directory, { force: true, recursive: true });
-    }
-  });
-
-  it("waits for a coherent config/credential snapshot before authenticated network work", async () => {
-    const directory = await mkdtemp("/tmp/nusend-auth-snapshot-");
-    const env = { XDG_CONFIG_HOME: directory };
-    let releaseLogin!: () => void;
-    const loginGate = new Promise<void>((resolve) => {
-      releaseLogin = resolve;
-    });
-    let signalCredentialRenamed!: () => void;
-    const credentialRenamed = new Promise<void>((resolve) => {
-      signalCredentialRenamed = resolve;
-    });
-    let signalSnapshotContended!: () => void;
-    const snapshotContended = new Promise<void>((resolve) => {
-      signalSnapshotContended = resolve;
-    });
-    let mutation: Promise<void> | undefined;
-    try {
-      await updateLoginState(
-        {
-          baseUrl: "https://old.example.com",
-          credential: { apiKey: "nusend_old", apiKeyId: "old_key" },
-          profile: "default",
-        },
-        env,
-      );
-      mutation = updateLoginState(
-        {
-          baseUrl: "https://new.example.com",
-          credential: { apiKey: "nusend_new", apiKeyId: "new_key" },
-          profile: "default",
-        },
-        env,
-        {
-          afterRename: async (destination) => {
-            if (destination !== credentialsPath(env)) return;
-            signalCredentialRenamed();
-            await loginGate;
-          },
-        },
-      );
-      await credentialRenamed;
-      const fetchMock = vi.fn(async (_input: Request | URL | string, _init?: RequestInit) => {
-        // This nested mutation would deadlock/time out if runCli held the
-        // snapshot lock across network work.
-        await updateConfig((current) => current, env);
-        return Response.json({
-          principal: {
-            apiKeyId: "new_key",
-            kind: "api_key",
-            permissions: { contacts: ["read"] },
-            userId: "user_1",
-          },
-        });
-      });
-      globalThis.fetch = fetchMock as unknown as typeof fetch;
-      vi.spyOn(console, "log").mockImplementation(() => undefined);
-      const command = runCli(["whoami"], env, {
-        afterLocalStateContention: async () => signalSnapshotContended(),
-        now: Date.now,
-        sleep: async () => undefined,
-      });
-
-      await snapshotContended;
-      const requestsBeforeLoginRelease = fetchMock.mock.calls.length;
-      releaseLogin();
-      await mutation;
-      await expect(command).resolves.toEqual({ exitCode: 0 });
-
-      expect(requestsBeforeLoginRelease).toBe(0);
-      expect(fetchMock).toHaveBeenCalledTimes(1);
-      const [input, init] = fetchMock.mock.calls[0] ?? [];
-      expect(input instanceof URL ? input.toString() : String(input)).toBe(
-        "https://new.example.com/api/me",
-      );
-      expect(new Headers(init?.headers).get("x-api-key")).toBe("nusend_new");
-    } finally {
-      releaseLogin();
-      await mutation?.catch(() => undefined);
       await rm(directory, { force: true, recursive: true });
     }
   });
@@ -415,16 +349,15 @@ describe("runCli", () => {
     });
   });
 
-  it("errors clearly when the stored profile base URL carries a path", async () => {
+  it("errors clearly when the stored base URL carries a path", async () => {
     const directory = await mkdtemp("/tmp/nusend-prefixed-");
     try {
       const env = { NUSEND_API_KEY: "nusend_test", XDG_CONFIG_HOME: directory };
-      await updateConfig(
-        () => ({
-          activeProfile: "default",
-          profiles: { default: { baseUrl: "https://mail.example.com/nusend" } },
-        }),
-        env,
+      await mkdir(configDirectory(env), { mode: 0o700, recursive: true });
+      await writeFile(
+        statePath(env),
+        JSON.stringify({ baseUrl: "https://mail.example.com/nusend" }),
+        { mode: 0o600 },
       );
       const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
       const fetchMock = vi.fn();
@@ -439,11 +372,11 @@ describe("runCli", () => {
     }
   });
 
-  it("treats missing option values as usage errors", async () => {
+  it("rejects removed profile syntax", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
-    await expect(runMain(["--profile"], {})).resolves.toEqual({ exitCode: 2 });
-    expect(error.mock.calls.flat().join("\n")).toContain("--profile requires a value");
+    await expect(runMain(["--profile", "other", "whoami"], {})).resolves.toEqual({ exitCode: 2 });
+    expect(error.mock.calls.flat().join("\n")).toContain("Unknown command: --profile");
   });
 
   it("treats invalid login URLs as usage errors", async () => {

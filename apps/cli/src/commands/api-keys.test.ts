@@ -10,7 +10,7 @@ afterEach(() => {
 });
 
 describe("api-keys commands", () => {
-  it("sends null only when --no-expiry is explicit", async () => {
+  it("uses explicit expiry modes and the injected clock for the default", async () => {
     const bodies: unknown[] = [];
     globalThis.fetch = vi.fn(async (_input: Request | URL | string, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body));
@@ -51,10 +51,15 @@ describe("api-keys commands", () => {
       ],
       cliEnv(),
     );
+    await runCli(["api-keys", "create", "--name", "default"], cliEnv(), {
+      now: () => Date.parse("2026-01-01T00:00:00.000Z"),
+      sleep: async () => undefined,
+    });
 
     expect(bodies).toEqual([
       expect.objectContaining({ expiresAt: null, name: "none" }),
       expect.objectContaining({ expiresAt: "2099-01-01T00:00:00.000Z", name: "explicit" }),
+      expect.objectContaining({ expiresAt: "2027-01-01T00:00:00.000Z", name: "default" }),
     ]);
   });
 

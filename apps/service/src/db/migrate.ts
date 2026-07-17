@@ -1,4 +1,4 @@
-// Migration CLI: bun src/db/migrate.ts <up|down|status>
+// Migration CLI: bun src/db/migrate.ts <up|status>
 import { ConfigProvider, Effect, Exit, ManagedRuntime } from "effect";
 
 import { serviceConfig } from "../config.ts";
@@ -11,15 +11,14 @@ import {
   validateAppliedMigrationFiles,
   type AppliedMigration,
 } from "./migration-check.ts";
-import { droppedTableNames } from "./destructive-migration.ts";
 import { type MigrationFile } from "./migration-files.ts";
 
-type Command = "down" | "status" | "up";
+type Command = "status" | "up";
 
 function parseCommand(value: string | undefined): Command {
-  if (value === "up" || value === "down" || value === "status") return value;
+  if (value === "up" || value === "status") return value;
 
-  throw new Error("Usage: bun src/db/migrate.ts <up|down|status>");
+  throw new Error("Usage: bun src/db/migrate.ts <up|status>");
 }
 
 function migrationProgram(
@@ -44,7 +43,6 @@ function migrationProgram(
     );
 
     if (command === "up") return yield* migrateUp(db, migrations, appliedMigrations);
-    if (command === "down") return yield* migrateDown(db, migrations, appliedMigrations);
     printStatus(migrations, appliedMigrations);
   });
 }
@@ -70,7 +68,7 @@ function migrateUp(
     for (const migration of pendingMigrations) {
       yield* db.transaction(
         Effect.gen(function* () {
-          yield* db.exec(`migrate:apply:${migration.version}`, migration.upSql);
+          yield* db.exec(`migrate:apply:${migration.version}`, migration.sql);
           yield* db.run(
             "migrate:record",
             "INSERT INTO schema_migrations (version, checksum) VALUES ($version, $checksum);",
@@ -80,79 +78,6 @@ function migrateUp(
       );
       console.log(`Applied migration ${migration.version}.`);
     }
-  });
-}
-
-function migrateDown(
-  db: DatabaseService,
-  migrations: MigrationFile[],
-  appliedMigrations: readonly AppliedMigration[],
-): Effect.Effect<void, DatabaseError | MigrationError> {
-  return Effect.gen(function* () {
-    if (appliedMigrations.length === 0) {
-      console.log("No applied migrations to roll back.");
-      return;
-    }
-
-    const latestApplied = [...appliedMigrations].sort((left, right) =>
-      right.version.localeCompare(left.version),
-    )[0];
-    const migration = migrations.find((candidate) => candidate.version === latestApplied.version);
-
-    if (!migration) {
-      return yield* Effect.fail(
-        new MigrationError({
-          reason: `Cannot roll back ${latestApplied.version}: migration file is missing.`,
-          version: latestApplied.version,
-        }),
-      );
-    }
-
-    if (migration.checksum !== latestApplied.checksum) {
-      return yield* Effect.fail(
-        new MigrationError({
-          reason: `Cannot roll back ${migration.version}: migration checksum changed after it was applied.`,
-          version: migration.version,
-        }),
-      );
-    }
-
-    // Destructive-rollback gate: a down migration that DROPs a table destroys that
-    // table's data. Require explicit confirmation so an accidental `db:rollback`
-    // does not silently delete e.g. the SES audit trail or all API keys.
-    const droppedTables = yield* Effect.try({
-      try: () => droppedTableNames(migration.downSql),
-      catch: (cause) =>
-        new MigrationError({
-          reason: `Cannot inspect destructive rollback ${migration.version}: ${cause instanceof Error ? cause.message : "malformed DROP TABLE statement"}`,
-          version: migration.version,
-        }),
-    });
-    if (droppedTables.length > 0) {
-      console.log(`Destructive rollback tables: ${droppedTables.join(", ")}`);
-    }
-    if (droppedTables.length > 0 && process.env.NUSEND_CONFIRM_DESTRUCTIVE_ROLLBACK !== "1") {
-      return yield* Effect.fail(
-        new MigrationError({
-          reason: `Rolling back ${migration.version} drops data-bearing table(s): ${droppedTables.join(
-            ", ",
-          )}. Re-run with NUSEND_CONFIRM_DESTRUCTIVE_ROLLBACK=1 to confirm.`,
-          version: migration.version,
-        }),
-      );
-    }
-
-    yield* db.transaction(
-      Effect.gen(function* () {
-        yield* db.exec(`migrate:rollback:${migration.version}`, migration.downSql);
-        yield* db.run(
-          "migrate:unrecord",
-          "DELETE FROM schema_migrations WHERE version = $version;",
-          { version: migration.version },
-        );
-      }),
-    );
-    console.log(`Rolled back migration ${migration.version}.`);
   });
 }
 

@@ -1,6 +1,7 @@
 import { Effect, Schema } from "effect";
 
 import { DatabaseError, NotFoundError } from "../errors.ts";
+import { decodeDbRow, decodeDbRows } from "../http/sql-decode.ts";
 import { Database, type DatabaseService, type SqlParams } from "../services/database.ts";
 import { SesEventTypeValues } from "./event-schema.ts";
 import type { SesEventsQuery } from "./query.ts";
@@ -128,14 +129,14 @@ export function getSesOperationsSummary(): Effect.Effect<
     const counts = Object.fromEntries(
       SesEventTypeValues.map((eventType) => [eventType, 0]),
     ) as Record<string, number>;
-    for (const row of yield* decodeRows(EventCountRow, eventRows))
+    for (const row of yield* decodeDbRows(EventCountRow, eventRows))
       counts[row.eventType] = row.count;
 
     return {
       counts,
       latestEventAt: latestEvent?.createdAt ?? null,
       latestNotificationAt: latestNotification?.receivedAt ?? null,
-      recentIssues: (yield* decodeRows(SesEventRow, recentIssues)).map(toSesEventItem),
+      recentIssues: (yield* decodeDbRows(SesEventRow, recentIssues)).map(toSesEventItem),
       totals: {
         bounce: counts.Bounce,
         click: counts.Click,
@@ -143,7 +144,7 @@ export function getSesOperationsSummary(): Effect.Effect<
         open: counts.Open,
       },
       worker: {
-        latestRun: workerRun === null ? null : yield* decodeRow(WorkerRunRow, workerRun),
+        latestRun: workerRun === null ? null : yield* decodeDbRow(WorkerRunRow, workerRun),
       },
     };
   });
@@ -164,7 +165,7 @@ export function listSesEvents(
        LIMIT $limit OFFSET $offset;`,
       params,
     );
-    return { items: (yield* decodeRows(SesEventRow, rows)).map(toSesEventItem) };
+    return { items: (yield* decodeDbRows(SesEventRow, rows)).map(toSesEventItem) };
   });
 }
 
@@ -180,7 +181,7 @@ export function getSesEventDetail(
     );
     if (row === null)
       return yield* Effect.fail(new NotFoundError({ message: "SES event not found." }));
-    return toSesEventItem(yield* decodeRow(SesEventRow, row));
+    return toSesEventItem(yield* decodeDbRow(SesEventRow, row));
   });
 }
 
@@ -201,7 +202,7 @@ export function listSesSimulatorRuns(
        LIMIT $limit;`,
       { limit },
     );
-    return { items: (yield* decodeRows(SimulatorRunRow, rows)).map(toSimulatorRunItem) };
+    return { items: (yield* decodeDbRows(SimulatorRunRow, rows)).map(toSimulatorRunItem) };
   });
 }
 
@@ -224,7 +225,7 @@ export function getSesSimulatorRunDetail(
     );
     if (row === null)
       return yield* Effect.fail(new NotFoundError({ message: "SES simulator run not found." }));
-    return toSimulatorRunItem(yield* decodeRow(SimulatorRunRow, row));
+    return toSimulatorRunItem(yield* decodeDbRow(SimulatorRunRow, row));
   });
 }
 
@@ -323,18 +324,4 @@ function parseLinkTags(json: string | null): Record<string, string[]> | null {
 function truncate(value: string | null): string | null {
   if (value === null) return null;
   return value.length <= 500 ? value : `${value.slice(0, 500)}…`;
-}
-
-function decodeRow<S extends Schema.ConstraintDecoder<unknown, never>>(
-  schema: S,
-  row: unknown,
-): Effect.Effect<S["Type"]> {
-  return Schema.decodeUnknownEffect(schema)(row).pipe(Effect.orDie);
-}
-
-function decodeRows<S extends Schema.ConstraintDecoder<unknown, never>>(
-  schema: S,
-  rows: readonly unknown[],
-): Effect.Effect<readonly S["Type"][]> {
-  return Effect.forEach(rows, (row) => decodeRow(schema, row));
 }

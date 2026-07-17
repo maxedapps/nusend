@@ -52,7 +52,7 @@ export function validateAppliedMigrationFiles(
       if (migration.checksum !== applied.checksum) {
         return yield* Effect.fail(
           new MigrationError({
-            reason: `Applied migration ${applied.version} checksum changed. Roll it back before editing it.`,
+            reason: `Applied migration ${applied.version} checksum changed. Restore the matching file or recreate this pre-launch database.`,
             version: applied.version,
           }),
         );

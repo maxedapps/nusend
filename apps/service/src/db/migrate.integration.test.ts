@@ -487,7 +487,7 @@ afterEach(() => {
 });
 
 describe("migration runner", () => {
-  it("applies, reports, rolls back, and rejects checksum drift", () => {
+  it("applies, reports, no-ops, and rejects checksum or history drift", () => {
     const databasePath = createTemporaryDatabasePath();
 
     expect(statusLines(databasePath)).toEqual([`pending  ${migrationMarker}`]);
@@ -538,22 +538,9 @@ describe("migration runner", () => {
     const driftUp = runMigrationCommand("up", databasePath);
     expect(driftUp.status).not.toBe(0);
     expect(driftUp.stderr).toContain("checksum changed");
-    const driftDown = runMigrationCommand("down", databasePath);
-    expect(driftDown.status).not.toBe(0);
-    expect(driftDown.stderr).toContain("migration checksum changed after it was applied");
     restoreMigrationChecksum(databasePath);
 
-    expect(runMigrationCommand("down", databasePath).stdout).toContain(
-      `Rolled back migration ${migrationMarker}.`,
-    );
-    expect(readTableNames(databasePath)).toEqual(["schema_migrations"]);
-    expect(runMigrationCommand("down", databasePath).stdout.trim()).toBe(
-      "No applied migrations to roll back.",
-    );
-
-    expect(runMigrationCommand("up", databasePath).stdout).toContain(
-      `Applied migration ${migrationMarker}.`,
-    );
+    expect(runMigrationCommand("up", databasePath).stdout.trim()).toBe("No pending migrations.");
     expect(readSchemaContract(databasePath)).toEqual(initialSchema);
 
     expect(
@@ -569,34 +556,6 @@ describe("migration runner", () => {
     const upWithMissingFile = runMigrationCommand("up", databasePath);
     expect(upWithMissingFile.status).not.toBe(0);
     expect(upWithMissingFile.stderr).toContain("Applied migration 9999_missing is missing from");
-    const downWithMissingFile = runMigrationCommand("down", databasePath);
-    expect(downWithMissingFile.status).not.toBe(0);
-    expect(downWithMissingFile.stderr).toContain(
-      "Cannot roll back 9999_missing: migration file is missing.",
-    );
-  }, 20_000);
-
-  it("gates a destructive rollback behind NUSEND_CONFIRM_DESTRUCTIVE_ROLLBACK", () => {
-    const databasePath = createTemporaryDatabasePath();
-    expect(runMigrationCommand("up", databasePath).status).toBe(0);
-    expect(runSql(databasePath, representativeRowsSql).status).toBe(0);
-    const schemaBeforeRefusal = readSchemaContract(databasePath);
-    const dataBeforeRefusal = readApplicationRows(databasePath);
-
-    const refused = runMigrationCommand("down", databasePath, {
-      NUSEND_CONFIRM_DESTRUCTIVE_ROLLBACK: "",
-    });
-    const inventory = `Destructive rollback tables: ${applicationTables.join(", ")}`;
-    expect(refused.status).not.toBe(0);
-    expect(refused.stdout.trim()).toBe(inventory);
-    expect(refused.stderr).toContain("drops data-bearing table(s)");
-    expect(readSchemaContract(databasePath)).toEqual(schemaBeforeRefusal);
-    expect(readApplicationRows(databasePath)).toEqual(dataBeforeRefusal);
-
-    const confirmed = runMigrationCommand("down", databasePath);
-    expect(confirmed.status).toBe(0);
-    expect(confirmed.stdout.trim()).toBe(`${inventory}\nRolled back migration ${migrationMarker}.`);
-    expect(readTableNames(databasePath)).toEqual(["schema_migrations"]);
   }, 20_000);
 
   it("enforces the fresh schema checks, uniqueness, cascades, and SET NULL edges", () => {
@@ -669,10 +628,6 @@ describe("migration runner", () => {
     }
     expect(readForeignKeyViolations(databasePath)).toEqual([]);
 
-    expect(runMigrationCommand("down", databasePath).status).toBe(0);
-    expect(readTableNames(databasePath)).toEqual(["schema_migrations"]);
-    expect(readForeignKeyViolations(databasePath)).toEqual([]);
-    expect(runMigrationCommand("up", databasePath).status).toBe(0);
     expect(readForeignKeyViolations(databasePath)).toEqual([]);
   }, 20_000);
 });
@@ -742,43 +697,14 @@ function createTemporaryDatabasePath(): string {
   return join(directory, "nusend.sqlite");
 }
 
-function runMigrationCommand(
-  command: "down" | "status" | "up",
-  databasePath: string,
-  extraEnv: Record<string, string> = { NUSEND_CONFIRM_DESTRUCTIVE_ROLLBACK: "1" },
-) {
-  return runBun(["src/db/migrate.ts", command], databasePath, extraEnv);
+function runMigrationCommand(command: "status" | "up", databasePath: string) {
+  return runBun(["src/db/migrate.ts", command], databasePath);
 }
 
 function statusLines(databasePath: string): string[] {
   const result = runMigrationCommand("status", databasePath);
   expect(result.status).toBe(0);
   return result.stdout.trim().split("\n");
-}
-
-function readTableNames(databasePath: string): string[] {
-  return readRows(
-    databasePath,
-    "SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name;",
-  ).map((row) => String(row.name));
-}
-
-function readApplicationRows(databasePath: string): Record<string, Array<Record<string, unknown>>> {
-  const result = runBun(
-    [
-      "-e",
-      `import { Database } from "bun:sqlite";
-const db = new Database(process.env.NUSEND_DB_PATH, { readonly: true, strict: true });
-const tables = JSON.parse(process.env.NUSEND_TEST_TABLES);
-const rows = Object.fromEntries(tables.map((table) => [table, db.query(\`SELECT * FROM "\${table}" ORDER BY rowid\`).all()]));
-console.log(JSON.stringify(rows));
-db.close();`,
-    ],
-    databasePath,
-    { NUSEND_TEST_TABLES: JSON.stringify(applicationTables) },
-  );
-  expect(result.status).toBe(0);
-  return JSON.parse(result.stdout) as Record<string, Array<Record<string, unknown>>>;
 }
 
 function readRows(databasePath: string, sql: string): Array<Record<string, unknown>> {

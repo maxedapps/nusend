@@ -1,5 +1,5 @@
 import { ListApiKeysResponseSchema } from "@nusend/api-contract";
-import { Effect, Schema } from "effect";
+import { Clock, Effect, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { Database } from "../services/database.ts";
@@ -247,22 +247,17 @@ describe("api key routes", () => {
           permissions: { contacts: ["read"] },
         });
         await expireApiKey(runtime, expired.id);
-        const before = Date.now();
         const expiredRotated = await app.fetch(
           new Request(`http://localhost/api/api-keys/${expired.id}/rotate`, { method: "POST" }),
         );
-        const after = Date.now();
         expect(expiredRotated.status).toBe(200);
         const body = (await expiredRotated.json()) as {
           apiKey: { expiresAt: string; name: string };
         };
         expect(body.apiKey.name).toBe("expired");
-        expect(Date.parse(body.apiKey.expiresAt)).toBeGreaterThanOrEqual(
-          before + 365 * 24 * 60 * 60 * 1000,
-        );
-        expect(Date.parse(body.apiKey.expiresAt)).toBeLessThanOrEqual(
-          after + 365 * 24 * 60 * 60 * 1000,
-        );
+        // rotationExpiry uses TestClock + 365 days (TestClock is not advanced here).
+        const clockNow = await runtime.runPromise(Clock.currentTimeMillis);
+        expect(Date.parse(body.apiKey.expiresAt)).toBe(clockNow + 365 * 24 * 60 * 60 * 1000);
 
         const malformed = await createKey(app, {
           name: "malformed",
@@ -276,7 +271,9 @@ describe("api key routes", () => {
         const malformedBody = (await malformedRotated.json()) as {
           apiKey: { expiresAt: string };
         };
-        expect(Date.parse(malformedBody.apiKey.expiresAt)).toBeGreaterThan(Date.now());
+        expect(Date.parse(malformedBody.apiKey.expiresAt)).toBe(
+          clockNow + 365 * 24 * 60 * 60 * 1000,
+        );
       },
     );
   });

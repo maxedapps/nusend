@@ -1,8 +1,10 @@
 import { Context, Layer, Option } from "effect";
 
 export type SesOperationsConfigIssue = {
+  readonly blocksWorker?: boolean;
   readonly id: string;
   readonly message: string;
+  readonly status?: "error" | "warning";
 };
 
 export type SesOperationsConfig = {

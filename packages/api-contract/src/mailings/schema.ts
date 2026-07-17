@@ -1,9 +1,9 @@
-import { Effect, Schema } from "effect";
+import { Schema } from "effect";
 
 import { PaginationMetaSchema } from "../pagination.js";
 
 export const MailingCountsSchema = Schema.Struct({
-  ambiguous: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
+  ambiguous: Schema.Number,
   failed: Schema.Number,
   queued: Schema.Number,
   sending: Schema.Number,

@@ -6,8 +6,9 @@ import type {
 import { validatePermissionSet, type PermissionSet } from "@nusend/api-contract/permissions";
 
 import { DatabaseError, ForbiddenError, NotFoundError, RequestValidationError } from "../errors.ts";
-import { Database, type DatabaseService } from "../services/database.ts";
 import { type Pagination } from "../http/query.ts";
+import { addMillisecondsFrom, currentIso, currentTimeMillis, toIso } from "../lib/iso-time.ts";
+import { Database, type DatabaseService } from "../services/database.ts";
 import { IdGenerator, type IdGeneratorService } from "../services/ids.ts";
 import { buildApiKeyPreview, generateRawApiKey, hashApiKey, safeEqual } from "./crypto.ts";
 
@@ -90,11 +91,12 @@ export function makeApiKeysService(input: {
         const subsetError = enforceSubset(request.permissions, request.actorPermissions);
         if (subsetError) return yield* Effect.fail(subsetError);
 
-        const expiresAt = validateExpiresAt(request.expiresAt ?? null);
+        const nowMs = yield* currentTimeMillis;
+        const expiresAt = validateExpiresAt(request.expiresAt ?? null, nowMs);
         if (expiresAt instanceof RequestValidationError) return yield* Effect.fail(expiresAt);
 
         const rawKey = generateRawApiKey();
-        const now = new Date().toISOString();
+        const now = toIso(nowMs);
         const metadata = {
           createdAt: now,
           expiresAt,
@@ -157,10 +159,11 @@ export function makeApiKeysService(input: {
         const subsetError = enforceSubset(targetPermissions, actorPermissions);
         if (subsetError) return yield* Effect.fail(subsetError);
 
+        const revokedAt = yield* currentIso;
         yield* input.db.run(
           "apiKeys:revoke",
           `UPDATE api_keys SET revoked_at = $revokedAt WHERE id = $id AND user_id = $userId;`,
-          { id, revokedAt: new Date().toISOString(), userId },
+          { id, revokedAt, userId },
         );
       }),
     rotate: ({ actorPermissions, id, userId }) =>
@@ -177,20 +180,22 @@ export function makeApiKeysService(input: {
             return yield* Effect.fail(new NotFoundError({ message: "API key not found." }));
           }
 
+          const nowMs = yield* currentTimeMillis;
           const permissions = yield* parseStoredPermissions(existing.permissions_json);
           const created = yield* service.create({
             actorPermissions,
-            expiresAt: rotationExpiry(existing.expires_at),
+            expiresAt: rotationExpiry(existing.expires_at, nowMs),
             name: existing.name,
             permissions,
             rotatedFromId: existing.id,
             userId,
           });
 
+          const revokedAt = toIso(nowMs);
           yield* input.db.run(
             "apiKeys:revokeRotated",
             `UPDATE api_keys SET revoked_at = $revokedAt WHERE id = $id AND user_id = $userId;`,
-            { id, revokedAt: new Date().toISOString(), userId },
+            { id, revokedAt, userId },
           );
 
           return created;
@@ -208,16 +213,16 @@ export function makeApiKeysService(input: {
         );
         if (!row || !safeEqual(row.key_hash, hash)) return { key: null, valid: false };
         if (row.revoked_at !== null) return { key: null, valid: false };
+        const nowMs = yield* currentTimeMillis;
         if (row.expires_at !== null) {
           const expiresAtMs = Date.parse(row.expires_at);
-          if (Number.isNaN(expiresAtMs) || expiresAtMs <= Date.now()) {
+          if (Number.isNaN(expiresAtMs) || expiresAtMs <= nowMs) {
             return { key: null, valid: false };
           }
         }
 
-        const now = new Date();
-        const lastUsedAt = now.toISOString();
-        const cutoff = new Date(now.getTime() - 60_000).toISOString();
+        const lastUsedAt = toIso(nowMs);
+        const cutoff = addMillisecondsFrom(nowMs, -60_000);
         yield* input.db.run(
           "apiKeys:updateLastUsed",
           `UPDATE api_keys
@@ -296,11 +301,11 @@ function parseStoredPermissions(value: string): Effect.Effect<PermissionSet, Dat
   });
 }
 
-function rotationExpiry(value: string | null): string | null {
+function rotationExpiry(value: string | null, nowMs: number): string | null {
   if (value === null) return null;
   const timestamp = Date.parse(value);
-  if (!Number.isNaN(timestamp) && timestamp > Date.now()) return value;
-  return new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
+  if (!Number.isNaN(timestamp) && timestamp > nowMs) return value;
+  return addMillisecondsFrom(nowMs, 365 * 24 * 60 * 60 * 1000);
 }
 
 function validateName(value: string): RequestValidationError | null {
@@ -309,18 +314,21 @@ function validateName(value: string): RequestValidationError | null {
     : null;
 }
 
-function validateExpiresAt(value: string | null): string | null | RequestValidationError {
+function validateExpiresAt(
+  value: string | null,
+  nowMs: number,
+): string | null | RequestValidationError {
   if (value === null) return null;
 
   const timestamp = Date.parse(value);
   if (Number.isNaN(timestamp)) {
     return new RequestValidationError({ message: "API key expiresAt must be a valid date." });
   }
-  if (timestamp <= Date.now()) {
+  if (timestamp <= nowMs) {
     return new RequestValidationError({ message: "API key expiresAt must be in the future." });
   }
 
-  return new Date(timestamp).toISOString();
+  return toIso(timestamp);
 }
 
 function enforceSubset(

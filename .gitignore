@@ -39,8 +39,6 @@ bun.lockb
 
 # Agent session workspaces
 .pi-subagents/
+.plans/
 .progress/
 .reviews/
-
-# Generated plan previews
-.plans/*.html

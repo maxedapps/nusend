@@ -25,3 +25,9 @@ export function parseLenientDateToIso(input: string): string | null {
 }
 
 export const currentIso: Effect.Effect<string> = Effect.map(Clock.currentTimeMillis, toIso);
+
+export const currentTimeMillis: Effect.Effect<number> = Clock.currentTimeMillis;
+
+export function addMillisecondsFrom(nowMs: number, milliseconds: number): string {
+  return toIso(nowMs + milliseconds);
+}

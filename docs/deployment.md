@@ -2,7 +2,7 @@
 
 This is the canonical ordered runbook for one Linux VPS, one API container, one send-worker container, local SQLite, Caddy behind Cloudflare, journald, and encrypted restic backups in R2. Run commands as root unless shown otherwise. Replace every `example` value before use.
 
-> **Fresh-database-only migration warning:** Nusend intentionally ships only `0001_initial_schema`, a baseline for a new database. A database that recorded the former `0001`–`0009` history intentionally fails missing-history or checksum validation. Do not run migration expecting an in-place upgrade, bypass the refusal, or automatically delete, overwrite, or recreate a non-default/production database. Archive the old database and either create a fresh one or perform a separately reviewed export/import. Nusend provides no automatic bridge from the abandoned history.
+> **Migration policy:** Before launch, `0001_initial_schema.sql` is the single editable forward baseline; delete and recreate disposable local databases after changing it. After launch, never edit an applied migration—add forward `0002+` files. For recovery, restore a matching exact backup or use a separately reviewed recreate/import procedure; no DOWN migrations exist.
 
 > **Staging/operator gates:** Cloudflare, AWS, R2, reboot, firewall, backup, and restore steps require operator-owned infrastructure and credentials. Validate them on a clean staging VPS before production. This repository's local checks are not evidence that those live gates passed.
 
@@ -154,7 +154,6 @@ The root `.env.example` is the canonical inventory. “Required” below means r
 | `NUSEND_HOST` | Required invariant; Compose forces `0.0.0.0` | API | Internal container listener only. |
 | `NUSEND_PORT` | Required invariant; Compose forces `3000` | API | Internal port; never publish it on the host. |
 | `NUSEND_DB_PATH` | Required invariant; Compose forces `/var/lib/nusend/nusend.sqlite` | Both + operator commands | Shared SQLite path for API, worker, migration, and bootstrap. |
-| `PORT` | Optional legacy fallback; leave unset | API | Used only if `NUSEND_PORT` is absent, which production Compose prevents. |
 | `BETTER_AUTH_SECRET` | Required, independent, at least 32 characters | API; worker receives/validates shared file | Better Auth signing secret. |
 | `BETTER_AUTH_URL` | Required | API; worker receives/validates shared file | Exact public HTTPS origin. |
 | `GOOGLE_CLIENT_ID` | Required | API; worker receives/validates shared file | Google OAuth client ID. |
@@ -166,7 +165,7 @@ The root `.env.example` is the canonical inventory. “Required” below means r
 | `AWS_SESSION_TOKEN` | Optional; required only for temporary AWS credentials | Both | Standard AWS SDK session token. |
 | `AWS_REGION` | Required | Both | SES region; worker fails closed without it. |
 | `NUSEND_SES_FROM_EMAIL` | Required | Both | Worker sender; API readiness also inspects it. |
-| `NUSEND_SES_TRANSACTIONAL_CONFIGURATION_SET` | Required for production transactional feedback; code-compatible optional | Both | Transactional SES configuration set. |
+| `NUSEND_SES_TRANSACTIONAL_CONFIGURATION_SET` | Required | Both | Transactional SES configuration set; the send worker fails closed without it. |
 | `NUSEND_SES_MARKETING_CONFIGURATION_SET` | Required before marketing sends; otherwise optional | Both | Marketing SES configuration set. |
 | `NUSEND_SES_FEEDBACK_TOPIC_ARNS` | Required for SNS ingestion; otherwise webhook is disabled/404 | API | Comma-separated allowlist of accepted SNS topic ARNs. |
 | `NUSEND_SES_TRACKING_EVENTS` | Optional | API | Empty or comma-separated `open,click`; readiness only requires selected events. |
@@ -179,7 +178,6 @@ The root `.env.example` is the canonical inventory. “Required” below means r
 | `NUSEND_PUBLIC_BASE_URL` | Required with unsubscribe secret for production sending | Both | Clean absolute HTTPS origin, without query, fragment, or HTML-escapable characters. |
 | `NUSEND_UNSUBSCRIBE_SECRET` | Required with public base URL, at least 32 characters | Both | Signs and verifies unsubscribe links. |
 | `NUSEND_UNSUBSCRIBE_PREVIOUS_SECRET` | Optional rotation-only secret | Both | Previous distinct secret while old links remain valid. |
-| `NUSEND_CONFIRM_DESTRUCTIVE_ROLLBACK` | Operator-only; leave unset | Migration operator | One-command destructive gate; it is not an update or recovery strategy. |
 
 The worker requires `batchSize * requestTimeoutMs + 10000 < leaseSeconds * 1000`. If the lease is changed, update and test Compose's worker stop grace to at least lease + 60 seconds.
 
@@ -610,7 +608,7 @@ r2_restic snapshots --host nusend --tag nusend-db
 r2_restic check
 ```
 
-Capture the full 64-character `backup: verified snapshot_id=...` from the command/journal. Before enabling scheduling, perform the non-destructive initial restore drill from that exact ID to a unique separate path/server, run SQLite checks and migration status, and query known data. Use the validation portion of step 11, but do not replace the live database. This is separate from the backup script's internal exact-ID verification and proves operator recovery access.
+Capture the full 64-character `backup: verified snapshot_id=...` from the command/journal. Before enabling scheduling, perform the initial restore drill from that exact ID to a unique separate path/server without replacing the live database, run SQLite checks and migration status, and query known data. Use the validation portion of step 11, but do not replace the live database. This is separate from the backup script's internal exact-ID verification and proves operator recovery access.
 
 Install the units only after init, on-demand snapshot, and independent exact restore all succeed:
 
@@ -1092,11 +1090,11 @@ verify_worker_success || die 'worker/SES acceptance failed'
 systemctl enable --now nusend-backup.timer
 ```
 
-If compatibility is not proven, keep all handles stopped and use a reviewed forward fix or restore the selected pre-update snapshot **with its matching release/config** through step 11. Keep the failed DB/WAL/SHM set. An image rollback does not roll back data, and automatic/down migration is never a rollback strategy.
+If compatibility is not proven, keep all handles stopped and use a reviewed forward fix or restore the selected pre-update snapshot **with its matching release/config** through step 11. Keep the failed DB/WAL/SHM set. Reverting an image does not reverse data; migration files only move forward.
 
 ## 11. Exact database restore
 
-> **Destructive live operation:** rehearse first. Select a full exact snapshot ID—never `latest`. The transaction below mechanically proves all DB-user containers and host handles are absent, restores inside `/var/lib/nusend`, captures migration/integrity results, preserves the complete current DB/WAL/SHM set, and only then performs a same-filesystem atomic rename. The `lsof` assertion accepts its documented no-match status `1` only when the tool and directory are accessible, stdout is empty, and separately captured stderr has zero diagnostics; an operational error cannot count as “no handles.” On any failure, the timer remains disabled and the script exits before the next step.
+> **Live database replacement:** rehearse first. Select a full exact snapshot ID—never `latest`. The transaction below mechanically proves all DB-user containers and host handles are absent, restores inside `/var/lib/nusend`, captures migration/integrity results, preserves the complete current DB/WAL/SHM set, and only then performs a same-filesystem atomic rename. The `lsof` assertion accepts its documented no-match status `1` only when the tool and directory are accessible, stdout is empty, and separately captured stderr has zero diagnostics; an operational error cannot count as “no handles.” On any failure, the timer remains disabled and the script exits before the next step.
 
 Replace the snapshot and known-data query, then run this entire fence as one Bash process. The query must return known owner/mailing/operations data appropriate to the selected recovery point; the placeholder intentionally fails closed.
 

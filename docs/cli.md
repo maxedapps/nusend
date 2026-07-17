@@ -53,20 +53,12 @@ New API keys expire after 365 days by default. Use `--expires-at` for an explici
 |    3 | Authentication or device-authorization failure |
 |    4 | API/HTTP failure                               |
 
-## Configuration and local-state locking
+## Configuration and local state
 
-Config defaults to an XDG-style directory. Config and credentials share one cross-process lock for every mutation. Under that lock, Nusend reloads current JSON and publishes complete same-directory temporary files by rename; login writes credentials before config and prevents another cooperative CLI process from interleaving. Individual files are crash-safe, but a crash between the two login renames is not cross-file atomic.
+Config defaults to an XDG-style directory. One `state.json` stores one service URL and credential. Login publishes the complete file through a same-directory temporary file, file sync, atomic rename, and directory sync where supported. Concurrent CLI mutation is unsupported; the last atomic writer wins.
 
-Lock acquisition waits at most five seconds. A proven dead same-host owner may be reaped after the publication grace period; live, foreign-host, malformed, too-young, or permission-indeterminate owners are never stolen. An orphaned/malformed reaper mutex or uncertain release fails closed with operator-inspection guidance—do not delete unfamiliar lock/tombstone files while any CLI process may be running.
+Only login may replace readable malformed JSON/schema after authorization. Filesystem and permission errors always fail closed and never trigger a write. Other commands require valid state unless both `NUSEND_API_KEY` and a base URL are supplied explicitly or through `NUSEND_BASE_URL`, which bypasses disk entirely.
 
-This protocol supports local filesystems only. Network-mounted config directories are unsupported. Windows local filesystems are intended to work but are not validated by the current project checks; unsupported hard-link/rename behavior fails rather than falling back to unsafe locking.
+On Unix, the directory uses mode `0700` and `state.json` uses `0600`. Run `nusend config repair-permissions` if these modes were broadened; it is a no-op on Windows.
 
-On Unix, the directory uses mode `0700` and config/credential files use `0600`. Run `nusend config repair-permissions` if these modes were broadened; it is a no-op on Windows.
-
-Environment overrides:
-
-- `NUSEND_API_KEY`
-- `NUSEND_BASE_URL`
-- `NUSEND_PROFILE`
-
-Explicit CLI flags win over environment/profile defaults.
+Explicit `--base-url` wins over `NUSEND_BASE_URL`, which wins over the stored URL. `NUSEND_API_KEY` wins over the stored credential and logout leaves stored state untouched while it is set.

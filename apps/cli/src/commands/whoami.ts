@@ -3,7 +3,7 @@ import { requireApi, type CommandContext } from "./context.js";
 
 export async function runWhoamiCommand(context: CommandContext): Promise<void> {
   const me = await requireApi(context).whoami();
-  if (context.options.json) {
+  if (context.json) {
     printJson(me);
     return;
   }

@@ -1,11 +1,11 @@
-import { Effect, Option, Result } from "effect";
+import { Effect, Option } from "effect";
 import { Hono } from "hono";
-import { bodyLimit } from "hono/body-limit";
 
 import { requirePrincipal } from "../auth/middleware.ts";
 import { RequestValidationError } from "../errors.ts";
+import { jsonBodyLimit, readJsonBody, resultToEffect } from "../http/body.ts";
 import { parsePagination, parseRouteId } from "../http/query.ts";
-import { errorEnvelope, runRoute, type AppRuntime } from "../http/respond.ts";
+import { runRoute, type AppRuntime } from "../http/respond.ts";
 import { containsUnsubscribeUrlPlaceholder } from "../sending/render.ts";
 import { UnsubscribeConfig, type UnsubscribeConfigService } from "../unsubscribe/config.ts";
 import {
@@ -53,36 +53,23 @@ export function createMailingsRoutes(options: MailingsRoutesOptions): Hono {
     return runRoute(context, options.runtime, program, (result) => context.json(result));
   });
 
-  routes.post(
-    "/",
-    bodyLimit({
-      maxSize: maxMailingRequestBodyBytes,
-      onError: (context) =>
-        context.json(errorEnvelope("request_too_large", "Request body is too large."), 413),
-    }),
-    requireMailingsWrite,
-    (context) => {
-      const program = Effect.gen(function* () {
-        const body = yield* Effect.tryPromise({
-          try: () => context.req.raw.json() as Promise<unknown>,
-          catch: () => new RequestValidationError({ message: "Request body must be valid JSON." }),
-        });
+  routes.post("/", jsonBodyLimit(maxMailingRequestBodyBytes), requireMailingsWrite, (context) => {
+    const program = Effect.gen(function* () {
+      const body = yield* readJsonBody(context.req.raw);
+      const input: CreateMailingInput = yield* resultToEffect(decodeCreateMailingRequest(body));
+      const idempotencyKey = yield* normalizeRouteIdempotencyKey(
+        context.req.header("Idempotency-Key"),
+      );
 
-        const input: CreateMailingInput = yield* decodeToEffect(decodeCreateMailingRequest(body));
-        const idempotencyKey = yield* normalizeRouteIdempotencyKey(
-          context.req.header("Idempotency-Key"),
-        );
-
-        return yield* createMailingIdempotent({
-          beforeCreate: validateMarketingCompliance(input),
-          idempotencyKey,
-          input,
-        });
+      return yield* createMailingIdempotent({
+        beforeCreate: validateMarketingCompliance(input),
+        idempotencyKey,
+        input,
       });
+    });
 
-      return runRoute(context, options.runtime, program, (result) => context.json(result, 201));
-    },
-  );
+    return runRoute(context, options.runtime, program, (result) => context.json(result, 201));
+  });
 
   return routes;
 }
@@ -125,10 +112,4 @@ function normalizeRouteIdempotencyKey(
   }
 
   return Effect.succeed(key);
-}
-
-function decodeToEffect(
-  decoded: Result.Result<CreateMailingInput, RequestValidationError>,
-): Effect.Effect<CreateMailingInput, RequestValidationError> {
-  return Result.isFailure(decoded) ? Effect.fail(decoded.failure) : Effect.succeed(decoded.success);
 }

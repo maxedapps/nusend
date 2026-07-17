@@ -7,7 +7,7 @@ import { createApp } from "./app.ts";
 import { assertMigrationsUpToDate, describeStartupMigrationFailure } from "./db/migration-check.ts";
 import { ApiKeysLive } from "./api-keys/service.ts";
 import { DeviceAuthorizationsLive } from "./device-auth/service.ts";
-import { serviceConfig, sesOperationsConfig, unsubscribeConfig } from "./config.ts";
+import { deploymentConfig } from "./config.ts";
 import { JsonLoggerLive } from "./observability/effect-logger.ts";
 import { AuthLive } from "./services/auth-live.ts";
 import { Database } from "./services/database.ts";
@@ -21,12 +21,13 @@ import { SnsMessageVerifierLive } from "./ses/sns-verifier.ts";
 import { UnsubscribeConfigLive } from "./unsubscribe/config.ts";
 
 const configProvider = ConfigProvider.fromEnv();
-const config = await Effect.runPromise(
-  serviceConfig.pipe(Effect.provideService(ConfigProvider.ConfigProvider, configProvider)),
+const deployment = await Effect.runPromise(
+  deploymentConfig.pipe(Effect.provideService(ConfigProvider.ConfigProvider, configProvider)),
 ).catch((error: unknown) => {
   console.error(`Invalid configuration: ${error instanceof Error ? error.message : String(error)}`);
   return process.exit(1);
 });
+const config = deployment.service;
 
 if (Option.isNone(config.auth)) {
   console.error(
@@ -35,19 +36,8 @@ if (Option.isNone(config.auth)) {
   process.exit(1);
 }
 
-const unsubscribe = await Effect.runPromise(
-  unsubscribeConfig.pipe(Effect.provideService(ConfigProvider.ConfigProvider, configProvider)),
-).catch((error: unknown) => {
-  console.error(`Invalid configuration: ${error instanceof Error ? error.message : String(error)}`);
-  return process.exit(1);
-});
-
-const sesOperations = await Effect.runPromise(
-  sesOperationsConfig.pipe(Effect.provideService(ConfigProvider.ConfigProvider, configProvider)),
-).catch((error: unknown) => {
-  console.error(`Invalid configuration: ${error instanceof Error ? error.message : String(error)}`);
-  return process.exit(1);
-});
+const unsubscribe = deployment.unsubscribe;
+const sesOperations = deployment.sesOperations;
 
 // Reusing the same dbLayer reference is memoized to ONE database acquisition;
 // AuthLive consumes the raw SqliteHandle it provides.

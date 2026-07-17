@@ -1,7 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { ConfigProvider, Effect, Exit, Layer, ManagedRuntime } from "effect";
 
-import { sendingConfig, serviceConfig, unsubscribeConfig } from "../config.ts";
+import { deploymentConfig, sendingConfigFromDeployment } from "../config.ts";
 import {
   assertMigrationsUpToDate,
   describeStartupMigrationFailure,
@@ -13,8 +13,8 @@ import { EmailSendingConfigLive } from "../services/email-transport.ts";
 import { EmailTransportSesLive } from "../services/email-transport-ses.ts";
 import { IdGeneratorLive } from "../services/ids.ts";
 import { UnsubscribeConfigLive } from "../unsubscribe/config.ts";
+import { runSendWorkerOnce } from "../queue/runner.ts";
 import { runSendWorkerLoop } from "./worker-loop.ts";
-import { runSendWorkerOnce } from "./worker.ts";
 
 const mode = process.argv[2];
 if (mode !== "once" && mode !== "loop") {
@@ -23,9 +23,15 @@ if (mode !== "once" && mode !== "loop") {
 }
 
 const configProvider = ConfigProvider.fromEnv();
-const service = await loadConfig("service", serviceConfig);
-const sending = await loadConfig("sending", sendingConfig);
-const unsubscribe = await loadConfig("unsubscribe", unsubscribeConfig);
+const loaded = await loadConfig(
+  "send worker",
+  Effect.flatMap(deploymentConfig, (deployment) =>
+    Effect.map(sendingConfigFromDeployment(deployment), (sending) => ({ deployment, sending })),
+  ),
+);
+const service = loaded.deployment.service;
+const sending = loaded.sending;
+const unsubscribe = loaded.deployment.unsubscribe;
 const workerId = process.env.NUSEND_WORKER_ID?.trim() || `send-worker-${crypto.randomUUID()}`;
 
 const sendingConfigLayer = EmailSendingConfigLive(sending);

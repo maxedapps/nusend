@@ -5,7 +5,8 @@ import type {
 import { Effect, Schema } from "effect";
 
 import { DatabaseError, NotFoundError } from "../errors.ts";
-import { paginationMeta, type PaginationMeta } from "../http/query.ts";
+import { paginationMeta } from "../http/query.ts";
+import { decodeDbRow, decodeDbRows } from "../http/sql-decode.ts";
 import { Database, type DatabaseService, type SqlParams } from "../services/database.ts";
 import type { ContactsListQuery } from "./schema.ts";
 
@@ -27,19 +28,6 @@ const MembershipRow = Schema.Struct({
 
 type MembershipRow = typeof MembershipRow.Type;
 
-export type ContactResponse = {
-  readonly contact: Contact;
-};
-
-export type ContactsListResponse = {
-  readonly items: readonly Contact[];
-  readonly pagination: PaginationMeta;
-};
-
-export type ContactDetailResponse = ContactResponse & {
-  readonly memberships: readonly ReturnType<typeof toMembershipItem>[];
-};
-
 export function listContacts(
   query: ContactsListQuery,
 ): Effect.Effect<ContactsListResponseContract, DatabaseError, DatabaseService> {
@@ -60,7 +48,7 @@ export function listContacts(
     );
 
     const hasMore = rows.length > query.limit;
-    const items = yield* decodeRows(ContactRow, hasMore ? rows.slice(0, query.limit) : rows);
+    const items = yield* decodeDbRows(ContactRow, hasMore ? rows.slice(0, query.limit) : rows);
     return { items, pagination: paginationMeta(query, hasMore) };
   });
 }
@@ -86,7 +74,7 @@ export function getContactDetail(
       { contactId },
     );
 
-    const memberships = yield* decodeRows(MembershipRow, rows);
+    const memberships = yield* decodeDbRows(MembershipRow, rows);
     return { contact, memberships: memberships.map(toMembershipItem) };
   });
 }
@@ -105,7 +93,9 @@ export function getContactRow(
         { contactId },
       )
       .pipe(
-        Effect.flatMap((row) => (row === null ? Effect.succeed(null) : decodeRow(ContactRow, row))),
+        Effect.flatMap((row) =>
+          row === null ? Effect.succeed(null) : decodeDbRow(ContactRow, row),
+        ),
       ),
   );
 }
@@ -118,18 +108,4 @@ function toMembershipItem(row: MembershipRow) {
     subscribedAt: row.subscribedAt,
     unsubscribedAt: row.unsubscribedAt,
   };
-}
-
-function decodeRow<S extends Schema.ConstraintDecoder<unknown, never>>(
-  schema: S,
-  row: unknown,
-): Effect.Effect<S["Type"]> {
-  return Schema.decodeUnknownEffect(schema)(row).pipe(Effect.orDie);
-}
-
-function decodeRows<S extends Schema.ConstraintDecoder<unknown, never>>(
-  schema: S,
-  rows: readonly unknown[],
-): Effect.Effect<readonly S["Type"][]> {
-  return Effect.forEach(rows, (row) => decodeRow(schema, row));
 }

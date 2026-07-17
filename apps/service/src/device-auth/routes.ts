@@ -6,9 +6,9 @@ import {
 } from "@nusend/api-contract";
 import { Effect, Result, Schema } from "effect";
 import { Hono } from "hono";
-import { bodyLimit } from "hono/body-limit";
 
 import { RequestValidationError } from "../errors.ts";
+import { jsonBodyLimit, readJsonBody } from "../http/body.ts";
 import { errorEnvelope, runRoute, type AppRuntime } from "../http/respond.ts";
 import { makeAttemptLimiter, type AttemptLimiter } from "./attempt-limiter.ts";
 import { DeviceAuthorizations } from "./service.ts";
@@ -67,11 +67,7 @@ export function makeDefaultDeviceAuthorizationRouteLimiters(now?: () => number):
 
 export function createDeviceAuthorizationRoutes(options: DeviceAuthorizationRoutesOptions): Hono {
   const routes = new Hono();
-  const jsonLimit = bodyLimit({
-    maxSize: 32_768,
-    onError: (context) =>
-      context.json(errorEnvelope("request_too_large", "Request body is too large."), 413),
-  });
+  const jsonLimit = jsonBodyLimit(32_768);
   // Unauthenticated endpoint: bound both per-source-address and total request
   // rate so a client rotating X-Forwarded-For cannot flood pending rows and
   // starve legitimate CLI logins.
@@ -142,13 +138,6 @@ function lastForwardedAddress(value: string | undefined): string | undefined {
 
 function retryAfterSeconds(retryAfterMs: number): string {
   return String(Math.max(1, Math.ceil(retryAfterMs / 1_000)));
-}
-
-function readJsonBody(request: Request): Effect.Effect<unknown, RequestValidationError> {
-  return Effect.tryPromise({
-    try: () => request.json() as Promise<unknown>,
-    catch: () => new RequestValidationError({ message: "Request body must be valid JSON." }),
-  });
 }
 
 function decodeStartRequest(

@@ -9,7 +9,7 @@ export type AttemptDecision =
 export type AttemptLimiter = {
   readonly attempt: (key: string) => AttemptDecision;
   readonly diagnostics: () => { readonly activeKeys: number };
-  // Compatibility for activation-code failure accounting, where a successful
+  // Activation-code failure accounting checks first because a successful
   // inspection must not consume an attempt. Unauthenticated request routes use
   // only the atomic attempt API.
   readonly isLocked: (key: string) => boolean;

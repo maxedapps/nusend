@@ -1,6 +1,6 @@
 import { ConfigProvider, Effect, Layer, ManagedRuntime } from "effect";
 
-import { sendingConfig, serviceConfig, unsubscribeConfig } from "../config.ts";
+import { deploymentConfig, sendingConfigFromDeployment } from "../config.ts";
 import { DatabaseBunLive } from "../services/database-bun.ts";
 import { EmailSendingConfigLive } from "../services/email-transport.ts";
 import { EmailTransportSesLive } from "../services/email-transport-ses.ts";
@@ -15,9 +15,15 @@ import {
 
 const args = parseArgs(process.argv.slice(2));
 const configProvider = ConfigProvider.fromEnv();
-const service = await loadConfig("service", serviceConfig);
-const sending = await loadConfig("sending", sendingConfig);
-const unsubscribe = await loadConfig("unsubscribe", unsubscribeConfig);
+const loaded = await loadConfig(
+  "simulator",
+  Effect.flatMap(deploymentConfig, (deployment) =>
+    Effect.map(sendingConfigFromDeployment(deployment), (sending) => ({ deployment, sending })),
+  ),
+);
+const service = loaded.deployment.service;
+const sending = loaded.sending;
+const unsubscribe = loaded.deployment.unsubscribe;
 const sendingConfigLayer = EmailSendingConfigLive(sending);
 const runtime = ManagedRuntime.make(
   Layer.mergeAll(

@@ -1,31 +1,34 @@
 import { printJson } from "../output/format.js";
-import { readOption, requireApi, UsageError, type CommandContext } from "./context.js";
+import { requireApi, type CommandContext } from "./context.js";
+import type { CliCommand } from "./options.js";
 
-export async function runContactsCommand(args: string[], context: CommandContext): Promise<void> {
+type ContactsCommand = Extract<CliCommand, { readonly kind: `contacts-${string}` }>;
+
+export async function runContactsCommand(
+  command: ContactsCommand,
+  context: CommandContext,
+): Promise<void> {
   const api = requireApi(context);
-  const [subcommand, idOrEmail, email] = args;
-  switch (subcommand) {
-    case "list": {
+  switch (command.kind) {
+    case "contacts-list": {
       const result = await api.listContacts({
-        email: readOption(args, "--email"),
-        limit: readOption(args, "--limit"),
-        offset: readOption(args, "--offset"),
+        email: command.email,
+        limit: command.limit,
+        offset: command.offset,
       });
-      if (context.options.json) printJson(result);
+      if (context.json) printJson(result);
       else for (const contact of result.items) console.log(`${contact.id}\t${contact.email}`);
       return;
     }
-    case "get": {
-      if (!idOrEmail) throw new UsageError("contacts get requires <id>.", 2);
-      const result = await api.getContact(idOrEmail);
-      if (context.options.json) printJson(result);
+    case "contacts-get": {
+      const result = await api.getContact(command.id);
+      if (context.json) printJson(result);
       else console.log(`${result.contact.id}\t${result.contact.email}`);
       return;
     }
-    case "create": {
-      if (!idOrEmail) throw new UsageError("contacts create requires <email>.", 2);
-      const result = await api.createContact({ email: idOrEmail });
-      if (context.options.json) printJson(result);
+    case "contacts-create": {
+      const result = await api.createContact({ email: command.email });
+      if (context.json) printJson(result);
       else {
         console.log(
           `${result.created ? "Created" : "Exists"} ${result.contact.id}\t${result.contact.email}`,
@@ -33,22 +36,15 @@ export async function runContactsCommand(args: string[], context: CommandContext
       }
       return;
     }
-    case "update": {
-      if (!idOrEmail || !email) {
-        throw new UsageError("contacts update requires <id> <email>.", 2);
-      }
-      const result = await api.updateContact(idOrEmail, { email });
-      if (context.options.json) printJson(result);
+    case "contacts-update": {
+      const result = await api.updateContact(command.id, { email: command.email });
+      if (context.json) printJson(result);
       else console.log(`Updated ${result.contact.id}\t${result.contact.email}`);
       return;
     }
-    case "delete":
-      if (!idOrEmail) throw new UsageError("contacts delete requires <id>.", 2);
-      await api.deleteContact(idOrEmail);
-      if (context.options.json) printJson({ deleted: idOrEmail });
-      else console.log(`Deleted ${idOrEmail}.`);
-      return;
-    default:
-      throw new UsageError("Unknown contacts command.", 2);
+    case "contacts-delete":
+      await api.deleteContact(command.id);
+      if (context.json) printJson({ deleted: command.id });
+      else console.log(`Deleted ${command.id}.`);
   }
 }

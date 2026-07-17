@@ -23,7 +23,7 @@ API-key rotation keeps the original name. It preserves future and null expiry; a
 - `GET /api/mailings/:id` requires `mailings:read`.
 - `POST /api/mailings` requires `mailings:write`.
 
-List/detail responses include delivery counts for `queued`, `sending`, `sent`, `failed`, `suppressed`, and `ambiguous`. `counts.ambiguous` is required in the decoded contract and emitted by new services; the updated first-party CLI defaults an absent old-wire key to zero. Operations delivery status uses the same six literals and accepts `status=ambiguous`; `issue=failed_or_ambiguous` provides the combined issue view. `ambiguous` is terminal and means provider acceptance is unknown, not failed; only exact-attempt MessageId proof can later reconcile it to sent.
+List/detail responses require delivery counts for `queued`, `sending`, `sent`, `failed`, `suppressed`, and `ambiguous`. Operations delivery status uses the same six literals and accepts `status=ambiguous`; `issue=failed_or_ambiguous` provides the combined issue view. `ambiguous` is terminal and means provider acceptance is unknown, not failed; only exact-attempt MessageId proof can later reconcile it to sent.
 
 Lists omit `html` and `text`. Detail includes `subject`, `html`, and `text`. Neither response exposes per-recipient `vars_json`.
 
