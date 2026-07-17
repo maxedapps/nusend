@@ -175,8 +175,8 @@ The root `.env.example` is the canonical inventory. “Required” below means r
 | `NUSEND_SEND_WORKER_BATCH_SIZE` | Optional; default `1` | Both | Worker batch and API readiness input. |
 | `NUSEND_SEND_WORKER_POLL_MS` | Optional; default `5000` | Both | Worker poll interval and API readiness input. |
 | `NUSEND_WORKER_ID` | Optional | Worker | Stable identity; random when unset. |
-| `NUSEND_PUBLIC_BASE_URL` | Required with unsubscribe secret for production sending | Both | Clean absolute HTTPS origin, without query, fragment, or HTML-escapable characters. |
-| `NUSEND_UNSUBSCRIBE_SECRET` | Required with public base URL, at least 32 characters | Both | Signs and verifies unsubscribe links. |
+| `NUSEND_PUBLIC_BASE_URL` | Required with unsubscribe secret for marketing sending | Both | Clean absolute HTTPS origin, without query, fragment, or HTML-escapable characters. |
+| `NUSEND_UNSUBSCRIBE_SECRET` | Required with public base URL for marketing sending, at least 32 characters | Both | Signs and verifies unsubscribe links. |
 | `NUSEND_UNSUBSCRIBE_PREVIOUS_SECRET` | Optional rotation-only secret | Both | Previous distinct secret while old links remain valid. |
 
 The worker requires `batchSize * requestTimeoutMs + 10000 < leaseSeconds * 1000`. If the lease is changed, update and test Compose's worker stop grace to at least lease + 60 seconds.
@@ -1254,7 +1254,7 @@ For file-backed production use, both the Bun application handle and the dedicate
 
 Auth URL/trusted-origin HTTPS validation is conditional on `NODE_ENV=production`; Cloudflare/Caddy transport and direct-origin blocking remain operator responsibilities. Device throttling expects one trusted proxy to supply the canonical final client address. Token ceilings are process-local (120/minute/source, 600/minute globally, 1024 active source keys), so each API process would have independent state; this bundle permits exactly one API.
 
-CLI config/credential mutation uses a local-filesystem cross-process lock with a five-second acquisition bound and conservative dead-owner recovery. Network-mounted CLI config directories are unsupported. Deploy at a domain root/dedicated subdomain, not a sub-path, and keep `NUSEND_API_KEY_HASH_SECRET` stable.
+CLI state uses atomic private-file replacement, but concurrent mutation is unsupported and the last completed writer wins. Deploy at a domain root/dedicated subdomain, not a sub-path, and keep `NUSEND_API_KEY_HASH_SECRET` stable.
 
 ## 12. Final staging gates
 
