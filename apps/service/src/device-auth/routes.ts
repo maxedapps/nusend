@@ -143,9 +143,9 @@ function retryAfterSeconds(retryAfterMs: number): string {
 function decodeStartRequest(
   value: unknown,
 ): Effect.Effect<DeviceAuthorizationStartRequest, RequestValidationError> {
-  const result = Schema.decodeUnknownResult(DeviceAuthorizationStartRequestSchema, {
+  const result = Schema.decodeUnknownResult(DeviceAuthorizationStartRequestSchema)(value, {
     errors: "all",
-  })(value);
+  });
   return Result.isFailure(result)
     ? invalidRequest("device-authorization:start", result.failure)
     : Effect.succeed(result.success);
@@ -154,9 +154,9 @@ function decodeStartRequest(
 function decodeTokenRequest(
   value: unknown,
 ): Effect.Effect<DeviceAuthorizationTokenRequest, RequestValidationError> {
-  const result = Schema.decodeUnknownResult(DeviceAuthorizationTokenRequestSchema, {
+  const result = Schema.decodeUnknownResult(DeviceAuthorizationTokenRequestSchema)(value, {
     errors: "all",
-  })(value);
+  });
   return Result.isFailure(result)
     ? invalidRequest("device-authorization:token", result.failure)
     : Effect.succeed(result.success);

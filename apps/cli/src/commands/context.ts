@@ -36,6 +36,12 @@ export function httpTimeoutMsFromEnv(env: NodeJS.ProcessEnv): number {
   return parsed.success;
 }
 
+// Throws UsageError on an invalid NUSEND_HTTP_TIMEOUT_MS without using the value,
+// so commands can fail fast before any network work.
+export function validateHttpTimeout(env: NodeJS.ProcessEnv): void {
+  httpTimeoutMsFromEnv(env);
+}
+
 export function exitCodeForError(error: unknown): number {
   if (error instanceof UsageError) return error.exitCode;
   if (error instanceof CliHttpError) return error.status === 401 ? 3 : 4;

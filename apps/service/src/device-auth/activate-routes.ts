@@ -145,7 +145,7 @@ async function runActivation(
   const exit = await runtime.runPromiseExit(program);
   if (Exit.isSuccess(exit)) return exit.value;
   await runtime.runPromise(logCause(exit.cause as Cause.Cause<unknown>, safeRequestMeta(request)));
-  return activationResult(renderMessage("Activation failed."));
+  return activationResult(renderMessage("Activation failed."), 500);
 }
 
 function activationResult(body: string, status: ContentfulStatusCode = 200): ActivationResult {

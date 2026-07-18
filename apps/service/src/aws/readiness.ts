@@ -1,4 +1,4 @@
-import { Effect, Option } from "effect";
+import { Effect, Option, Result } from "effect";
 
 import type { DatabaseError } from "../errors.ts";
 import { currentIso } from "../lib/iso-time.ts";
@@ -202,9 +202,11 @@ function awsChecks(
     const sns = yield* SnsAdmin;
     const checks: ReadinessCheck[] = [];
 
-    const account = yield* capture(ses.getAccount());
-    if (account.tag === "Left") {
-      checks.push(awsErrorCheck("aws.credentials_and_account", "AWS account access", account.left));
+    const account = yield* Effect.result(ses.getAccount());
+    if (Result.isFailure(account)) {
+      checks.push(
+        awsErrorCheck("aws.credentials_and_account", "AWS account access", account.failure),
+      );
       return checks;
     }
 
@@ -212,7 +214,7 @@ function awsChecks(
       ok("aws.credentials_and_account", "AWS account access", "SES GetAccount succeeded."),
     );
     checks.push(
-      account.right.productionAccessEnabled
+      account.success.productionAccessEnabled
         ? ok(
             "ses.account.production_access",
             "SES production access",
@@ -224,7 +226,7 @@ function awsChecks(
             "SES account appears to be in sandbox or did not report production access.",
             "Request SES production access before real non-simulator sending.",
           ),
-      account.right.sendingEnabled === false
+      account.success.sendingEnabled === false
         ? error(
             "ses.account.sending_enabled",
             "SES sending enabled",
@@ -236,14 +238,14 @@ function awsChecks(
             "SES sending enabled",
             "SES sending is enabled or not reported disabled.",
           ),
-      account.right.enforcementStatus === "SHUTDOWN"
+      account.success.enforcementStatus === "SHUTDOWN"
         ? error(
             "ses.account.enforcement_status",
             "SES enforcement status",
             "SES account enforcement status is SHUTDOWN.",
             "Resolve SES enforcement status before sending.",
           )
-        : account.right.enforcementStatus === "PROBATION"
+        : account.success.enforcementStatus === "PROBATION"
           ? warning(
               "ses.account.enforcement_status",
               "SES enforcement status",
@@ -255,7 +257,7 @@ function awsChecks(
               "SES enforcement status",
               "SES enforcement status is healthy or not reported.",
             ),
-      accountSuppressionCheck(account.right.suppressionReasons),
+      accountSuppressionCheck(account.success.suppressionReasons),
     );
 
     if (Option.isSome(settings.fromEmail)) {
@@ -273,20 +275,20 @@ function awsChecks(
     }
 
     for (const topicArn of settings.feedbackTopicArns) {
-      const topic = yield* capture(sns.getTopicAttributes(topicArn));
-      if (topic.tag === "Left") {
+      const topic = yield* Effect.result(sns.getTopicAttributes(topicArn));
+      if (Result.isFailure(topic)) {
         checks.push(
-          awsErrorCheck("sns.topic.exists", "SNS topic exists", topic.left, { topicArn }),
+          awsErrorCheck("sns.topic.exists", "SNS topic exists", topic.failure, { topicArn }),
         );
       } else {
         checks.push(
           ok("sns.topic.exists", "SNS topic exists", "SNS topic attributes are readable.", {
-            signatureVersion: topic.right.signatureVersion,
+            signatureVersion: topic.success.signatureVersion,
             topicArn,
           }),
         );
         checks.push(
-          topic.right.signatureVersion === "2"
+          topic.success.signatureVersion === "2"
             ? ok(
                 "sns.topic.signature_version",
                 "SNS signature version",
@@ -298,24 +300,24 @@ function awsChecks(
                 "SNS signature version",
                 "SNS topic does not report SignatureVersion 2.",
                 "Set the SNS topic SignatureVersion attribute to 2.",
-                { signatureVersion: topic.right.signatureVersion, topicArn },
+                { signatureVersion: topic.success.signatureVersion, topicArn },
               ),
         );
       }
 
-      const subscriptions = yield* capture(sns.listSubscriptionsByTopic(topicArn));
-      if (subscriptions.tag === "Left") {
+      const subscriptions = yield* Effect.result(sns.listSubscriptionsByTopic(topicArn));
+      if (Result.isFailure(subscriptions)) {
         checks.push(
           awsErrorCheck(
             "sns.subscription.webhook",
             "SNS webhook subscription",
-            subscriptions.left,
+            subscriptions.failure,
             { topicArn },
           ),
         );
       } else {
         const match = expectedWebhookUrl
-          ? subscriptions.right.find(
+          ? subscriptions.success.find(
               (subscription) =>
                 subscription.protocol === "https" &&
                 subscription.endpoint === expectedWebhookUrl &&
@@ -372,21 +374,23 @@ function identityChecks(
   fromEmail: string,
 ): Effect.Effect<readonly ReadinessCheck[], never> {
   return Effect.gen(function* () {
-    const exact = yield* capture(ses.getEmailIdentity(fromEmail));
+    const exact = yield* Effect.result(ses.getEmailIdentity(fromEmail));
     const domain = domainFromEmail(fromEmail);
     const domainResult =
-      domain && (exact.tag === "Left" || exact.right.verifiedForSending !== true)
-        ? yield* capture(ses.getEmailIdentity(domain))
+      domain && (Result.isFailure(exact) || exact.success.verifiedForSending !== true)
+        ? yield* Effect.result(ses.getEmailIdentity(domain))
         : null;
     const chosen =
-      exact.tag === "Right" && exact.right.verifiedForSending === true
-        ? { identity: fromEmail, summary: exact.right }
-        : domainResult?.tag === "Right" && domainResult.right.verifiedForSending === true
-          ? { identity: domain, summary: domainResult.right }
-          : exact.tag === "Right"
-            ? { identity: fromEmail, summary: exact.right }
-            : domainResult?.tag === "Right"
-              ? { identity: domain ?? fromEmail, summary: domainResult.right }
+      Result.isSuccess(exact) && exact.success.verifiedForSending === true
+        ? { identity: fromEmail, summary: exact.success }
+        : domainResult !== null &&
+            Result.isSuccess(domainResult) &&
+            domainResult.success.verifiedForSending === true
+          ? { identity: domain, summary: domainResult.success }
+          : Result.isSuccess(exact)
+            ? { identity: fromEmail, summary: exact.success }
+            : domainResult !== null && Result.isSuccess(domainResult)
+              ? { identity: domain ?? fromEmail, summary: domainResult.success }
               : null;
 
     const identity =
@@ -405,8 +409,8 @@ function identityChecks(
               "Verify the sender identity or domain in SES.",
               { identity: chosen.identity },
             )
-        : exact.tag === "Left"
-          ? awsErrorCheck("ses.identity.from_email", "SES sender identity", exact.left)
+        : Result.isFailure(exact)
+          ? awsErrorCheck("ses.identity.from_email", "SES sender identity", exact.failure)
           : warning(
               "ses.identity.from_email",
               "SES sender identity",
@@ -414,7 +418,7 @@ function identityChecks(
               "Verify the sender identity or domain in SES.",
             );
 
-    const dkimSummary = chosen?.summary ?? (exact.tag === "Right" ? exact.right : null);
+    const dkimSummary = chosen?.summary ?? (Result.isSuccess(exact) ? exact.success : null);
     const dkim =
       dkimSummary?.dkimStatus === "SUCCESS"
         ? ok("ses.identity.dkim", "SES DKIM", "DKIM is successfully configured.", {
@@ -450,17 +454,19 @@ function configurationSetChecks(
   return Effect.gen(function* () {
     const checks: ReadinessCheck[] = [];
     const settings = (yield* SesOperationsConfig).config;
-    const config = yield* capture(ses.getConfigurationSet(name));
+    const config = yield* Effect.result(ses.getConfigurationSet(name));
     const prefix = `ses.config_set.${kind}`;
-    if (config.tag === "Left") {
+    if (Result.isFailure(config)) {
       checks.push(
-        awsErrorCheck(`${prefix}.exists`, `${kind} SES configuration set`, config.left, { name }),
+        awsErrorCheck(`${prefix}.exists`, `${kind} SES configuration set`, config.failure, {
+          name,
+        }),
       );
       return checks;
     }
 
     checks.push(
-      config.right.sendingEnabled === false
+      config.success.sendingEnabled === false
         ? error(
             `${prefix}.exists`,
             `${kind} SES configuration set`,
@@ -475,12 +481,12 @@ function configurationSetChecks(
 
     if (Option.isSome(settings.trackingCustomRedirectDomain) && kind === "marketing") {
       checks.push(
-        config.right.trackingCustomRedirectDomain === settings.trackingCustomRedirectDomain.value
+        config.success.trackingCustomRedirectDomain === settings.trackingCustomRedirectDomain.value
           ? ok(
               `${prefix}.tracking_domain`,
               `${kind} SES tracking domain`,
               "Configuration set tracking domain matches Nusend config.",
-              { domain: config.right.trackingCustomRedirectDomain },
+              { domain: config.success.trackingCustomRedirectDomain },
             )
           : warning(
               `${prefix}.tracking_domain`,
@@ -488,17 +494,17 @@ function configurationSetChecks(
               "Configuration set tracking domain does not match Nusend config.",
               "Configure the SES custom redirect domain for engagement tracking.",
               {
-                actual: config.right.trackingCustomRedirectDomain,
+                actual: config.success.trackingCustomRedirectDomain,
                 expected: settings.trackingCustomRedirectDomain.value,
               },
             ),
       );
     }
 
-    const destinations = yield* capture(ses.getConfigurationSetEventDestinations(name));
-    if (destinations.tag === "Left") {
+    const destinations = yield* Effect.result(ses.getConfigurationSetEventDestinations(name));
+    if (Result.isFailure(destinations)) {
       checks.push(
-        awsErrorCheck(`${prefix}.events`, `${kind} SES event destinations`, destinations.left, {
+        awsErrorCheck(`${prefix}.events`, `${kind} SES event destinations`, destinations.failure, {
           name,
         }),
       );
@@ -510,7 +516,7 @@ function configurationSetChecks(
       kind === "marketing"
         ? [...baseRequired, ...settings.trackingEvents.map((event) => event.toUpperCase())]
         : baseRequired;
-    const enabledToConfiguredTopic = destinations.right.filter(
+    const enabledToConfiguredTopic = destinations.success.filter(
       (destination) =>
         destination.enabled &&
         destination.matchingTopicArn !== null &&
@@ -540,21 +546,6 @@ function configurationSetChecks(
     );
     return checks;
   });
-}
-
-function capture<A, E, R>(
-  effect: Effect.Effect<A, E, R>,
-): Effect.Effect<
-  { readonly tag: "Left"; readonly left: E } | { readonly tag: "Right"; readonly right: A },
-  never,
-  R
-> {
-  return effect.pipe(
-    Effect.match({
-      onFailure: (left) => ({ tag: "Left" as const, left }),
-      onSuccess: (right) => ({ tag: "Right" as const, right }),
-    }),
-  );
 }
 
 function awsErrorCheck(

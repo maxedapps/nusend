@@ -276,6 +276,27 @@ describe("runSesReadinessChecks", () => {
       },
     );
   });
+
+  it("maps SNS topic failures into readiness checks when the account check succeeds", async () => {
+    const result = await runTest(runSesReadinessChecks(), {
+      sesAdmin: okSesAdmin(),
+      snsAdmin: {
+        ...okSnsAdmin(),
+        getTopicAttributes: () =>
+          Effect.fail(
+            new AwsAdminError({ kind: "access_denied", operation: "sns:get-topic-attributes" }),
+          ),
+      },
+    });
+
+    expect(result.checks.find((check) => check.id === "aws.credentials_and_account")).toMatchObject(
+      { status: "ok" },
+    );
+    expect(result.checks.find((check) => check.id === "sns.topic.exists")).toMatchObject({
+      details: { kind: "access_denied", operation: "sns:get-topic-attributes" },
+      status: "error",
+    });
+  });
 });
 
 const baseEvents = ["BOUNCE", "COMPLAINT", "REJECT", "DELIVERY_DELAY"] as const;

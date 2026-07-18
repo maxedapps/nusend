@@ -2,7 +2,7 @@
 // migrations, so a decode failure on a returned row is a true defect.
 import { Schema } from "effect";
 
-// Mirrors the jobs.state SQLite CHECK constraint after 0002.
+// Mirrors the jobs.state SQLite CHECK constraint in 0001_initial_schema.sql.
 export const JobStateValues = ["queued", "leased", "succeeded", "dead"] as const;
 export const JobState = Schema.Literals(JobStateValues);
 export type JobState = typeof JobState.Type;

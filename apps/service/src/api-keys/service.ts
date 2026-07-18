@@ -110,8 +110,8 @@ export function makeApiKeysService(input: {
 
         yield* input.db.run(
           "apiKeys:create",
-          `INSERT INTO api_keys (id, user_id, name, prefix, key_hash, key_preview, permissions_json, created_at, last_used_at, expires_at, revoked_at, rotated_from_id)
-           VALUES ($id, $userId, $name, $prefix, $keyHash, $keyPreview, $permissionsJson, $createdAt, NULL, $expiresAt, NULL, $rotatedFromId);`,
+          `INSERT INTO api_keys (id, user_id, name, key_hash, key_preview, permissions_json, created_at, last_used_at, expires_at, revoked_at, rotated_from_id)
+           VALUES ($id, $userId, $name, $keyHash, $keyPreview, $permissionsJson, $createdAt, NULL, $expiresAt, NULL, $rotatedFromId);`,
           {
             createdAt: metadata.createdAt,
             expiresAt: metadata.expiresAt,
@@ -120,7 +120,6 @@ export function makeApiKeysService(input: {
             keyPreview: metadata.preview,
             name: metadata.name,
             permissionsJson: JSON.stringify(metadata.permissions),
-            prefix: rawKey.slice(0, "nusend_".length + 4),
             rotatedFromId: request.rotatedFromId ?? null,
             userId: request.userId,
           },
@@ -155,7 +154,10 @@ export function makeApiKeysService(input: {
         // A scoped actor may only revoke a key whose permissions it fully holds,
         // matching rotate — otherwise a narrow api_keys:write key could revoke the
         // owner's broadest key (a lockout vector).
-        const targetPermissions = yield* parseStoredPermissions(row.permissions_json);
+        const targetPermissions = yield* parseStoredPermissions(
+          "apiKeys:parseStoredPermissions",
+          row.permissions_json,
+        );
         const subsetError = enforceSubset(targetPermissions, actorPermissions);
         if (subsetError) return yield* Effect.fail(subsetError);
 
@@ -181,7 +183,10 @@ export function makeApiKeysService(input: {
           }
 
           const nowMs = yield* currentTimeMillis;
-          const permissions = yield* parseStoredPermissions(existing.permissions_json);
+          const permissions = yield* parseStoredPermissions(
+            "apiKeys:parseStoredPermissions",
+            existing.permissions_json,
+          );
           const created = yield* service.create({
             actorPermissions,
             expiresAt: rotationExpiry(existing.expires_at, nowMs),
@@ -234,7 +239,10 @@ export function makeApiKeysService(input: {
         return {
           key: {
             id: row.id,
-            permissions: yield* parseStoredPermissions(row.permissions_json),
+            permissions: yield* parseStoredPermissions(
+              "apiKeys:parseStoredPermissions",
+              row.permissions_json,
+            ),
             userId: row.user_id,
           },
           valid: true,
@@ -275,27 +283,28 @@ function rowToMetadata(row: ApiKeyRow): Effect.Effect<ApiKeyMetadata, DatabaseEr
       id: row.id,
       lastUsedAt: row.last_used_at,
       name: row.name,
-      permissions: yield* parseStoredPermissions(row.permissions_json),
+      permissions: yield* parseStoredPermissions(
+        "apiKeys:parseStoredPermissions",
+        row.permissions_json,
+      ),
       preview: row.key_preview,
       revokedAt: row.revoked_at,
     } satisfies ApiKeyMetadata;
   });
 }
 
-function parseStoredPermissions(value: string): Effect.Effect<PermissionSet, DatabaseError> {
+export function parseStoredPermissions(
+  operation: string,
+  value: string,
+): Effect.Effect<PermissionSet, DatabaseError> {
   return Effect.gen(function* () {
     const parsed = yield* Effect.try({
       try: () => JSON.parse(value) as PermissionSet,
-      catch: (cause) => new DatabaseError({ cause, operation: "apiKeys:parseStoredPermissions" }),
+      catch: (cause) => new DatabaseError({ cause, operation }),
     });
     const result = validatePermissionSet(parsed);
     if (!result.ok) {
-      return yield* Effect.fail(
-        new DatabaseError({
-          cause: new Error(result.message),
-          operation: "apiKeys:parseStoredPermissions",
-        }),
-      );
+      return yield* Effect.fail(new DatabaseError({ cause: new Error(result.message), operation }));
     }
     return parsed;
   });

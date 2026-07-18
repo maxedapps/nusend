@@ -5,7 +5,7 @@ import { Hono } from "hono";
 import { requirePrincipal } from "../auth/middleware.ts";
 import type { Principal } from "../auth/principal.ts";
 import { RequestValidationError } from "../errors.ts";
-import { jsonBodyLimit, readJsonBody } from "../http/body.ts";
+import { isPlainObject, jsonBodyLimit, readJsonBody } from "../http/body.ts";
 import { paginationMeta, parsePagination, parseRouteId } from "../http/query.ts";
 import { runRoute, type AppRuntime } from "../http/respond.ts";
 import { ApiKeys } from "./service.ts";
@@ -94,15 +94,13 @@ export function createApiKeyRoutes(options: ApiKeyRoutesOptions): Hono {
 function decodeCreateApiKeyRequest(
   value: unknown,
 ): Effect.Effect<CreateApiKeyRequest, RequestValidationError> {
-  const result = Schema.decodeUnknownResult(CreateApiKeyRequestSchema, { errors: "all" })(value);
-  if (Result.isSuccess(result)) return Effect.succeed(result.success);
-  // Generic message to the caller; detail logged server-side for diagnosability.
-  return Effect.logWarning("request validation failed", {
-    detail: String(result.failure),
-    operation: "api-keys:create",
-  }).pipe(
-    Effect.andThen(
-      Effect.fail(new RequestValidationError({ message: "Request body is invalid." })),
-    ),
-  );
+  if (!isPlainObject(value)) {
+    return Effect.fail(
+      new RequestValidationError({ message: "Request body must be a JSON object." }),
+    );
+  }
+  const decoded = Schema.decodeUnknownResult(CreateApiKeyRequestSchema)(value, { errors: "all" });
+  return Result.isFailure(decoded)
+    ? Effect.fail(new RequestValidationError({ message: decoded.failure.message }))
+    : Effect.succeed(decoded.success);
 }

@@ -276,6 +276,17 @@ describe("CLI activation page", () => {
     );
   });
 
+  it("returns 500 when an internal error escapes the activation flow", async () => {
+    // The default fake DeviceAuthorizations dies on inspect, driving the
+    // runActivation catch-all rather than a user-error page.
+    await withTestApp({ auth: { session: { userId: "user_1" } } }, async (app) => {
+      const response = await app.fetch(new Request("http://localhost/cli/activate?code=ABCD-2345"));
+
+      expect(response.status).toBe(500);
+      await expect(response.text()).resolves.toContain("Activation failed.");
+    });
+  });
+
   it("treats expired codes as invalid on the activation page and records lockout failures", async () => {
     await withTestApp(
       {

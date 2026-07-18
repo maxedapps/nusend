@@ -174,9 +174,11 @@ describe("api key routes", () => {
         );
 
         expect(response.status).toBe(400);
-        await expect(response.json()).resolves.toMatchObject({
-          error: { code: "invalid_request" },
-        });
+        const body = (await response.json()) as { error: { code: string; message: string } };
+        expect(body.error.code).toBe("invalid_request");
+        // The message names the offending permission resource (asserted by
+        // outcome, not exact prose).
+        expect(body.error.message).toContain("bogus");
       },
     );
   });

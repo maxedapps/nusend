@@ -100,7 +100,7 @@ const numericConfigSpecs = {
 const sendWorkerLeaseBudgetMessage =
   "NUSEND_SEND_WORKER_LEASE_SECONDS must exceed NUSEND_SEND_WORKER_BATCH_SIZE * NUSEND_SES_REQUEST_TIMEOUT_MS by at least 10 seconds.";
 
-function exceedsSendWorkerLeaseBudget(input: {
+function sendWorkerLeaseBudgetInsufficient(input: {
   readonly batchSize: number;
   readonly requestTimeoutMs: number;
   readonly leaseSeconds: number;
@@ -299,7 +299,7 @@ const sharedWorkerNumericConfig: Effect.Effect<SharedWorkerNumericConfig, Config
     );
 
     if (
-      exceedsSendWorkerLeaseBudget({
+      sendWorkerLeaseBudgetInsufficient({
         batchSize: workerBatchSize,
         leaseSeconds: workerLeaseSeconds,
         requestTimeoutMs,

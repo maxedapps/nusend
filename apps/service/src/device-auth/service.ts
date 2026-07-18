@@ -5,7 +5,7 @@ import type {
   DeviceAuthorizationTokenResponse,
 } from "@nusend/api-contract";
 
-import { ApiKeys, type ApiKeysService } from "../api-keys/service.ts";
+import { ApiKeys, parseStoredPermissions, type ApiKeysService } from "../api-keys/service.ts";
 import {
   DatabaseError,
   ForbiddenError,
@@ -160,7 +160,10 @@ export function makeDeviceAuthorizationsService(input: {
         return {
           clientName: row.client_name,
           expiresAt: row.expires_at,
-          permissions: yield* parseStoredPermissions(row.requested_permissions_json),
+          permissions: yield* parseStoredPermissions(
+            "deviceAuth:parseStoredPermissions",
+            row.requested_permissions_json,
+          ),
           userCode: normalizedUserCode,
           userCodePreview: row.user_code_preview,
         };
@@ -299,6 +302,7 @@ export function makeDeviceAuthorizationsService(input: {
             }
 
             const permissions = yield* parseStoredPermissions(
+              "deviceAuth:parseStoredPermissions",
               decision.row.requested_permissions_json,
             );
             const apiKey = yield* input.apiKeys.create({
@@ -384,24 +388,4 @@ function maskUserCode(code: string): string {
   const chars = [...code];
   const revealed = new Set([0, 1, chars.length - 2, chars.length - 1]);
   return chars.map((char, index) => (char === "-" || revealed.has(index) ? char : "•")).join("");
-}
-
-function parseStoredPermissions(value: string): Effect.Effect<PermissionSet, DatabaseError> {
-  return Effect.gen(function* () {
-    const parsed = yield* Effect.try({
-      try: () => JSON.parse(value) as PermissionSet,
-      catch: (cause) =>
-        new DatabaseError({ cause, operation: "deviceAuth:parseStoredPermissions" }),
-    });
-    const result = validatePermissionSet(parsed);
-    if (!result.ok) {
-      return yield* Effect.fail(
-        new DatabaseError({
-          cause: new Error(result.message),
-          operation: "deviceAuth:parseStoredPermissions",
-        }),
-      );
-    }
-    return parsed;
-  });
 }

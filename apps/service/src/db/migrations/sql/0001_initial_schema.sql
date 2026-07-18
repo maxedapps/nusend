@@ -54,7 +54,6 @@ CREATE TABLE api_keys (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
-  prefix TEXT NOT NULL,
   key_hash TEXT NOT NULL UNIQUE,
   key_preview TEXT NOT NULL,
   permissions_json TEXT NOT NULL,
@@ -188,7 +187,6 @@ CREATE TABLE jobs (
 
 CREATE INDEX jobs_state_run_at_idx ON jobs (state, run_at);
 CREATE INDEX jobs_locked_until_idx ON jobs (locked_until);
-CREATE INDEX jobs_delivery_id_idx ON jobs (delivery_id);
 CREATE UNIQUE INDEX jobs_delivery_id_unique_idx ON jobs (delivery_id);
 
 CREATE TABLE send_attempts (

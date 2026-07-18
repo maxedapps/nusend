@@ -11,6 +11,7 @@ import { runContactsCommand } from "./commands/contacts.js";
 import {
   exitCodeForError,
   httpTimeoutMsFromEnv,
+  validateHttpTimeout,
   printError,
   UsageError,
   type CliRuntimeDependencies,
@@ -97,7 +98,7 @@ async function runLogout(
   context: CommandContext,
 ) {
   if (context.env.NUSEND_API_KEY) {
-    if (command.revoke) httpTimeoutMsFromEnv(context.env);
+    if (command.revoke) validateHttpTimeout(context.env);
     await runLogoutCommand(command, context);
     return;
   }
@@ -106,7 +107,7 @@ async function runLogout(
   let api: NusendApi | undefined;
   let revokeSetupError: unknown;
   if (command.revoke && state.credential) {
-    httpTimeoutMsFromEnv(context.env);
+    validateHttpTimeout(context.env);
     try {
       api = makeApi(
         resolveBaseUrl(command, context.env, state),

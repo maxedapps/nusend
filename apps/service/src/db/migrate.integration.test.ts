@@ -78,7 +78,6 @@ const expectedIndexes = {
   device_authorizations_expires_at_idx: index("device_authorizations", false, [
     binary("expires_at"),
   ]),
-  jobs_delivery_id_idx: index("jobs", false, [binary("delivery_id")]),
   jobs_delivery_id_unique_idx: index("jobs", true, [binary("delivery_id")]),
   jobs_locked_until_idx: index("jobs", false, [binary("locked_until")]),
   jobs_state_run_at_idx: index("jobs", false, [binary("state"), binary("run_at")]),
@@ -191,7 +190,6 @@ const expectedColumns = {
     expectedColumn("id", "TEXT", 0, null, 1),
     expectedColumn("user_id", "TEXT", 1, null, 0),
     expectedColumn("name", "TEXT", 1, null, 0),
-    expectedColumn("prefix", "TEXT", 1, null, 0),
     expectedColumn("key_hash", "TEXT", 1, null, 0),
     expectedColumn("key_preview", "TEXT", 1, null, 0),
     expectedColumn("permissions_json", "TEXT", 1, null, 0),
@@ -516,7 +514,7 @@ describe("migration runner", () => {
         semantics.filter((fragment) => fragment.includes("COLLATE ")).length,
       );
     }
-    expect(Object.keys(initialSchema.indexes)).toHaveLength(45);
+    expect(Object.keys(initialSchema.indexes)).toHaveLength(44);
     expect(initialSchema.tables).not.toEqual(
       expect.arrayContaining(["ses_feedback_notifications", "ses_feedback_recipients"]),
     );
@@ -641,10 +639,10 @@ INSERT INTO accounts (id, account_id, provider_id, user_id, created_at, updated_
 VALUES ('account', 'provider-account', 'provider', 'u', 't', 't');
 INSERT INTO verifications (id, identifier, value, expires_at, created_at, updated_at)
 VALUES ('verification', 'user@example.com', 'value', 't', 't', 't');
-INSERT INTO api_keys (id, user_id, name, prefix, key_hash, key_preview, permissions_json, created_at)
-VALUES ('key-old', 'u', 'old', 'nu', 'hash-old', 'nu_old', '[]', 't');
-INSERT INTO api_keys (id, user_id, name, prefix, key_hash, key_preview, permissions_json, created_at, rotated_from_id)
-VALUES ('key-new', 'u', 'new', 'nu', 'hash-new', 'nu_new', '[]', 't', 'key-old');
+INSERT INTO api_keys (id, user_id, name, key_hash, key_preview, permissions_json, created_at)
+VALUES ('key-old', 'u', 'old', 'hash-old', 'nu_old', '[]', 't');
+INSERT INTO api_keys (id, user_id, name, key_hash, key_preview, permissions_json, created_at, rotated_from_id)
+VALUES ('key-new', 'u', 'new', 'hash-new', 'nu_new', '[]', 't', 'key-old');
 INSERT INTO device_authorizations (
   id, device_code_hash, user_code_hash, user_code_preview, requested_permissions_json,
   client_name, approved_by_user_id, expires_at, created_at
