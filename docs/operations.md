@@ -8,8 +8,21 @@ Every Compose command must use the protected interpolation file and exact Compos
 
 ```sh
 cd /opt/nusend
+set -a
+. /etc/nusend/compose.env
+set +a
+: "${NUSEND_CADDY_CONFIG_DIR:?select the direct or cloudflare Caddy directory}"
+[ -f "$NUSEND_CADDY_CONFIG_DIR/Caddyfile" ] || { printf 'selected Caddyfile missing\n' >&2; exit 1; }
+case "$NUSEND_CADDY_CONFIG_DIR" in
+  /opt/nusend/deploy/caddy/direct) NUSEND_INGRESS_MODE=direct ;;
+  /opt/nusend/deploy/caddy/cloudflare) NUSEND_INGRESS_MODE=cloudflare ;;
+  *) printf 'unsupported Caddy config directory: %s\n' "$NUSEND_CADDY_CONFIG_DIR" >&2; exit 1 ;;
+esac
+export NUSEND_INGRESS_MODE
 dc() { docker compose --env-file /etc/nusend/compose.env -f /opt/nusend/compose.yaml "$@"; }
 ```
+
+Re-run this preflight after changing the protected env file and before every Compose/Caddy validation, update, rollback, or restore session. Treat the selector, DNS/proxy state, and firewall policy as one recorded ingress state.
 
 For direct R2 inspection, use this wrapper. It reads backup-only secrets inside the backup container and supplies the required path-style option to **every** restic command:
 
@@ -39,6 +52,8 @@ dc exec -T api bun -e \
 curl --fail --show-error --silent https://mail.example.com/health
 curl --output /dev/null --silent --write-out '%{http_code}\n' \
   https://mail.example.com/health/db   # expected 404
+openssl s_client -connect mail.example.com:443 -servername mail.example.com \
+  -verify_return_error </dev/null >/dev/null
 dc --profile ops run --rm --no-deps migrate \
   bun apps/service/src/db/migrate.ts status
 ```
@@ -78,7 +93,7 @@ journalctl CONTAINER_TAG=nusend-backup --since '24 hours ago' --no-pager
 journalctl -u nusend-backup.service --since '24 hours ago' --no-pager
 ```
 
-For a bounded live view, use `journalctl ... -f` and stop it with Ctrl-C. Do not log or paste raw API keys, device/user codes, cookies, unsubscribe tokens, recipient vars, mailing HTML, OAuth query data, Origin/R2/restic secrets, or raw SES/SNS payloads.
+For a bounded live view, use `journalctl ... -f` and stop it with Ctrl-C. Do not log or paste raw API keys, device/user codes, cookies, unsubscribe tokens, recipient vars, mailing HTML, OAuth query data, R2/restic secrets, or raw SES/SNS payloads.
 
 The installed journal policy is server-wide. Old archived files are removed when records exceed 30 days **or** `SystemMaxUse=1G`/`SystemKeepFree=1G` pressure applies. The active file can temporarily exceed the bound until rotation; `SystemMaxFileSize=64M` and `MaxFileSec=1day` bound granularity.
 
@@ -158,12 +173,12 @@ Use the exact commands and cautions in [`deployment.md`](./deployment.md#11-exac
 
 ## Routine update cues
 
-Before an app, Caddy, restic, base-image, Cloudflare-IP, Docker, or host update:
+Before an app, Caddy, restic, base-image, ingress-mode, Docker, or host update:
 
 1. run and verify an on-demand backup;
-2. retain the current app and dependency digests;
-3. stage/test the new pins and both firewall/Caddy IP lists;
-4. follow the stop-worker, stop-API, deliberate-migration, API/Caddy-health, start-worker order;
-5. recheck logs, direct-origin rejection, client IP, timer, and a worker cycle.
+2. retain the current app/dependency digests plus selected Caddy directory, DNS/proxy state, and complete firewall rollback state;
+3. stage/test new pins and the selected mode: direct requires public 80/443 and forged-header/client-IP proof; Cloudflare requires public-cert bootstrap/persistence, current Caddy/firewall CIDRs, Full (strict), callback/cache/WAF rules, and direct-origin rejection;
+4. promote config directory + DNS/proxy + firewall as one provider-console-recoverable transaction, then follow stop-worker, stop-API, deliberate-migration, API/Caddy-health, start-worker order;
+5. recheck certificate issuer/expiry, logs, selected-mode firewall/client IP, callbacks, timer, and a worker cycle.
 
-Application rollback must use the retained full-bundle transaction in [`deployment.md`](./deployment.md#10-production-update-and-rollback-transaction): prior checkout, Compose/Caddy files, immutable app and backup digests, systemd units, and changed firewall state. Proceed only when the current schema is compatible; database schema changes move forward or recover from an exact matching backup.
+Application rollback must use the retained full-bundle transaction in [`deployment.md`](./deployment.md#10-production-update-and-rollback-transaction): prior checkout, Compose/Caddy files and selector, immutable app and backup digests, systemd units, DNS/proxy controls, and matching firewall state. Proceed only when the current schema is compatible; database schema changes move forward or recover from an exact matching backup.

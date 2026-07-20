@@ -130,7 +130,7 @@ services:
   caddy:
     image: caddy:2.11.4-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
     environment:
-      NUSEND_DOMAIN: ${NUSEND_DOMAIN:?Set NUSEND_DOMAIN to the Cloudflare-proxied hostname}
+      NUSEND_DOMAIN: ${NUSEND_DOMAIN:?Set NUSEND_DOMAIN to the public hostname}
     init: true
     read_only: true
     tmpfs:
@@ -149,7 +149,7 @@ services:
       - "443:443/tcp"
     volumes:
       - type: bind
-        source: ${NUSEND_CADDY_CONFIG_DIR:-/opt/nusend/deploy/caddy}
+        source: ${NUSEND_CADDY_CONFIG_DIR:?Set NUSEND_CADDY_CONFIG_DIR to /opt/nusend/deploy/caddy/direct or /opt/nusend/deploy/caddy/cloudflare}
         target: /etc/caddy
         read_only: true
         bind:
@@ -164,19 +164,12 @@ services:
         target: /config
         bind:
           create_host_path: false
-    secrets:
-      - caddy_origin_cert
-      - caddy_origin_key
     logging:
       driver: journald
       options:
         tag: nusend-caddy
 
 secrets:
-  caddy_origin_cert:
-    file: ${NUSEND_ORIGIN_CERT_FILE:-/etc/nusend/secrets/cloudflare-origin.pem}
-  caddy_origin_key:
-    file: ${NUSEND_ORIGIN_KEY_FILE:-/etc/nusend/secrets/cloudflare-origin-key.pem}
   r2_access_key_id:
     file: ${NUSEND_R2_ACCESS_KEY_ID_FILE:-/etc/nusend/secrets/r2-access-key-id}
   r2_secret_access_key:

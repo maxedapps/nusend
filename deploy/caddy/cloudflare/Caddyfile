@@ -21,8 +21,6 @@
 }
 
 {$NUSEND_DOMAIN} {
-	tls /run/secrets/caddy_origin_cert /run/secrets/caddy_origin_key
-
 	request_body {
 		max_size 2MiB
 	}

@@ -1,0 +1,47 @@
+{
+	servers {
+		protocols h1 h2
+		timeouts {
+			read_header 10s
+			read_body 30s
+		}
+	}
+
+	log default {
+		output stderr
+		format filter {
+			request>uri regexp `(?:^/unsubscribe/[^?]*|^/api/auth/[^?]*|\?.*$)` "[REDACTED]"
+			request>headers>Referer delete
+			wrap json
+		}
+	}
+}
+
+{$NUSEND_DOMAIN} {
+	request_body {
+		max_size 2MiB
+	}
+
+	header Cache-Control "no-store"
+
+	@private_health path /health/db
+	respond @private_health 404
+
+	@sensitive_access path /unsubscribe/* /api/auth/*
+	log_skip @sensitive_access
+
+	log {
+		output stderr
+		format filter {
+			request>uri regexp `(?:^/unsubscribe/[^?]*|^/api/auth/[^?]*|\?.*$)` "[REDACTED]"
+			request>headers>Referer delete
+			wrap json
+		}
+	}
+
+	reverse_proxy api:3000 {
+		header_up Host {http.request.host}
+		header_up X-Forwarded-For {client_ip}
+		header_up X-Forwarded-Proto https
+	}
+}

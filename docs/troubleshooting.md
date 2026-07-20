@@ -2,25 +2,25 @@
 
 Use the exact Compose and `r2_restic` helpers from [`operations.md`](./operations.md#command-helpers). Do not print protected env files or secret contents while diagnosing.
 
-## Caddy TLS or Full (strict) fails
+## Caddy TLS or selected ingress mode fails
+
+Run the operations helper first; it loads `NUSEND_CADDY_CONFIG_DIR` and requires `[ -f "$NUSEND_CADDY_CONFIG_DIR/Caddyfile" ]` before Compose/Caddy validation.
 
 ```sh
 dc ps api caddy
 dc logs --since 30m --tail 200 caddy
 journalctl CONTAINER_TAG=nusend-caddy --since '30 minutes ago' --no-pager
 dc exec -T caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+openssl s_client -connect mail.example.com:443 -servername mail.example.com \
+  -verify_return_error </dev/null | openssl x509 -noout -issuer -dates -ext subjectAltName
 ```
 
-Check that:
+For both modes, check that `NUSEND_DOMAIN` matches direct/proxied DNS, TCP 80/443 and `/.well-known/acme-challenge/*` can reach Caddy as required, `/var/lib/nusend-caddy/data` remains mounted/persistent, and the public certificate is unexpired and covers the hostname. Do not replace automatic HTTPS with copied certificate files or manual renewal. If first issuance failed, restore direct DNS and public 80/443, inspect Caddy logs, and retry only after fixing reachability/rate-limit/DNS errors.
 
-- the proxied DNS hostname equals `NUSEND_DOMAIN` and the Origin CA certificate SAN;
-- Cloudflare is set to **Full (strict)**, not Flexible/Full;
-- `/etc/nusend/secrets/cloudflare-origin.pem` and `cloudflare-origin-key.pem` are non-empty, root-owned `0600`, and match;
-- the certificate is unexpired and covers only the intended hostname;
-- Caddy can read its Compose secret mounts and persistent data/config directories;
-- both IPv4 and enabled IPv6 firewall lists contain current official Cloudflare ranges.
+- **Direct:** DNS must be DNS-only/public, every published family must have a validated firewall path, and no Cloudflare-only source restriction may remain.
+- **Cloudflare:** bootstrap and prove the public certificate while DNS is direct; then require Proxied DNS, **Full (strict)**, preserved ACME challenge reachability, and current Cloudflare CIDRs in Caddy/firewall. A Cloudflare TLS error is not fixed by Flexible/plain Full.
 
-Do not switch to a public/insecure TLS mode to hide a certificate failure. Origin CA certificates are intentionally not browser-trusted when connecting directly; test through Cloudflare.
+After repair, force-recreate Caddy and recheck issuer/expiry and public HTTPS to prove persisted `/data` survived.
 
 ## Caddy returns 502
 
@@ -38,24 +38,32 @@ dc --profile ops run --rm --no-deps migrate \
 
 Confirm both services share the `nusend` Compose network and Caddy proxies `api:3000`. Do not publish port 3000 as a workaround. External `/health/db` is intentionally 404; use the internal command above.
 
-## Wrong client IP or direct origin is reachable
+## Wrong client IP or ingress firewall mismatch
 
-Caddy trusts forwarding headers only from the versioned Cloudflare CIDRs, gives `CF-Connecting-IP` precedence, and overwrites upstream `X-Forwarded-For` with one canonical address. If logs/rate limits show a proxy address or forged value:
+First compare `/etc/nusend/compose.env`, the selected directory, DNS/proxy state, and firewall policy. Treat any mismatch as one ingress incident and repair it from an out-of-band provider console.
 
-1. compare <https://www.cloudflare.com/ips-v4/> and <https://www.cloudflare.com/ips-v6/> with both `deploy/caddy/Caddyfile` and the host firewall;
-2. confirm DNS is proxied and traffic is not bypassing Cloudflare;
-3. confirm `trusted_proxies_strict` and `client_ip_headers CF-Connecting-IP X-Forwarded-For` remain configured;
-4. test forged forwarding headers from an untrusted source and a valid request through Cloudflare;
-5. use the Docker-aware `DOCKER-USER` or nftables forward rules in the deployment runbook—not INPUT/UFW-only assumptions.
+### Direct mode
 
-From a non-Cloudflare external network, this must fail even with certificate verification disabled:
+Caddy trusts no forwarding headers. Send forged `CF-Connecting-IP` and `X-Forwarded-For` from an external client and require both the Caddy log and upstream single XFF to use the actual peer. If a forged value appears, confirm `/opt/nusend/deploy/caddy/direct` is selected, recreate Caddy, inspect its running config, and verify no trusted-proxy directives exist. Ports 80/443 must remain publicly reachable on `A` and only validated `AAAA` addresses.
+
+### Cloudflare mode
+
+Caddy trusts forwarding headers only from current Cloudflare CIDRs, uses strict parsing with `CF-Connecting-IP`, and overwrites upstream XFF with one canonical address. If logs show an edge address or forged value:
+
+1. compare <https://www.cloudflare.com/ips-v4/> and <https://www.cloudflare.com/ips-v6/> with `deploy/caddy/cloudflare/Caddyfile` and the host firewall;
+2. confirm DNS is Proxied and Full (strict);
+3. confirm `trusted_proxies_strict` and `client_ip_headers CF-Connecting-IP X-Forwarded-For` in the running config;
+4. test forged headers from an untrusted source and a valid request through Cloudflare;
+5. use the Docker-aware `DOCKER-USER` or nftables forward rules in the deployment runbook, not INPUT/UFW-only assumptions.
+
+From a non-Cloudflare network, every routable origin IPv4/IPv6 HTTP and HTTPS attempt must fail, even with certificate verification disabled:
 
 ```sh
 curl --fail --insecure --connect-timeout 5 \
   --resolve 'mail.example.com:443:ORIGIN_IPV4' https://mail.example.com/health
 ```
 
-If it succeeds, treat the origin as exposed. Recheck the public interface match, IPv4 and IPv6 rules, persistence after reboot, and whether Docker's firewall backend changed. Keep an out-of-band console available while repairing rules.
+If it succeeds, treat the Cloudflare-mode origin as exposed. Recheck public-interface matches, both IP families, persistence after reboot, and Docker's firewall backend. Keep Caddy stopped if the actual packet path cannot be proven. In direct mode this request is expected to succeed and is not an exposure test.
 
 ## Migration refuses to start
 
@@ -203,4 +211,4 @@ Use SES readiness and operations HTTP routes to inspect configuration-set, SNS, 
 
 Generic SES internal/server/service-unavailable errors and HTTP `500`–`599` outcomes are terminal `ambiguous`: SES acceptance may be unknown, so they must not be automatically retried. Inspect the delivery and exact attempt instead. Explicit pre-connect DNS/connect failures and throttle/quota refusals remain retryable; named permanent SES rejections remain permanent.
 
-For SNS callback failures, verify the exact POST endpoint, proxied DNS, cache bypass, method/path-limited challenge skip, topic ARN allowlist, SignatureVersion 2, DLQ/alarms, and egress to SNS signing-certificate/confirmation URLs. Do not disable signature validation or broadly bypass WAF protections.
+For SNS callback failures, always verify the exact POST endpoint, public reachability, topic ARN allowlist, SignatureVersion 2, DLQ/alarms, and egress to SNS signing-certificate/confirmation URLs. In Cloudflare mode also verify Proxied DNS, cache bypass, and the method/path-limited challenge skip; those controls do not apply in direct mode. Do not disable signature validation or broadly bypass protections.

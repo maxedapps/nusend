@@ -2,7 +2,7 @@
 
 Nusend is a single-user, self-hosted email orchestration service for AWS SES. It exposes an HTTP API and a first-party CLI for contacts, mailings, delivery operations, and API-key authentication.
 
-The codebase is pre-launch. It is suitable for development and controlled SES testing, but the live production gates in [`docs/production-readiness.md`](./docs/production-readiness.md) must be completed before broad marketing volume.
+The codebase is pre-launch. It is suitable for development and controlled SES testing, but the live production gates in [`docs/production-readiness.md`](./docs/production-readiness.md) must be completed before broad marketing volume. Production Caddy supports explicit direct-DNS and Cloudflare-proxied modes with automatic public HTTPS; the canonical mode selection and rollout procedure is in [`docs/deployment.md`](./docs/deployment.md).
 
 ## Quick start
 
@@ -96,7 +96,7 @@ The core design is documented in [`PROJECT.md`](./PROJECT.md). Important invaria
 | HTTP contracts | [`docs/api.md`](./docs/api.md), `packages/api-contract` |
 | Auth and API keys | [`docs/auth-and-api-keys.md`](./docs/auth-and-api-keys.md) |
 | SES setup/readiness/testing | [`docs/ses-setup.md`](./docs/ses-setup.md), [`docs/ses-readiness.md`](./docs/ses-readiness.md), [`docs/ses-simulator-testing.md`](./docs/ses-simulator-testing.md) |
-| Deployment and recovery | [`docs/deployment.md`](./docs/deployment.md) |
+| Mode-aware deployment and recovery | [`docs/deployment.md`](./docs/deployment.md) |
 | Routine operations | [`docs/operations.md`](./docs/operations.md) |
 | Troubleshooting | [`docs/troubleshooting.md`](./docs/troubleshooting.md) |
 | Remaining release gates | [`docs/production-readiness.md`](./docs/production-readiness.md) |

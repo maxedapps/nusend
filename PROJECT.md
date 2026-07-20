@@ -146,9 +146,9 @@ Readiness consumes the entrypoint's parsed deployment values/issues rather than 
 
 ## Operations and release boundary
 
-The deployment model is a VPS behind Cloudflare and Caddy, with separate API/worker processes, SQLite storage, journald logs, and verified encrypted restic backups in R2. Operational commands must follow:
+The deployment model is a VPS with stock Caddy using automatic public HTTPS in either direct-DNS or Cloudflare-proxied mode, with separate API/worker processes, SQLite storage, journald logs, and verified encrypted restic backups in R2. `NUSEND_CADDY_CONFIG_DIR` selects one explicit mode; its DNS/proxy and firewall state must match. Direct mode trusts no forwarding headers, while Cloudflare mode trusts only current Cloudflare ranges with strict parsing. Operational commands must follow:
 
-- [`docs/deployment.md`](./docs/deployment.md) for install, update, firewall, backup initialization, rollback compatibility decisions, and exact restore;
+- [`docs/deployment.md`](./docs/deployment.md) for the canonical mode-aware install, ACME/DNS/firewall transaction, update, backup initialization, rollback compatibility decisions, and exact restore;
 - [`docs/operations.md`](./docs/operations.md) for health, logs, backup age/integrity, disk checks, and drills;
 - [`docs/troubleshooting.md`](./docs/troubleshooting.md) for failure handling;
 - [`docs/ses-setup.md`](./docs/ses-setup.md) and [`docs/ses-readiness.md`](./docs/ses-readiness.md) for AWS setup.

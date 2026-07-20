@@ -4,14 +4,14 @@ Nusend includes suppression/list safety, explicit send ambiguity, device/webhook
 
 Open release gates remain:
 
-1. Live staging proof of the documented deployment, backup, restore, and disaster-recovery procedures.
+1. Live staging proof of the documented deployment, backup, restore, and disaster-recovery procedures, including selected-mode public ACME issuance/persistence, DNS, firewall, forged-header/client-IP behavior, and callbacks. Cloudflare mode additionally requires Full (strict), preserved ACME challenge reachability, cache/WAF rules, current CIDRs, and direct-origin rejection.
 2. Secure transport defaults, not only the current conditional auth URL/trusted-origin HTTPS validation when `NODE_ENV=production`.
 3. Bounded SES notification/event retention, capacity planning, and disk monitoring.
 4. Live AWS SES/SNS simulator feedback validation on the deployed instance.
 5. Live Gmail "Show original" verification that DKIM covers `List-Unsubscribe` and `List-Unsubscribe-Post`.
 6. Operational monitoring/alerting for worker freshness, dead/ambiguous deliveries, webhook retries, and SNS DLQ messages.
 
-Hosted CI and release automation are intentionally absent. `pnpm check` and `pnpm build` are the repository validation contract; passing them is not evidence that hosted automation or a release pipeline ran.
+Hosted CI and release automation are intentionally absent. `pnpm check` and `pnpm build` are the repository validation contract; the local Caddy smoke validates both exact ingress modes offline. Passing local checks is not evidence that a release pipeline or live selected-mode ACME/DNS/firewall/Cloudflare/callback gate ran.
 
 Before production sending, also verify:
 
