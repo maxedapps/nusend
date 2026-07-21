@@ -1,4 +1,4 @@
-// Owner bootstrap CLI: bun src/auth/bootstrap.ts --email <email> --name <name> [--force]
+// Owner bootstrap CLI: bun src/auth/bootstrap.ts --email <email> --name <name>
 import { ConfigProvider, Effect, Exit, Layer, ManagedRuntime } from "effect";
 
 import { serviceConfig } from "../config.ts";
@@ -9,7 +9,6 @@ import { IdGenerator, IdGeneratorLive, type IdGeneratorService } from "../servic
 
 type BootstrapOptions = {
   email: string;
-  force?: boolean;
   name: string;
 };
 
@@ -41,20 +40,6 @@ export function bootstrapOwner(
           );
         }
 
-        if (!options.force) {
-          const owner = yield* db.get(
-            "bootstrap:owner-exists",
-            "SELECT 1 AS ok FROM users LIMIT 1;",
-          );
-          if (owner !== null) {
-            return yield* Effect.fail(
-              new BootstrapError({
-                reason: "An owner already exists. Use --force to add or update an owner.",
-              }),
-            );
-          }
-        }
-
         const email = normalizeEmail(options.email);
         if (email === null) {
           return yield* Effect.fail(
@@ -62,8 +47,26 @@ export function bootstrapOwner(
           );
         }
 
-        const userId = yield* upsertUser(db, ids, { email, name: options.name.trim(), now });
+        const name = options.name.trim();
+        if (!name) {
+          return yield* Effect.fail(new BootstrapError({ reason: "--name must not be blank." }));
+        }
 
+        const existingOwner = yield* db.get<{ email: string; id: string }>(
+          "bootstrap:existing-owner",
+          "SELECT id, email FROM users ORDER BY created_at ASC, id ASC LIMIT 1;",
+        );
+
+        if (existingOwner !== null && existingOwner.email !== email) {
+          return yield* Effect.fail(
+            new BootstrapError({
+              reason:
+                "An owner already exists with a different email. Refusing to create or replace it.",
+            }),
+          );
+        }
+
+        const userId = yield* upsertUser(db, ids, { email, name, now });
         return { userId };
       }),
     );
@@ -115,15 +118,9 @@ function normalizeEmail(email: string): string | null {
 
 function parseArgs(argv: string[]): BootstrapOptions {
   const values = new Map<string, string>();
-  let force = false;
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
-
-    if (arg === "--force") {
-      force = true;
-      continue;
-    }
 
     if (!arg.startsWith("--")) {
       throw new Error(`Unexpected argument: ${arg}`);
@@ -143,10 +140,10 @@ function parseArgs(argv: string[]): BootstrapOptions {
   const name = values.get("name");
 
   if (!email || !name) {
-    throw new Error("Usage: bun src/auth/bootstrap.ts --email <email> --name <name> [--force]");
+    throw new Error("Usage: bun src/auth/bootstrap.ts --email <email> --name <name>");
   }
 
-  return { email, force, name };
+  return { email, name };
 }
 
 if (import.meta.main) {

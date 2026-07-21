@@ -1,0 +1,147 @@
+name: release-images
+
+on:
+  pull_request:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+env:
+  APP_IMAGE: ghcr.io/maxedapps/nusend
+  BACKUP_IMAGE: ghcr.io/maxedapps/nusend-backup
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install and validate
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm check
+          pnpm build
+
+      - name: Derive release metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE_REVISION="$(git rev-parse HEAD)"
+          echo "source_revision=${SOURCE_REVISION}" >>"$GITHUB_OUTPUT"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME}"
+            [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || {
+              echo "tag must look like a semver release: vX.Y.Z" >&2
+              exit 1
+            }
+            echo "version=${VERSION}" >>"$GITHUB_OUTPUT"
+            echo "push=true" >>"$GITHUB_OUTPUT"
+            app_tag="$(grep -E 'ghcr\.io/maxedapps/nusend:v' compose.yaml | head -n1 | sed -E 's/.*nusend:(v[^[:space:]]+).*/\1/')"
+            backup_tag="$(grep -E 'ghcr\.io/maxedapps/nusend-backup:v' compose.yaml | head -n1 | sed -E 's/.*nusend-backup:(v[^[:space:]]+).*/\1/')"
+            [[ "$app_tag" == "$VERSION" ]] || {
+              echo "compose app image tag ${app_tag:-<missing>} does not match git tag ${VERSION}" >&2
+              exit 1
+            }
+            [[ "$backup_tag" == "$VERSION" ]] || {
+              echo "compose backup image tag ${backup_tag:-<missing>} does not match git tag ${VERSION}" >&2
+              exit 1
+            }
+          else
+            echo "version=0.0.0-pr" >>"$GITHUB_OUTPUT"
+            echo "push=false" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: steps.meta.outputs.push == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish app image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ steps.meta.outputs.push }}
+          tags: |
+            ${{ env.APP_IMAGE }}:${{ steps.meta.outputs.version }}
+          build-args: |
+            SOURCE_REVISION=${{ steps.meta.outputs.source_revision }}
+            VERSION=${{ steps.meta.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/maxedapps/nusend
+            org.opencontainers.image.revision=${{ steps.meta.outputs.source_revision }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+
+      - name: Build and publish backup image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./deploy/backup
+          file: ./deploy/backup/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ steps.meta.outputs.push }}
+          tags: |
+            ${{ env.BACKUP_IMAGE }}:${{ steps.meta.outputs.version }}
+          build-args: |
+            SOURCE_REVISION=${{ steps.meta.outputs.source_revision }}
+            VERSION=${{ steps.meta.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/maxedapps/nusend
+            org.opencontainers.image.revision=${{ steps.meta.outputs.source_revision }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+
+      - name: Retain three newest GHCR releases
+        if: steps.meta.outputs.push == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PACKAGE_OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          work_dir=$(mktemp -d)
+          trap 'rm -rf "$work_dir"' EXIT
+
+          for package in nusend nusend-backup; do
+            versions_file="$work_dir/$package.json"
+            deletion_ids_file="$work_dir/$package.delete-ids"
+            gh api --paginate \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "/users/$PACKAGE_OWNER/packages/container/$package/versions?per_page=100" \
+              | jq -s 'add' >"$versions_file"
+            .github/scripts/prune-ghcr-package-versions.sh "$versions_file" 3 >"$deletion_ids_file"
+
+            while IFS= read -r version_id; do
+              [ -n "$version_id" ] || continue
+              echo "Deleting $package package version $version_id"
+              gh api --method DELETE \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                "/users/$PACKAGE_OWNER/packages/container/$package/versions/$version_id"
+            done <"$deletion_ids_file"
+          done

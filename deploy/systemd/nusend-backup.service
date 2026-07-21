@@ -1,9 +1,0 @@
-[Unit]
-Description=Nusend verified SQLite backup
-Requires=docker.service
-After=docker.service
-
-[Service]
-Type=oneshot
-WorkingDirectory=/opt/nusend
-ExecStart=/usr/bin/docker compose --env-file /etc/nusend/compose.env -f /opt/nusend/compose.yaml --profile ops run --rm --no-deps backup

@@ -2,7 +2,7 @@
 
 Nusend is a single-user, self-hosted email orchestration service for AWS SES. It exposes an HTTP API and a first-party CLI for contacts, mailings, delivery operations, and API-key authentication.
 
-The codebase is pre-launch. It is suitable for development and controlled SES testing, but the live production gates in [`docs/production-readiness.md`](./docs/production-readiness.md) must be completed before broad marketing volume. Production Caddy supports explicit direct-DNS and Cloudflare-proxied modes with automatic public HTTPS; the canonical mode selection and rollout procedure is in [`docs/deployment.md`](./docs/deployment.md).
+The codebase is pre-launch. It is suitable for development and controlled SES testing, but the live production gates in [`docs/production-readiness.md`](./docs/production-readiness.md) must be completed before broad marketing volume. Production uses Docker Compose with direct-DNS or Cloudflare-proxied Caddy modes; see [`docs/deployment.md`](./docs/deployment.md).
 
 ## Quick start
 
@@ -22,7 +22,7 @@ NUSEND_API_KEY_HASH_SECRET=replace-with-another-32-character-secret
 EOF
 ```
 
-`.env.example` is the production deployment inventory, not a ready-to-copy local file. After setting real Google OAuth values and independent random secrets in `.env`, initialize the database and owner:
+The root `.env.example` is the production Compose contract. The local `.env` snippet above is for development only and must remain uncommitted. After setting real local Google OAuth values and independent local random secrets, initialize the database and owner:
 
 ```sh
 pnpm --filter @nusend/service db:migrate
@@ -59,6 +59,10 @@ pnpm --filter @nusend/cli build
 
 The CLI supports device login/logout, whoami, API-key management, contacts, read-only mailings, JSON output, and local permission repair. It stores one service URL and credential in one atomic private `state.json`; concurrent mutation is unsupported. See [`docs/cli.md`](./docs/cli.md) for commands, precedence, output, and recovery behavior.
 
+## Production deployment
+
+Production is Docker Compose 5.3+ only. Copy [`.env.example`](./.env.example) to `.env`, set domain/ingress/owner/provider values, then run `docker compose up -d --wait`. Compose owns migrations, owner reconciliation, named volumes, Caddy ingress mode, mandatory R2 backups, and logs. See [`docs/deployment.md`](./docs/deployment.md).
+
 ## Database lifecycle
 
 Before launch, `apps/service/src/db/migrations/sql/0001_initial_schema.sql` is the single editable forward baseline. After changing it, delete and recreate only disposable local databases. Once a deployment has launched, applied migrations are immutable and schema changes use forward `0002+` files.
@@ -72,7 +76,7 @@ pnpm check
 pnpm build
 ```
 
-`pnpm check` runs formatting, lint, typechecking, and product tests. Hosted CI and release automation are intentionally absent.
+`pnpm check` runs formatting, lint, typechecking, and product tests. Release image publication is automated on `v*` tags via `.github/workflows/release-images.yml`.
 
 ## Architecture and safety
 
@@ -96,7 +100,6 @@ The core design is documented in [`PROJECT.md`](./PROJECT.md). Important invaria
 | HTTP contracts | [`docs/api.md`](./docs/api.md), `packages/api-contract` |
 | Auth and API keys | [`docs/auth-and-api-keys.md`](./docs/auth-and-api-keys.md) |
 | SES setup/readiness/testing | [`docs/ses-setup.md`](./docs/ses-setup.md), [`docs/ses-readiness.md`](./docs/ses-readiness.md), [`docs/ses-simulator-testing.md`](./docs/ses-simulator-testing.md) |
-| Mode-aware deployment and recovery | [`docs/deployment.md`](./docs/deployment.md) |
-| Routine operations | [`docs/operations.md`](./docs/operations.md) |
-| Troubleshooting | [`docs/troubleshooting.md`](./docs/troubleshooting.md) |
+| Production Compose deployment | [`docs/deployment.md`](./docs/deployment.md) |
+| Observability | [`docs/observability.md`](./docs/observability.md) |
 | Remaining release gates | [`docs/production-readiness.md`](./docs/production-readiness.md) |

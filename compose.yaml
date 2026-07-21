@@ -1,19 +1,42 @@
 name: nusend
 
-# The protected env file is optional only while rendering `compose config` on a
-# workstation. Production API/worker startup still fails closed without its
-# required auth/sending values. Operators install it at /etc/nusend/nusend.env.
+# Maintainers update these release tags with each published GHCR release.
+x-app-image: &app-image ghcr.io/maxedapps/nusend:v0.1.0
+x-backup-image: &backup-image ghcr.io/maxedapps/nusend-backup:v0.1.0
+x-logging: &default-logging
+  driver: local
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+x-app-environment: &app-environment
+  AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:?Set AWS_ACCESS_KEY_ID}
+  AWS_REGION: ${AWS_REGION:?Set AWS_REGION}
+  AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:?Set AWS_SECRET_ACCESS_KEY}
+  AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+  BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?Set BETTER_AUTH_SECRET}
+  BETTER_AUTH_URL: https://${NUSEND_DOMAIN:?Set NUSEND_DOMAIN}
+  GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:?Set GOOGLE_CLIENT_ID}
+  GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:?Set GOOGLE_CLIENT_SECRET}
+  NODE_ENV: production
+  NUSEND_API_KEY_HASH_SECRET: ${NUSEND_API_KEY_HASH_SECRET:?Set NUSEND_API_KEY_HASH_SECRET}
+  NUSEND_AUTH_TRUSTED_ORIGINS: https://${NUSEND_DOMAIN:?Set NUSEND_DOMAIN}
+  NUSEND_DB_PATH: /var/lib/nusend/nusend.sqlite
+  NUSEND_HOST: 0.0.0.0
+  NUSEND_PORT: "3000"
+  NUSEND_PUBLIC_BASE_URL: https://${NUSEND_DOMAIN:?Set NUSEND_DOMAIN}
+  NUSEND_SES_FEEDBACK_TOPIC_ARNS: ${NUSEND_SES_FEEDBACK_TOPIC_ARNS:-}
+  NUSEND_SES_FROM_EMAIL: ${NUSEND_SES_FROM_EMAIL:?Set NUSEND_SES_FROM_EMAIL}
+  NUSEND_SES_MARKETING_CONFIGURATION_SET: ${NUSEND_SES_MARKETING_CONFIGURATION_SET:-}
+  NUSEND_SES_TRACKING_CUSTOM_REDIRECT_DOMAIN: ${NUSEND_SES_TRACKING_CUSTOM_REDIRECT_DOMAIN:-}
+  NUSEND_SES_TRACKING_EVENTS: ${NUSEND_SES_TRACKING_EVENTS:-}
+  NUSEND_SES_TRANSACTIONAL_CONFIGURATION_SET: ${NUSEND_SES_TRANSACTIONAL_CONFIGURATION_SET:?Set NUSEND_SES_TRANSACTIONAL_CONFIGURATION_SET}
+  NUSEND_UNSUBSCRIBE_PREVIOUS_SECRET: ${NUSEND_UNSUBSCRIBE_PREVIOUS_SECRET:-}
+  NUSEND_UNSUBSCRIBE_SECRET: ${NUSEND_UNSUBSCRIBE_SECRET:?Set NUSEND_UNSUBSCRIBE_SECRET}
+
 x-app-service: &app-service
-  image: ${NUSEND_APP_IMAGE:?Set NUSEND_APP_IMAGE to an immutable image digest}
-  env_file:
-    - path: ${NUSEND_RUNTIME_ENV_FILE:-/etc/nusend/nusend.env}
-      format: raw
-      required: false
-  environment:
-    NODE_ENV: production
-    NUSEND_DB_PATH: /var/lib/nusend/nusend.sqlite
-    NUSEND_HOST: 0.0.0.0
-    NUSEND_PORT: "3000"
+  image: *app-image
+  environment: *app-environment
   user: "10001:10001"
   init: true
   read_only: true
@@ -24,11 +47,10 @@ x-app-service: &app-service
   security_opt:
     - no-new-privileges:true
   volumes:
-    - type: bind
-      source: ${NUSEND_DB_DIR:-/var/lib/nusend}
+    - type: volume
+      source: nusend-data
       target: /var/lib/nusend
-      bind:
-        create_host_path: false
+  logging: *default-logging
 
 services:
   api:
@@ -36,6 +58,27 @@ services:
     command: ["bun", "apps/service/src/main.ts"]
     expose:
       - "3000"
+    pre_start:
+      - image: busybox:1.37.0-musl@sha256:222ad6d973c0d198014546a65cd02c5fdedcc172123c5b4c2bf0af636550bd94
+        user: "0:0"
+        command:
+          [
+            "sh",
+            "-c",
+            "chown 10001:10001 /var/lib/nusend && chmod 0700 /var/lib/nusend",
+          ]
+      - user: "10001:10001"
+        command: ["bun", "apps/service/src/db/migrate.ts", "up"]
+      - user: "10001:10001"
+        command:
+          [
+            "bun",
+            "apps/service/src/auth/bootstrap.ts",
+            "--email",
+            "${NUSEND_OWNER_EMAIL:?Set NUSEND_OWNER_EMAIL}",
+            "--name",
+            "${NUSEND_OWNER_NAME:?Set NUSEND_OWNER_NAME}",
+          ]
     healthcheck:
       test:
         [
@@ -47,55 +90,34 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 10s
+      start_period: 20s
     restart: unless-stopped
     stop_signal: SIGTERM
     stop_grace_period: 20s
-    logging:
-      driver: journald
-      options:
-        tag: nusend-api
 
   worker:
     <<: *app-service
     command: ["bun", "apps/service/src/sending/worker-main.ts", "loop"]
+    depends_on:
+      api:
+        condition: service_healthy
     restart: unless-stopped
     stop_signal: SIGTERM
     # Default 300-second lease plus the required 60-second completion margin.
     stop_grace_period: 6m
-    logging:
-      driver: journald
-      options:
-        tag: nusend-worker
 
-  migrate:
-    <<: *app-service
-    profiles: ["ops"]
-    command: ["bun", "apps/service/src/db/migrate.ts", "up"]
-    restart: "no"
-    stop_signal: SIGTERM
-    stop_grace_period: 30s
-    logging:
-      driver: journald
-      options:
-        tag: nusend-migrate
-
-  # This immutable registry image intentionally does not inherit the
-  # application env file or writable application DB mount.
   backup:
-    profiles: ["ops"]
-    image: ${NUSEND_BACKUP_IMAGE:?Set NUSEND_BACKUP_IMAGE to an immutable image digest}
-    entrypoint: ["/usr/local/bin/backup.sh"]
+    image: *backup-image
+    command: ["schedule"]
     environment:
-      AWS_ACCESS_KEY_ID_FILE: /run/secrets/r2_access_key_id
+      AWS_ACCESS_KEY_ID: ${NUSEND_R2_ACCESS_KEY_ID:?Set NUSEND_R2_ACCESS_KEY_ID}
       AWS_DEFAULT_REGION: auto
-      AWS_SECRET_ACCESS_KEY_FILE: /run/secrets/r2_secret_access_key
-      NUSEND_BACKUP_SOURCE: /source/nusend.sqlite
+      AWS_SECRET_ACCESS_KEY: ${NUSEND_R2_SECRET_ACCESS_KEY:?Set NUSEND_R2_SECRET_ACCESS_KEY}
+      NUSEND_BACKUP_SOURCE: /var/lib/nusend/nusend.sqlite
       NUSEND_BACKUP_WORK_DIR: /work
       RESTIC_HOST: nusend
-      RESTIC_PASSWORD_FILE: /run/secrets/restic_password
-      R2_ACCOUNT_ID: ${NUSEND_R2_ACCOUNT_ID:-replace-with-r2-account-id}
-      R2_BUCKET: ${NUSEND_R2_BUCKET:-replace-with-private-bucket-name}
+      RESTIC_PASSWORD: ${NUSEND_RESTIC_PASSWORD:?Set NUSEND_RESTIC_PASSWORD}
+      RESTIC_REPOSITORY: ${NUSEND_RESTIC_REPOSITORY:?Set NUSEND_RESTIC_REPOSITORY}
     user: "10001:10001"
     init: true
     read_only: true
@@ -105,32 +127,50 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
-    restart: "no"
+    depends_on:
+      api:
+        condition: service_healthy
+    pre_start:
+      - image: busybox:1.37.0-musl@sha256:222ad6d973c0d198014546a65cd02c5fdedcc172123c5b4c2bf0af636550bd94
+        user: "0:0"
+        command:
+          ["sh", "-c", "chown 10001:10001 /work && chmod 0700 /work"]
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "sh",
+          "-c",
+          "test -f /work/.nusend-backup-healthy && test $(($(date +%s) - $(cat /work/.nusend-backup-healthy))) -lt 90000",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15m
+    restart: unless-stopped
+    stop_signal: SIGTERM
+    stop_grace_period: 2m
     volumes:
-      - type: bind
-        source: ${NUSEND_DB_DIR:-/var/lib/nusend}
-        target: /source
-        read_only: true
-        bind:
-          create_host_path: false
-      - type: bind
-        source: ${NUSEND_BACKUP_WORK_DIR:-/var/lib/nusend-backup}
+      - type: volume
+        source: nusend-data
+        target: /var/lib/nusend
+      - type: volume
+        source: nusend-backup-work
         target: /work
-        bind:
-          create_host_path: false
-    secrets:
-      - r2_access_key_id
-      - r2_secret_access_key
-      - restic_password
-    logging:
-      driver: journald
-      options:
-        tag: nusend-backup
+    logging: *default-logging
 
   caddy:
     image: caddy:2.11.4-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
+    command:
+      [
+        "run",
+        "--config",
+        "/etc/nusend-caddy/${NUSEND_INGRESS_MODE:?Set NUSEND_INGRESS_MODE to direct or cloudflare}/Caddyfile",
+        "--adapter",
+        "caddyfile",
+      ]
     environment:
-      NUSEND_DOMAIN: ${NUSEND_DOMAIN:?Set NUSEND_DOMAIN to the public hostname}
+      NUSEND_DOMAIN: ${NUSEND_DOMAIN:?Set NUSEND_DOMAIN}
     init: true
     read_only: true
     tmpfs:
@@ -141,6 +181,9 @@ services:
       - NET_BIND_SERVICE
     security_opt:
       - no-new-privileges:true
+    depends_on:
+      api:
+        condition: service_healthy
     restart: unless-stopped
     stop_signal: SIGTERM
     stop_grace_period: 10s
@@ -149,30 +192,21 @@ services:
       - "443:443/tcp"
     volumes:
       - type: bind
-        source: ${NUSEND_CADDY_CONFIG_DIR:?Set NUSEND_CADDY_CONFIG_DIR to /opt/nusend/deploy/caddy/direct or /opt/nusend/deploy/caddy/cloudflare}
-        target: /etc/caddy
+        source: ./deploy/caddy
+        target: /etc/nusend-caddy
         read_only: true
         bind:
           create_host_path: false
-      - type: bind
-        source: ${NUSEND_CADDY_DATA_DIR:-/var/lib/nusend-caddy/data}
+      - type: volume
+        source: nusend-caddy-data
         target: /data
-        bind:
-          create_host_path: false
-      - type: bind
-        source: ${NUSEND_CADDY_RUNTIME_CONFIG_DIR:-/var/lib/nusend-caddy/config}
+      - type: volume
+        source: nusend-caddy-config
         target: /config
-        bind:
-          create_host_path: false
-    logging:
-      driver: journald
-      options:
-        tag: nusend-caddy
+    logging: *default-logging
 
-secrets:
-  r2_access_key_id:
-    file: ${NUSEND_R2_ACCESS_KEY_ID_FILE:-/etc/nusend/secrets/r2-access-key-id}
-  r2_secret_access_key:
-    file: ${NUSEND_R2_SECRET_ACCESS_KEY_FILE:-/etc/nusend/secrets/r2-secret-access-key}
-  restic_password:
-    file: ${NUSEND_RESTIC_PASSWORD_FILE:-/etc/nusend/secrets/restic-password}
+volumes:
+  nusend-data:
+  nusend-backup-work:
+  nusend-caddy-data:
+  nusend-caddy-config:

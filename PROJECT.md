@@ -9,7 +9,7 @@ Nusend is a single-user, self-hosted email orchestration product for AWS SES. It
 
 The product owns recipient data, mailing creation, durable delivery work, SES dispatch evidence, unsubscribe/suppression policy, SES feedback ingestion, and operator inspection. It is not a hosted multi-tenant SaaS, visual editor, journey builder, analytics suite, or generic email SDK.
 
-Current gaps are templates as a managed domain, public asset storage, CLI coverage for every administrative API, hosted CI/release automation, and the live checks in [`docs/production-readiness.md`](./docs/production-readiness.md).
+Current gaps are templates as a managed domain, public asset storage, CLI coverage for every administrative API, and the live checks in [`docs/production-readiness.md`](./docs/production-readiness.md).
 
 ## Repository map
 
@@ -17,12 +17,12 @@ Current gaps are templates as a managed domain, public asset storage, CLI covera
 apps/service          Bun + Hono API, worker, migrations, SES tooling
 apps/cli              Nusend command-line client
 packages/api-contract Shared CLI/API codecs, permissions, and route constants
-docs                   Current development, deployment, operation, and SES guidance
-deploy                 Production Compose/Caddy/systemd assets
+docs                   Current development, deployment, and SES guidance
+deploy                 Production Caddy configs, backup image, and Docker smokes
 e2e                    Cross-package product tests
 ```
 
-`README.md` is the first-run entrypoint. Deployment and recovery procedures live only in `docs/deployment.md`; routine commands live in `docs/operations.md`; CLI behavior lives in `docs/cli.md`. HTTP schemas are authoritative in `packages/api-contract` where shared and in service route/schema modules otherwise.
+`README.md` is the first-run entrypoint. Deployment and recovery procedures live only in `docs/deployment.md`; CLI behavior lives in `docs/cli.md`. HTTP schemas are authoritative in `packages/api-contract` where shared and in service route/schema modules otherwise.
 
 ## Runtime and configuration
 
@@ -35,7 +35,7 @@ Each API, worker, or simulator entrypoint parses environment configuration once 
 - `NUSEND_SES_TRANSACTIONAL_CONFIGURATION_SET`;
 - a valid request-timeout/lease/batch budget.
 
-Secrets remain redacted until client boundaries. `NUSEND_PORT` is the only service-port environment key; the default is `3000`. The complete current inventory and ownership rules are in `.env.example` and `docs/deployment.md`.
+Secrets remain redacted until client boundaries. `NUSEND_PORT` is the only service-port environment key; the default is `3000`. The production environment contract is in `.env.example` and `docs/deployment.md`.
 
 ## Authentication and permissions
 
@@ -146,14 +146,7 @@ Readiness consumes the entrypoint's parsed deployment values/issues rather than 
 
 ## Operations and release boundary
 
-The deployment model is a VPS with stock Caddy using automatic public HTTPS in either direct-DNS or Cloudflare-proxied mode, with separate API/worker processes, SQLite storage, journald logs, and verified encrypted restic backups in R2. `NUSEND_CADDY_CONFIG_DIR` selects one explicit mode; its DNS/proxy and firewall state must match. Direct mode trusts no forwarding headers, while Cloudflare mode trusts only current Cloudflare ranges with strict parsing. Operational commands must follow:
-
-- [`docs/deployment.md`](./docs/deployment.md) for the canonical mode-aware install, ACME/DNS/firewall transaction, update, backup initialization, rollback compatibility decisions, and exact restore;
-- [`docs/operations.md`](./docs/operations.md) for health, logs, backup age/integrity, disk checks, and drills;
-- [`docs/troubleshooting.md`](./docs/troubleshooting.md) for failure handling;
-- [`docs/ses-setup.md`](./docs/ses-setup.md) and [`docs/ses-readiness.md`](./docs/ses-readiness.md) for AWS setup.
-
-Application rollback never implies schema rollback. Reverting code is permitted only after a reviewed compatibility decision; otherwise apply a forward fix or restore the database with its matching release/configuration.
+The deployment model is Docker Compose 5.3+ on a host that already has Docker. Compose owns named volumes, migration/owner init hooks, separate API/worker containers, Caddy with automatic public HTTPS in either direct-DNS or Cloudflare-proxied mode, Docker `local` logs, and a mandatory scheduled restic backup service targeting R2. `NUSEND_INGRESS_MODE` selects `direct` or `cloudflare`. Direct mode trusts no forwarding headers; Cloudflare mode trusts only current Cloudflare ranges with strict parsing. Provider DNS/firewall setup remains outside the repository. Follow [`docs/deployment.md`](./docs/deployment.md).
 
 ## Development rules
 

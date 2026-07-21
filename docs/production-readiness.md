@@ -1,17 +1,15 @@
 # Production readiness
 
-Nusend includes suppression/list safety, explicit send ambiguity, device/webhook controls, configured-only tracking readiness, and fail-closed CLI state. It is **not** ready for broad production marketing volume.
+Nusend includes suppression/list safety, explicit send ambiguity, device/webhook controls, configured-only tracking readiness, and fail-closed CLI state. It is **not** ready for broad production marketing volume until the live application/SES gates below are complete.
 
-Open release gates remain:
+Open release gates:
 
-1. Live staging proof of the documented deployment, backup, restore, and disaster-recovery procedures, including selected-mode public ACME issuance/persistence, DNS, firewall, forged-header/client-IP behavior, and callbacks. Cloudflare mode additionally requires Full (strict), preserved ACME challenge reachability, cache/WAF rules, current CIDRs, and direct-origin rejection.
-2. Secure transport defaults, not only the current conditional auth URL/trusted-origin HTTPS validation when `NODE_ENV=production`.
+1. Live staging proof of `docker compose up -d --wait` on a clean host with Compose 5.3+, selected ingress mode, mandatory backup health, restore of an explicit snapshot id, and reboot recovery of API/worker/Caddy/backup.
+2. Secure transport defaults beyond the current conditional auth URL/trusted-origin HTTPS validation when `NODE_ENV=production`.
 3. Bounded SES notification/event retention, capacity planning, and disk monitoring.
 4. Live AWS SES/SNS simulator feedback validation on the deployed instance.
 5. Live Gmail "Show original" verification that DKIM covers `List-Unsubscribe` and `List-Unsubscribe-Post`.
-6. Operational monitoring/alerting for worker freshness, dead/ambiguous deliveries, webhook retries, and SNS DLQ messages.
-
-Hosted CI and release automation are intentionally absent. `pnpm check` and `pnpm build` are the repository validation contract; the local Caddy smoke validates both exact ingress modes offline. Passing local checks is not evidence that a release pipeline or live selected-mode ACME/DNS/firewall/Cloudflare/callback gate ran.
+6. Operational monitoring/alerting for worker freshness, dead/ambiguous deliveries, webhook retries, SNS DLQ messages, and failed/missing backups.
 
 Before production sending, also verify:
 
@@ -23,3 +21,5 @@ Before production sending, also verify:
 - Delivery/SES data retention is long enough for unsubscribe links and bounded by an approved policy.
 - `nusend login <base-url>` completes through browser approval; `nusend whoami` identifies the expected owner/key.
 - A least-privilege key works only on permitted routes and becomes `401 unauthenticated` after revocation/expiry.
+
+Repository validation is `pnpm check`, `pnpm build`, and the focused Compose/Caddy/backup smokes. Hosted release image publication runs from `.github/workflows/release-images.yml` on `v*` tags. Passing local checks is not evidence that live DNS/TLS/SES/R2 gates ran.

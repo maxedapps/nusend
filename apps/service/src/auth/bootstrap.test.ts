@@ -34,7 +34,58 @@ describe("bootstrapOwner", () => {
     expect(output.accounts).toEqual({ count: 0 });
   });
 
-  it("refuses a second owner without force", async () => {
+  it("is idempotent for the same normalized email", async () => {
+    const output = await runTest(
+      Effect.gen(function* () {
+        const first = yield* bootstrapOwner({
+          email: "max@example.com",
+          name: "Max",
+        });
+        const second = yield* bootstrapOwner({
+          email: "Max@Example.com",
+          name: "Max",
+        });
+        const db = yield* Database;
+        const count = yield* db.get<{ count: number }>(
+          "count-owners",
+          "SELECT COUNT(*) AS count FROM users;",
+        );
+        return { count, first, second };
+      }),
+    );
+
+    expect(output.second.userId).toBe(output.first.userId);
+    expect(output.count).toEqual({ count: 1 });
+  });
+
+  it("updates the configured owner name on rerun", async () => {
+    const user = await runTest(
+      Effect.gen(function* () {
+        yield* bootstrapOwner({
+          email: "max@example.com",
+          name: "Max",
+        });
+        const result = yield* bootstrapOwner({
+          email: "max@example.com",
+          name: "Maximilian",
+        });
+        const db = yield* Database;
+        return yield* db.get<{ email: string; email_verified: number; name: string }>(
+          "find-user",
+          "SELECT email, email_verified, name FROM users WHERE id = $id;",
+          { id: result.userId },
+        );
+      }),
+    );
+
+    expect(user).toEqual({
+      email: "max@example.com",
+      email_verified: 1,
+      name: "Maximilian",
+    });
+  });
+
+  it("refuses a conflicting existing owner", async () => {
     const reason = await runTest(
       Effect.gen(function* () {
         yield* bootstrapOwner({
@@ -52,31 +103,7 @@ describe("bootstrapOwner", () => {
       }),
     );
 
-    expect(reason).toContain("owner already exists");
-  });
-
-  it("allows a second owner with force", async () => {
-    const owners = await runTest(
-      Effect.gen(function* () {
-        yield* bootstrapOwner({
-          email: "max@example.com",
-          name: "Max",
-        });
-        yield* bootstrapOwner({
-          email: "team@example.com",
-          force: true,
-          name: "Team",
-        });
-
-        const db = yield* Database;
-        return yield* db.get<{ count: number }>(
-          "count-owners",
-          "SELECT COUNT(*) AS count FROM users;",
-        );
-      }),
-    );
-
-    expect(owners).toEqual({ count: 2 });
+    expect(reason).toContain("different email");
   });
 
   it("rejects invalid emails", async () => {

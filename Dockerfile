@@ -35,13 +35,18 @@ RUN pnpm install --prod --frozen-lockfile --filter @nusend/service...
 FROM oven/bun:1.3.14-debian@sha256:9dba1a1b43ce28c9d7931bfc4eb00feb63b0114720a0277a8f939ae4dfc9db6f AS runtime
 
 ARG SOURCE_REVISION
+ARG VERSION=unknown
 RUN test -n "${SOURCE_REVISION}" \
   && groupadd --gid 10001 nusend \
   && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /nonexistent \
-    --shell /usr/sbin/nologin nusend
+    --shell /usr/sbin/nologin nusend \
+  && mkdir -p /var/lib/nusend \
+  && chown 10001:10001 /var/lib/nusend \
+  && chmod 0700 /var/lib/nusend
 
 LABEL org.opencontainers.image.source="https://github.com/maxedapps/nusend" \
-  org.opencontainers.image.revision="${SOURCE_REVISION}"
+  org.opencontainers.image.revision="${SOURCE_REVISION}" \
+  org.opencontainers.image.version="${VERSION}"
 
 ENV NODE_ENV=production
 WORKDIR /app
