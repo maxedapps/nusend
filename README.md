@@ -50,6 +50,8 @@ The worker requires `AWS_REGION`, `NUSEND_SES_FROM_EMAIL`, and `NUSEND_SES_TRANS
 
 ## CLI
 
+Build and run the CLI from the repository checkout:
+
 ```sh
 pnpm --filter @nusend/cli build
 ./apps/cli/dist/main.js --help
@@ -57,7 +59,7 @@ pnpm --filter @nusend/cli build
 ./apps/cli/dist/main.js whoami
 ```
 
-The CLI supports device login/logout, whoami, API-key management, contacts, read-only mailings, JSON output, and local permission repair. It stores one service URL and credential in one atomic private `state.json`; concurrent mutation is unsupported. See [`docs/cli.md`](./docs/cli.md) for commands, precedence, output, and recovery behavior.
+The CLI covers authentication, API keys, contacts, mailings, lists, suppressions, delivery operations, and SES inspection. It supports stable JSON output and file/stdin request bodies. See [`docs/cli.md`](./docs/cli.md) for usage, configuration, and output behavior.
 
 ## Production deployment
 

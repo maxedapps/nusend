@@ -1,35 +1,25 @@
 # Nusend CLI
 
-Build from this repo:
+Build and run the private CLI workspace from the repository checkout:
 
 ```sh
+pnpm install --frozen-lockfile
 pnpm --filter @nusend/cli build
 ./apps/cli/dist/main.js --help
 ```
 
-Implemented commands:
+`--help` is the command catalog. It covers authentication, API keys, contacts, mailings, lists and memberships, suppressions, operations and deliveries, SES inspection, and local permission repair.
+
+Mailing creation and contact imports take JSON from a file or stdin:
 
 ```sh
-nusend login <base-url> [--name <client-name>] [--permission resource:action ...]
-nusend logout [--revoke]
-nusend whoami [--json]
-nusend api-keys list [--limit <n>] [--offset <n>] [--json]
-nusend api-keys create --name <name> --permission resource:action ... [--expires-at <iso> | --no-expiry]
-nusend api-keys revoke <id>
-nusend api-keys rotate <id>
-nusend contacts list [--email <email>] [--limit <n>] [--offset <n>] [--json]
-nusend contacts get <id> [--json]
-nusend contacts create <email> [--json]
-nusend contacts update <id> <email> [--json]
-nusend contacts delete <id> [--json]
-nusend mailings list [--limit <n>] [--offset <n>] [--json]
-nusend mailings get <id> [--json]
-nusend config repair-permissions
+./apps/cli/dist/main.js mailings create --file mailing.json
+cat contacts.json | ./apps/cli/dist/main.js lists contacts import <list-id> --file -
 ```
 
 Options accept `--opt=value`; values may contain `=`. Boolean flags reject attached values, and empty values are usage errors. `--version`/`-v` is recognized only as the first token after global options; `--help`/`-h` anywhere prints global help.
 
-New API keys expire after 365 days by default. Use `--expires-at` for an explicit date or `--no-expiry` to opt out. Raw keys are shown once on create/rotate. `api-keys list` returns one page; human output prints the next-offset hint when present. Mailing JSON includes required `counts.ambiguous`; human mailing output prints `ambiguous=N` when nonzero.
+New API keys expire after 365 days by default. Use `--expires-at` for an explicit date or `--no-expiry` to opt out. Raw keys are shown once on create/rotate. Paginated human output prints the next-offset hint when present. Mailing JSON includes required `counts.ambiguous`; human mailing output prints `ambiguous=N` when nonzero.
 
 `login` requires a domain-root base URL such as `https://nusend.example.com`; sub-path deployments are unsupported. Polling is iterative, honors each server interval with a 1000 ms minimum, sleeps no later than local authorization expiry, and starts no token request at or after expiry. An approval returned by a request started before expiry is accepted. There is no polling-speed environment override.
 

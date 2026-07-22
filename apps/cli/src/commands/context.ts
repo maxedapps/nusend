@@ -6,6 +6,8 @@ import type { NusendApi } from "../client/nusend-api.js";
 
 export type CliRuntimeDependencies = {
   readonly now: () => number;
+  readonly readStdin?: () => Promise<string>;
+  readonly readTextFile?: (path: string) => Promise<string>;
   readonly sleep: (milliseconds: number) => Promise<void>;
 };
 

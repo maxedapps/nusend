@@ -1,4 +1,8 @@
-import { Effect, Option } from "effect";
+import {
+  CreateSuppressionResponseSchema,
+  SuppressionsListResponseSchema,
+} from "@nusend/api-contract";
+import { Effect, Option, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { Database } from "../services/database.ts";
@@ -94,7 +98,11 @@ describe("suppressions routes", () => {
           }),
         );
         expect(response.status).toBe(201);
-        await expect(response.json()).resolves.toMatchObject({
+        const responseBody = await response.json();
+        expect(() =>
+          Schema.decodeUnknownSync(CreateSuppressionResponseSchema)(responseBody),
+        ).not.toThrow();
+        expect(responseBody).toMatchObject({
           suppression: {
             email: body.email.toLowerCase(),
             reason: "manual",
@@ -188,7 +196,11 @@ describe("suppressions routes", () => {
         new Request("http://localhost/api/suppressions?limit=1&offset=1"),
       );
       expect(page.status).toBe(200);
-      await expect(page.json()).resolves.toMatchObject({
+      const pageBody = await page.json();
+      expect(() =>
+        Schema.decodeUnknownSync(SuppressionsListResponseSchema)(pageBody),
+      ).not.toThrow();
+      expect(pageBody).toMatchObject({
         items: [{ id: "s2" }],
         pagination: { limit: 1, nextOffset: 2, offset: 1 },
       });

@@ -1,4 +1,4 @@
-import { printJson } from "../output/format.js";
+import { printContinuationHint, printJson } from "../output/format.js";
 import { requireApi, type CommandContext } from "./context.js";
 import type { CliCommand } from "./options.js";
 
@@ -17,7 +17,10 @@ export async function runContactsCommand(
         offset: command.offset,
       });
       if (context.json) printJson(result);
-      else for (const contact of result.items) console.log(`${contact.id}\t${contact.email}`);
+      else {
+        for (const contact of result.items) console.log(`${contact.id}\t${contact.email}`);
+        printContinuationHint(result.pagination.nextOffset);
+      }
       return;
     }
     case "contacts-get": {

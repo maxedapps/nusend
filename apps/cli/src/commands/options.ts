@@ -4,12 +4,44 @@ import {
   type PermissionSet,
 } from "@nusend/api-contract/permissions";
 
+import type { JsonFileSource } from "./json-input.js";
 import { UsageError } from "./context.js";
 
 type CommonOptions = {
   readonly baseUrl?: string;
   readonly json: boolean;
 };
+
+type PaginationOptions = {
+  readonly limit?: string;
+  readonly offset?: string;
+};
+
+const suppressionScopes = ["all", "marketing", "list"] as const;
+const suppressionReasons = ["bounce", "complaint", "manual", "unsubscribe"] as const;
+const listContactStatuses = ["all", "subscribed", "unsubscribed"] as const;
+const deliveryStatuses = [
+  "queued",
+  "sending",
+  "sent",
+  "failed",
+  "suppressed",
+  "ambiguous",
+] as const;
+const deliveryIssues = ["failed_or_ambiguous"] as const;
+const sesEventTypes = [
+  "Send",
+  "Rendering Failure",
+  "Reject",
+  "Delivery",
+  "DeliveryDelay",
+  "Bounce",
+  "Complaint",
+  "Subscription",
+  "Open",
+  "Click",
+  "Unknown",
+] as const;
 
 export type CliCommand =
   | { readonly kind: "help" }
@@ -55,7 +87,75 @@ export type CliCommand =
       readonly limit?: string;
       readonly offset?: string;
     })
-  | (CommonOptions & { readonly id: string; readonly kind: "mailings-get" });
+  | (CommonOptions & { readonly id: string; readonly kind: "mailings-get" })
+  | (CommonOptions & {
+      readonly file: JsonFileSource;
+      readonly idempotencyKey?: string;
+      readonly kind: "mailings-create";
+    })
+  | (CommonOptions & PaginationOptions & { readonly kind: "lists-list" })
+  | (CommonOptions & { readonly id: string; readonly kind: "lists-get" })
+  | (CommonOptions & { readonly kind: "lists-create"; readonly name: string })
+  | (CommonOptions & { readonly id: string; readonly kind: "lists-update"; readonly name: string })
+  | (CommonOptions & { readonly id: string; readonly kind: "lists-delete" })
+  | (CommonOptions &
+      PaginationOptions & {
+        readonly email?: string;
+        readonly kind: "lists-contacts-list";
+        readonly listId: string;
+        readonly status?: (typeof listContactStatuses)[number];
+      })
+  | (CommonOptions & {
+      readonly file: JsonFileSource;
+      readonly kind: "lists-contacts-import";
+      readonly listId: string;
+    })
+  | (CommonOptions & {
+      readonly contactId: string;
+      readonly kind: "lists-contacts-remove";
+      readonly listId: string;
+    })
+  | (CommonOptions &
+      PaginationOptions & {
+        readonly email?: string;
+        readonly kind: "suppressions-list";
+        readonly listId?: string;
+        readonly reason?: (typeof suppressionReasons)[number];
+        readonly scope?: (typeof suppressionScopes)[number];
+      })
+  | (CommonOptions & {
+      readonly email: string;
+      readonly kind: "suppressions-create";
+      readonly listId?: string;
+      readonly scope: (typeof suppressionScopes)[number];
+    })
+  | (CommonOptions & { readonly id: string; readonly kind: "suppressions-delete" })
+  | (CommonOptions & { readonly kind: "operations-summary" })
+  | (CommonOptions & {
+      readonly email?: string;
+      readonly issue?: (typeof deliveryIssues)[number];
+      readonly kind: "deliveries-list";
+      readonly limit?: string;
+      readonly mailingId?: string;
+      readonly sesMessageId?: string;
+      readonly status?: (typeof deliveryStatuses)[number];
+    })
+  | (CommonOptions & { readonly id: string; readonly kind: "deliveries-get" })
+  | (CommonOptions & { readonly kind: "ses-summary" })
+  | (CommonOptions & { readonly includeAws: boolean; readonly kind: "ses-readiness" })
+  | (CommonOptions & { readonly includeAws: boolean; readonly kind: "ses-setup-guide" })
+  | (CommonOptions &
+      PaginationOptions & {
+        readonly deliveryId?: string;
+        readonly email?: string;
+        readonly eventType?: (typeof sesEventTypes)[number];
+        readonly kind: "ses-events-list";
+        readonly mailingId?: string;
+        readonly sesMessageId?: string;
+      })
+  | (CommonOptions & { readonly id: string; readonly kind: "ses-events-get" })
+  | (CommonOptions & { readonly kind: "ses-simulator-runs-list" })
+  | (CommonOptions & { readonly id: string; readonly kind: "ses-simulator-runs-get" });
 
 export function parseCliCommand(argv: readonly string[]): CliCommand {
   const expanded = expandEqualsSyntax(argv);
@@ -88,6 +188,16 @@ export function parseCliCommand(argv: readonly string[]): CliCommand {
       return parseContacts(args, common);
     case "mailings":
       return parseMailings(args, common);
+    case "lists":
+      return parseLists(args, common);
+    case "suppressions":
+      return parseSuppressions(args, common);
+    case "operations":
+      return parseOperations(args, common);
+    case "deliveries":
+      return parseDeliveries(args, common);
+    case "ses":
+      return parseSes(args, common);
     default:
       throw new UsageError(`Unknown command: ${command}`, 2);
   }
@@ -154,7 +264,10 @@ function parseApiKeys(args: readonly string[], common: CommonOptions): CliComman
   const [subcommand, ...rest] = args;
   switch (subcommand) {
     case "list": {
-      const options = parsePagination(rest, false);
+      const options = parseNamedOptions(rest, {
+        allow: ["--limit", "--offset"],
+        scope: "api-keys list",
+      });
       return { ...common, ...options, kind: "api-keys-list" };
     }
     case "create":
@@ -229,8 +342,13 @@ function parseApiKeyCreate(args: readonly string[]): {
 function parseContacts(args: readonly string[], common: CommonOptions): CliCommand {
   const [subcommand, ...rest] = args;
   switch (subcommand) {
-    case "list":
-      return { ...common, ...parsePagination(rest, true), kind: "contacts-list" };
+    case "list": {
+      const options = parseNamedOptions(rest, {
+        allow: ["--email", "--limit", "--offset"],
+        scope: "contacts list",
+      });
+      return { ...common, ...options, kind: "contacts-list" };
+    }
     case "get":
       return { ...common, id: requireSingle("contacts get", rest, "<id>"), kind: "contacts-get" };
     case "create":
@@ -260,10 +378,17 @@ function parseContacts(args: readonly string[], common: CommonOptions): CliComma
 function parseMailings(args: readonly string[], common: CommonOptions): CliCommand {
   const [subcommand, ...rest] = args;
   switch (subcommand) {
-    case "list":
-      return { ...common, ...parsePagination(rest, false), kind: "mailings-list" };
+    case "list": {
+      const options = parseNamedOptions(rest, {
+        allow: ["--limit", "--offset"],
+        scope: "mailings list",
+      });
+      return { ...common, ...options, kind: "mailings-list" };
+    }
     case "get":
       return { ...common, id: requireSingle("mailings get", rest, "<id>"), kind: "mailings-get" };
+    case "create":
+      return { ...common, ...parseMailingsCreate(rest), kind: "mailings-create" };
     default:
       throw new UsageError(
         subcommand ? `Unknown mailings command: ${subcommand}` : "Unknown mailings command.",
@@ -272,31 +397,411 @@ function parseMailings(args: readonly string[], common: CommonOptions): CliComma
   }
 }
 
-function parsePagination(
-  args: readonly string[],
-  allowEmail: boolean,
-): { readonly email?: string; readonly limit?: string; readonly offset?: string } {
-  let email: string | undefined;
-  let limit: string | undefined;
-  let offset: string | undefined;
+function parseMailingsCreate(args: readonly string[]): {
+  readonly file: JsonFileSource;
+  readonly idempotencyKey?: string;
+} {
+  let file: JsonFileSource | undefined;
+  let idempotencyKey: string | undefined;
   for (let index = 0; index < args.length; index += 1) {
     const token = args[index]!;
-    if (token === "--limit") {
-      if (limit !== undefined) throw new UsageError("Duplicate option: --limit", 2);
-      limit = optionValue(args, ++index, token);
-    } else if (token === "--offset") {
-      if (offset !== undefined) throw new UsageError("Duplicate option: --offset", 2);
-      offset = optionValue(args, ++index, token);
-    } else if (token === "--email" && allowEmail) {
-      if (email !== undefined) throw new UsageError("Duplicate option: --email", 2);
-      email = optionValue(args, ++index, token);
+    if (token === "--file") {
+      if (file !== undefined) throw new UsageError("Duplicate option: --file", 2);
+      file = fileSourceFromValue(optionValue(args, ++index, token));
+    } else if (token === "--idempotency-key") {
+      if (idempotencyKey !== undefined)
+        throw new UsageError("Duplicate option: --idempotency-key", 2);
+      idempotencyKey = optionValue(args, ++index, token);
     } else if (token.startsWith("--")) {
       throw new UsageError(`Unknown option: ${token}`, 2);
     } else {
-      throw new UsageError(`Unexpected argument: ${token}.`, 2);
+      throw new UsageError(`Unexpected argument for mailings create: ${token}.`, 2);
     }
   }
-  return { email, limit, offset };
+  if (!file) throw new UsageError("mailings create requires --file <path|->.", 2);
+  return { file, idempotencyKey };
+}
+
+function parseLists(args: readonly string[], common: CommonOptions): CliCommand {
+  const [subcommand, ...rest] = args;
+  switch (subcommand) {
+    case "list": {
+      const options = parseNamedOptions(rest, {
+        allow: ["--limit", "--offset"],
+        scope: "lists list",
+      });
+      return { ...common, ...options, kind: "lists-list" };
+    }
+    case "get":
+      return { ...common, id: requireSingle("lists get", rest, "<id>"), kind: "lists-get" };
+    case "create":
+      return {
+        ...common,
+        kind: "lists-create",
+        name: requireSingle("lists create", rest, "<name>"),
+      };
+    case "update": {
+      requirePositionals("lists update", rest, 2, 2, "<id> <name>");
+      return { ...common, id: rest[0]!, kind: "lists-update", name: rest[1]! };
+    }
+    case "delete":
+      return {
+        ...common,
+        id: requireSingle("lists delete", rest, "<id>"),
+        kind: "lists-delete",
+      };
+    case "contacts":
+      return parseListContacts(rest, common);
+    default:
+      throw new UsageError(
+        subcommand ? `Unknown lists command: ${subcommand}` : "Unknown lists command.",
+        2,
+      );
+  }
+}
+
+function parseListContacts(args: readonly string[], common: CommonOptions): CliCommand {
+  const [subcommand, ...rest] = args;
+  switch (subcommand) {
+    case "list": {
+      const { options, positionals } = takeNamedOptions(rest, {
+        allow: ["--email", "--limit", "--offset", "--status"],
+        enums: { "--status": listContactStatuses },
+        scope: "lists contacts list",
+      });
+      requirePositionals("lists contacts list", positionals, 1, 1, "<list-id>");
+      return {
+        ...common,
+        email: options.email,
+        kind: "lists-contacts-list",
+        limit: options.limit,
+        listId: positionals[0]!,
+        offset: options.offset,
+        status: options.status as (typeof listContactStatuses)[number] | undefined,
+      };
+    }
+    case "import": {
+      const { options, positionals } = takeNamedOptions(rest, {
+        allow: ["--file"],
+        scope: "lists contacts import",
+      });
+      requirePositionals("lists contacts import", positionals, 1, 1, "<list-id>");
+      if (options.file === undefined) {
+        throw new UsageError("lists contacts import requires --file <path|->.", 2);
+      }
+      return {
+        ...common,
+        file: fileSourceFromValue(options.file),
+        kind: "lists-contacts-import",
+        listId: positionals[0]!,
+      };
+    }
+    case "remove": {
+      requirePositionals("lists contacts remove", rest, 2, 2, "<list-id> <contact-id>");
+      return {
+        ...common,
+        contactId: rest[1]!,
+        kind: "lists-contacts-remove",
+        listId: rest[0]!,
+      };
+    }
+    default:
+      throw new UsageError(
+        subcommand
+          ? `Unknown lists contacts command: ${subcommand}`
+          : "Unknown lists contacts command.",
+        2,
+      );
+  }
+}
+
+function parseSuppressions(args: readonly string[], common: CommonOptions): CliCommand {
+  const [subcommand, ...rest] = args;
+  switch (subcommand) {
+    case "list": {
+      const options = parseNamedOptions(rest, {
+        allow: ["--email", "--limit", "--list-id", "--offset", "--reason", "--scope"],
+        enums: {
+          "--reason": suppressionReasons,
+          "--scope": suppressionScopes,
+        },
+        scope: "suppressions list",
+      });
+      validateSuppressionListId(options.scope, options["list-id"], "list");
+      return {
+        ...common,
+        email: options.email,
+        kind: "suppressions-list",
+        limit: options.limit,
+        listId: options["list-id"],
+        offset: options.offset,
+        reason: options.reason as (typeof suppressionReasons)[number] | undefined,
+        scope: options.scope as (typeof suppressionScopes)[number] | undefined,
+      };
+    }
+    case "create": {
+      const { options, positionals } = takeNamedOptions(rest, {
+        allow: ["--list-id", "--scope"],
+        enums: { "--scope": suppressionScopes },
+        scope: "suppressions create",
+      });
+      requirePositionals("suppressions create", positionals, 1, 1, "<email>");
+      if (options.scope === undefined) {
+        throw new UsageError("suppressions create requires --scope <all|marketing|list>.", 2);
+      }
+      validateSuppressionListId(options.scope, options["list-id"], "create");
+      return {
+        ...common,
+        email: positionals[0]!,
+        kind: "suppressions-create",
+        listId: options["list-id"],
+        scope: options.scope as (typeof suppressionScopes)[number],
+      };
+    }
+    case "delete":
+      return {
+        ...common,
+        id: requireSingle("suppressions delete", rest, "<id>"),
+        kind: "suppressions-delete",
+      };
+    default:
+      throw new UsageError(
+        subcommand
+          ? `Unknown suppressions command: ${subcommand}`
+          : "Unknown suppressions command.",
+        2,
+      );
+  }
+}
+
+function parseOperations(args: readonly string[], common: CommonOptions): CliCommand {
+  const [subcommand, ...rest] = args;
+  if (subcommand !== "summary") {
+    throw new UsageError(
+      subcommand ? `Unknown operations command: ${subcommand}` : "Unknown operations command.",
+      2,
+    );
+  }
+  requirePositionals("operations summary", rest, 0);
+  return { ...common, kind: "operations-summary" };
+}
+
+function parseDeliveries(args: readonly string[], common: CommonOptions): CliCommand {
+  const [subcommand, ...rest] = args;
+  switch (subcommand) {
+    case "list": {
+      const options = parseNamedOptions(rest, {
+        allow: ["--email", "--issue", "--limit", "--mailing-id", "--ses-message-id", "--status"],
+        enums: {
+          "--issue": deliveryIssues,
+          "--status": deliveryStatuses,
+        },
+        scope: "deliveries list",
+      });
+      return {
+        ...common,
+        email: options.email,
+        issue: options.issue as (typeof deliveryIssues)[number] | undefined,
+        kind: "deliveries-list",
+        limit: options.limit,
+        mailingId: options["mailing-id"],
+        sesMessageId: options["ses-message-id"],
+        status: options.status as (typeof deliveryStatuses)[number] | undefined,
+      };
+    }
+    case "get":
+      return {
+        ...common,
+        id: requireSingle("deliveries get", rest, "<id>"),
+        kind: "deliveries-get",
+      };
+    default:
+      throw new UsageError(
+        subcommand ? `Unknown deliveries command: ${subcommand}` : "Unknown deliveries command.",
+        2,
+      );
+  }
+}
+
+function parseSes(args: readonly string[], common: CommonOptions): CliCommand {
+  const [subcommand, ...rest] = args;
+  switch (subcommand) {
+    case "summary":
+      requirePositionals("ses summary", rest, 0);
+      return { ...common, kind: "ses-summary" };
+    case "readiness":
+      return {
+        ...common,
+        includeAws: parseNoAwsFlag(rest, "ses readiness"),
+        kind: "ses-readiness",
+      };
+    case "setup-guide":
+      return {
+        ...common,
+        includeAws: parseNoAwsFlag(rest, "ses setup-guide"),
+        kind: "ses-setup-guide",
+      };
+    case "events":
+      return parseSesEvents(rest, common);
+    case "simulator-runs":
+      return parseSesSimulatorRuns(rest, common);
+    default:
+      throw new UsageError(
+        subcommand ? `Unknown ses command: ${subcommand}` : "Unknown ses command.",
+        2,
+      );
+  }
+}
+
+function parseSesEvents(args: readonly string[], common: CommonOptions): CliCommand {
+  const [subcommand, ...rest] = args;
+  switch (subcommand) {
+    case "list": {
+      const options = parseNamedOptions(rest, {
+        allow: [
+          "--delivery-id",
+          "--email",
+          "--event-type",
+          "--limit",
+          "--mailing-id",
+          "--offset",
+          "--ses-message-id",
+        ],
+        enums: { "--event-type": sesEventTypes },
+        scope: "ses events list",
+      });
+      return {
+        ...common,
+        deliveryId: options["delivery-id"],
+        email: options.email,
+        eventType: options["event-type"] as (typeof sesEventTypes)[number] | undefined,
+        kind: "ses-events-list",
+        limit: options.limit,
+        mailingId: options["mailing-id"],
+        offset: options.offset,
+        sesMessageId: options["ses-message-id"],
+      };
+    }
+    case "get":
+      return {
+        ...common,
+        id: requireSingle("ses events get", rest, "<id>"),
+        kind: "ses-events-get",
+      };
+    default:
+      throw new UsageError(
+        subcommand ? `Unknown ses events command: ${subcommand}` : "Unknown ses events command.",
+        2,
+      );
+  }
+}
+
+function parseSesSimulatorRuns(args: readonly string[], common: CommonOptions): CliCommand {
+  const [subcommand, ...rest] = args;
+  switch (subcommand) {
+    case "list":
+      requirePositionals("ses simulator-runs list", rest, 0);
+      return { ...common, kind: "ses-simulator-runs-list" };
+    case "get":
+      return {
+        ...common,
+        id: requireSingle("ses simulator-runs get", rest, "<id>"),
+        kind: "ses-simulator-runs-get",
+      };
+    default:
+      throw new UsageError(
+        subcommand
+          ? `Unknown ses simulator-runs command: ${subcommand}`
+          : "Unknown ses simulator-runs command.",
+        2,
+      );
+  }
+}
+
+function parseNoAwsFlag(args: readonly string[], scope: string): boolean {
+  let noAws = false;
+  for (const token of args) {
+    if (token === "--no-aws") {
+      if (noAws) throw new UsageError("Duplicate option: --no-aws", 2);
+      noAws = true;
+    } else if (token.startsWith("--")) {
+      throw new UsageError(`Unknown option: ${token}`, 2);
+    } else {
+      throw new UsageError(`Unexpected argument for ${scope}: ${token}.`, 2);
+    }
+  }
+  return !noAws;
+}
+
+function validateSuppressionListId(
+  scope: string | undefined,
+  listId: string | undefined,
+  mode: "create" | "list",
+): void {
+  if (mode === "create") {
+    if (scope === "list" && listId === undefined) {
+      throw new UsageError("suppressions create with --scope list requires --list-id.", 2);
+    }
+    if (scope !== "list" && listId !== undefined) {
+      throw new UsageError("--list-id is only allowed when --scope is list.", 2);
+    }
+    return;
+  }
+  if (listId !== undefined && scope !== undefined && scope !== "list") {
+    throw new UsageError("--list-id can only be combined with --scope list.", 2);
+  }
+}
+
+function parseNamedOptions(
+  args: readonly string[],
+  config: {
+    readonly allow: readonly string[];
+    readonly enums?: Readonly<Record<string, readonly string[]>>;
+    readonly scope: string;
+  },
+): Record<string, string> {
+  const { options, positionals } = takeNamedOptions(args, config);
+  if (positionals.length > 0) {
+    throw new UsageError(`Unexpected argument for ${config.scope}: ${positionals[0]}.`, 2);
+  }
+  return options;
+}
+
+function takeNamedOptions(
+  args: readonly string[],
+  config: {
+    readonly allow: readonly string[];
+    readonly enums?: Readonly<Record<string, readonly string[]>>;
+    readonly scope: string;
+  },
+): { readonly options: Record<string, string>; readonly positionals: string[] } {
+  const allowed = new Set(config.allow);
+  const options: Record<string, string> = {};
+  const positionals: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index]!;
+    if (!token.startsWith("--")) {
+      positionals.push(token);
+      continue;
+    }
+    if (!allowed.has(token)) throw new UsageError(`Unknown option: ${token}`, 2);
+    const key = token.slice(2);
+    if (options[key] !== undefined) throw new UsageError(`Duplicate option: ${token}`, 2);
+    const value = optionValue(args, ++index, token);
+    const allowedValues = config.enums?.[token];
+    if (allowedValues && !allowedValues.includes(value)) {
+      throw new UsageError(
+        `Invalid ${token} value: ${value}. Expected one of: ${allowedValues.join(", ")}.`,
+        2,
+      );
+    }
+    options[key] = value;
+  }
+  return { options, positionals };
+}
+
+function fileSourceFromValue(value: string): JsonFileSource {
+  return value === "-" ? { kind: "stdin" } : { kind: "path", path: value };
 }
 
 function requireSingle(scope: string, args: readonly string[], usage: string): string {
@@ -359,7 +864,14 @@ function optionValue(args: readonly string[], index: number, name: string): stri
   return value;
 }
 
-const booleanOptions = new Set(["--help", "--json", "--no-expiry", "--revoke", "--version"]);
+const booleanOptions = new Set([
+  "--help",
+  "--json",
+  "--no-aws",
+  "--no-expiry",
+  "--revoke",
+  "--version",
+]);
 
 function expandEqualsSyntax(args: readonly string[]): string[] {
   const expanded: string[] = [];

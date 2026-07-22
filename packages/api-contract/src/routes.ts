@@ -14,6 +14,9 @@ export const routes = {
   },
   lists: {
     byId: (id: string) => `/api/lists/${encodeURIComponent(id)}`,
+    contact: (listId: string, contactId: string) =>
+      `/api/lists/${encodeURIComponent(listId)}/contacts/${encodeURIComponent(contactId)}`,
+    contacts: (listId: string) => `/api/lists/${encodeURIComponent(listId)}/contacts`,
     list: "/api/lists",
   },
   mailings: {

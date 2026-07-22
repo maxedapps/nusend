@@ -2,6 +2,8 @@ import { Result, Schema } from "effect";
 
 import { CliHttpError } from "./errors.js";
 
+export type HttpHeaders = ConstructorParameters<typeof Headers>[0];
+
 export type HttpClientOptions = {
   readonly apiKey?: string;
   readonly baseUrl: string;
@@ -40,12 +42,18 @@ export class NusendHttpClient {
 
   async request<A, I = A>(input: {
     readonly body?: unknown;
+    readonly headers?: HttpHeaders;
     readonly method?: string;
     readonly path: string;
     readonly schema: Schema.Codec<A, I>;
   }): Promise<A> {
-    const headers = new Headers({ accept: "application/json" });
+    const headers = new Headers(input.headers);
+    headers.set("accept", "application/json");
     if (input.body !== undefined) headers.set("content-type", "application/json");
+
+    // API authentication belongs to the transport. Headers is
+    // case-insensitive, so callers cannot replace or inject this credential.
+    headers.delete("x-api-key");
     if (this.options.apiKey) headers.set("x-api-key", this.options.apiKey);
 
     let response: Response;

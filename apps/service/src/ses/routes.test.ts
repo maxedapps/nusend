@@ -1,3 +1,5 @@
+import { SesReadinessResponseSchema, SesSetupGuideResponseSchema } from "@nusend/api-contract";
+import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { withTestApp, type FakeAuthBehavior } from "../testing/layers.ts";
@@ -33,6 +35,24 @@ describe("SES operations routes", () => {
       { "x-api-key": "valid" },
     );
     expect(apiKeyWithOperationsRead.status).toBe(200);
+  });
+
+  it("returns readiness and setup-guide responses matching the shared wire schemas", async () => {
+    await withTestApp({ auth: { session: { userId: "user_1" } } }, async (app) => {
+      const readiness = await app.fetch(new Request(`${baseUrl}/readiness?includeAws=false`));
+      expect(readiness.status).toBe(200);
+      const readinessBody = await readiness.json();
+      expect(() =>
+        Schema.decodeUnknownSync(SesReadinessResponseSchema)(readinessBody),
+      ).not.toThrow();
+
+      const setupGuide = await app.fetch(new Request(`${baseUrl}/setup-guide?includeAws=false`));
+      expect(setupGuide.status).toBe(200);
+      const setupGuideBody = await setupGuide.json();
+      expect(() =>
+        Schema.decodeUnknownSync(SesSetupGuideResponseSchema)(setupGuideBody),
+      ).not.toThrow();
+    });
   });
 });
 

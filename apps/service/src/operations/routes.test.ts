@@ -1,4 +1,14 @@
-import { Effect } from "effect";
+import {
+  DeliveriesListResponseSchema,
+  DeliveryDetailResponseSchema,
+  OperationsSummaryResponseSchema,
+  SesEventDetailResponseSchema,
+  SesEventsListResponseSchema,
+  SesSimulatorRunDetailResponseSchema,
+  SesSimulatorRunsListResponseSchema,
+  SesSummaryResponseSchema,
+} from "@nusend/api-contract";
+import { Effect, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { Database } from "../services/database.ts";
@@ -310,7 +320,9 @@ describe("operations routes", () => {
     const response = await getOperations("/summary", { session: { userId: "user_1" } });
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({
+    const body = await response.json();
+    expect(() => Schema.decodeUnknownSync(OperationsSummaryResponseSchema)(body)).not.toThrow();
+    expect(body).toEqual({
       deliveries: {
         ambiguous: 0,
         failed: 0,
@@ -441,6 +453,7 @@ describe("operations routes", () => {
     await fetchWithSeededData("/deliveries?limit=2", async (response) => {
       expect(response.status).toBe(200);
       const body = (await response.json()) as { items: Array<Record<string, unknown>> };
+      expect(() => Schema.decodeUnknownSync(DeliveriesListResponseSchema)(body)).not.toThrow();
 
       expect(body.items.map((item) => item.id)).toEqual(["delivery_no_job", "delivery_3"]);
       expect(body.items[0]?.job).toBeNull();
@@ -526,6 +539,7 @@ describe("operations routes", () => {
     await fetchWithSeededData("/deliveries/delivery_2", async (response) => {
       expect(response.status).toBe(200);
       const body = await response.json();
+      expect(() => Schema.decodeUnknownSync(DeliveryDetailResponseSchema)(body)).not.toThrow();
 
       expect(body).toEqual({
         attempts: [
@@ -654,6 +668,7 @@ describe("operations routes", () => {
         totals: { bounce: number };
         worker: { latestRun: Record<string, unknown> | null };
       };
+      expect(() => Schema.decodeUnknownSync(SesSummaryResponseSchema)(body)).not.toThrow();
       expect(body.counts.Bounce).toBe(1);
       expect(body.totals.bounce).toBe(1);
       expect(body.latestNotificationAt).toBe("2026-07-03T12:00:08.000Z");
@@ -711,6 +726,7 @@ describe("operations routes", () => {
 
       expect(response.status).toBe(200);
       const body = (await response.json()) as { items: unknown[] };
+      expect(() => Schema.decodeUnknownSync(SesEventsListResponseSchema)(body)).not.toThrow();
       expect(body.items[0]).toMatchObject({
         actionTaken: "suppressed",
         bounceSubType: "General",
@@ -737,6 +753,7 @@ describe("operations routes", () => {
       );
       expect(detail.status).toBe(200);
       const body = await detail.json();
+      expect(() => Schema.decodeUnknownSync(SesEventDetailResponseSchema)(body)).not.toThrow();
       expect(body).toMatchObject({ id: "event_filter", eventType: "Click" });
       expect(JSON.stringify(body)).not.toContain("ses-private-sentinel");
     });
@@ -756,7 +773,20 @@ describe("operations routes", () => {
         new Request("http://localhost/api/operations/ses/simulator-runs"),
       );
       expect(simulatorList.status).toBe(200);
-      await expect(simulatorList.json()).resolves.toMatchObject({ items: [{ id: "sim_run_1" }] });
+      const simulatorListBody = await simulatorList.json();
+      expect(() =>
+        Schema.decodeUnknownSync(SesSimulatorRunsListResponseSchema)(simulatorListBody),
+      ).not.toThrow();
+      expect(simulatorListBody).toMatchObject({ items: [{ id: "sim_run_1" }] });
+
+      const simulatorDetail = await app.fetch(
+        new Request("http://localhost/api/operations/ses/simulator-runs/sim_run_1"),
+      );
+      expect(simulatorDetail.status).toBe(200);
+      const simulatorDetailBody = await simulatorDetail.json();
+      expect(() =>
+        Schema.decodeUnknownSync(SesSimulatorRunDetailResponseSchema)(simulatorDetailBody),
+      ).not.toThrow();
     });
   });
 

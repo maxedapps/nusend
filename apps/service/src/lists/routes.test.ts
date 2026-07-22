@@ -1,4 +1,10 @@
-import { Effect, Option } from "effect";
+import {
+  ImportListContactsResponseSchema,
+  ListContactsResponseSchema,
+  ListResponseSchema,
+  ListsListResponseSchema,
+} from "@nusend/api-contract";
+import { Effect, Option, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { Database } from "../services/database.ts";
@@ -91,7 +97,9 @@ describe("lists routes", () => {
         }),
       );
       expect(create.status).toBe(201);
-      await expect(create.json()).resolves.toMatchObject({
+      const createBody = await create.json();
+      expect(() => Schema.decodeUnknownSync(ListResponseSchema)(createBody)).not.toThrow();
+      expect(createBody).toMatchObject({
         list: { counts: { subscribed: 0, unsubscribed: 0 }, id: "id_1", name: "Customers" },
       });
 
@@ -107,7 +115,9 @@ describe("lists routes", () => {
 
       const list = await app.fetch(new Request("http://localhost/api/lists?limit=1&offset=0"));
       expect(list.status).toBe(200);
-      await expect(list.json()).resolves.toMatchObject({
+      const listBody = await list.json();
+      expect(() => Schema.decodeUnknownSync(ListsListResponseSchema)(listBody)).not.toThrow();
+      expect(listBody).toMatchObject({
         items: [{ id: "id_1", name: "Customers 2026" }],
         pagination: { limit: 1, nextOffset: null, offset: 0 },
       });
@@ -377,7 +387,11 @@ describe("lists routes", () => {
         }),
       );
       expect(importOnce.status).toBe(200);
-      await expect(importOnce.json()).resolves.toMatchObject({
+      const importBody = await importOnce.json();
+      expect(() =>
+        Schema.decodeUnknownSync(ImportListContactsResponseSchema)(importBody),
+      ).not.toThrow();
+      expect(importBody).toMatchObject({
         counts: {
           accepted: 2,
           alreadySubscribed: 0,
@@ -465,7 +479,9 @@ describe("lists routes", () => {
         new Request("http://localhost/api/lists/list_1/contacts?status=all&limit=1&offset=1"),
       );
       expect(page.status).toBe(200);
-      await expect(page.json()).resolves.toMatchObject({
+      const pageBody = await page.json();
+      expect(() => Schema.decodeUnknownSync(ListContactsResponseSchema)(pageBody)).not.toThrow();
+      expect(pageBody).toMatchObject({
         items: [{ contact: { id: "c2" }, status: "unsubscribed" }],
         pagination: { limit: 1, nextOffset: 2, offset: 1 },
       });

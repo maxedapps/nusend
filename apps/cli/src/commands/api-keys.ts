@@ -1,4 +1,4 @@
-import { printJson } from "../output/format.js";
+import { printContinuationHint, printJson } from "../output/format.js";
 import { requireApi, type CommandContext } from "./context.js";
 import type { CliCommand } from "./options.js";
 
@@ -16,9 +16,7 @@ export async function runApiKeysCommand(
       if (context.json) printJson(result);
       else {
         for (const item of result.items) console.log(`${item.id}\t${item.name}\t${item.preview}`);
-        if (result.pagination.nextOffset !== null) {
-          console.log(`More keys available: rerun with --offset ${result.pagination.nextOffset}.`);
-        }
+        printContinuationHint(result.pagination.nextOffset);
       }
       return;
     }

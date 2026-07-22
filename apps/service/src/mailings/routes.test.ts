@@ -1,7 +1,12 @@
 // Frozen envelopes (status codes, error.code values, auth messages) asserted
 // 1:1 from the pre-Effect scenarios. Validation message prose is Schema-derived
 // now, so those cases assert status + code only.
-import { MailingDetailResponseSchema, MailingsListResponseSchema } from "@nusend/api-contract";
+import {
+  CreateMailingRequestSchema,
+  CreateMailingResponseSchema,
+  MailingDetailResponseSchema,
+  MailingsListResponseSchema,
+} from "@nusend/api-contract";
 import { Effect, Option, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -97,10 +102,12 @@ describe("mailings routes", () => {
         );
 
         expect(response.status).toBe(201);
+        expect(() => Schema.decodeUnknownSync(CreateMailingRequestSchema)(validBody)).not.toThrow();
         const json = (await response.json()) as {
           counts: unknown;
           mailing: { id: unknown; purpose: string; scheduledAt: unknown; state: string };
         };
+        expect(() => Schema.decodeUnknownSync(CreateMailingResponseSchema)(json)).not.toThrow();
         expect(json.mailing.purpose).toBe("transactional");
         expect(json.mailing.state).toBe("scheduled");
         expect(json.counts).toEqual({ deliveries: 1, queued: 1, suppressed: 0 });
@@ -361,6 +368,39 @@ describe("mailings routes", () => {
         });
       },
     );
+  });
+
+  it.each([
+    {
+      body: { ...validBody, listId: "list_1", recipients: null },
+      message: "Provide exactly one recipient source: recipients or listId.",
+      name: "counts null recipients as a present source before structural decoding",
+    },
+    {
+      body: { html: "<p>Hello</p>", purpose: "marketing", subject: "Hello" },
+      message: "Provide exactly one recipient source: recipients or listId.",
+      name: "rejects a missing recipient source",
+    },
+    {
+      body: {
+        html: "<p>Hello</p>",
+        listId: "list_1",
+        purpose: "transactional",
+        subject: "Hello",
+      },
+      message: "Transactional mailings must use recipients and cannot use listId.",
+      name: "rejects transactional list sources",
+    },
+  ])("$name", async ({ body, message }) => {
+    const response = await postMailing(
+      { apiKeyPermissions: { mailings: ["write"] } },
+      { body: JSON.stringify(body), headers: { "x-api-key": "valid" } },
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: { code: "invalid_request", message },
+    });
   });
 
   it("rejects oversized idempotency keys", async () => {

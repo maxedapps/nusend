@@ -59,8 +59,50 @@ describe("runCli", () => {
     [["contacts", "delete", "contact_1"], "contacts-delete"],
     [["mailings", "list"], "mailings-list"],
     [["mailings", "get", "mailing_1"], "mailings-get"],
+    [["mailings", "create", "--file", "body.json"], "mailings-create"],
+    [["lists", "list"], "lists-list"],
+    [["lists", "get", "list_1"], "lists-get"],
+    [["lists", "create", "Launch"], "lists-create"],
+    [["lists", "update", "list_1", "Renamed"], "lists-update"],
+    [["lists", "delete", "list_1"], "lists-delete"],
+    [["lists", "contacts", "list", "list_1"], "lists-contacts-list"],
+    [["lists", "contacts", "import", "list_1", "--file", "-"], "lists-contacts-import"],
+    [["lists", "contacts", "remove", "list_1", "contact_1"], "lists-contacts-remove"],
+    [["suppressions", "list"], "suppressions-list"],
+    [["suppressions", "create", "user@example.com", "--scope", "all"], "suppressions-create"],
+    [["suppressions", "delete", "suppression_1"], "suppressions-delete"],
+    [["operations", "summary"], "operations-summary"],
+    [["deliveries", "list"], "deliveries-list"],
+    [["deliveries", "get", "delivery_1"], "deliveries-get"],
+    [["ses", "summary"], "ses-summary"],
+    [["ses", "readiness", "--no-aws"], "ses-readiness"],
+    [["ses", "setup-guide"], "ses-setup-guide"],
+    [["ses", "events", "list"], "ses-events-list"],
+    [["ses", "events", "get", "event_1"], "ses-events-get"],
+    [["ses", "simulator-runs", "list"], "ses-simulator-runs-list"],
+    [["ses", "simulator-runs", "get", "run_1"], "ses-simulator-runs-get"],
   ] as const)("parses command coverage for %s", (argv, kind) => {
     expect(parseCliCommand(argv).kind).toBe(kind);
+  });
+
+  it("lists every Phase 2 command and file/stdin syntax in global help", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    await expect(runCli(["--help"], {})).resolves.toEqual({ exitCode: 0 });
+    const help = log.mock.calls.flat().join("\n");
+    for (const snippet of [
+      "mailings create --file <path|-> [--idempotency-key <key>]",
+      "lists contacts import <list-id> --file <path|->",
+      "suppressions create <email> --scope <all|marketing|list> [--list-id <id>]",
+      "operations summary",
+      "deliveries list",
+      "ses readiness [--no-aws]",
+      "ses setup-guide [--no-aws]",
+      "ses events list",
+      "ses simulator-runs list",
+      "ses simulator-runs get <id>",
+    ]) {
+      expect(help).toContain(snippet);
+    }
   });
 
   it("does not read local state for help or version", async () => {

@@ -2,7 +2,7 @@ import { createServer, type Server } from "node:http";
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { NusendHttpClient } from "./http.js";
+import { NusendHttpClient, type HttpHeaders } from "./http.js";
 
 const OkSchema = Schema.Struct({ ok: Schema.Boolean });
 
@@ -18,6 +18,63 @@ function asFetch(impl: (url: string | URL | Request, init?: RequestInit) => Prom
 }
 
 describe("NusendHttpClient", () => {
+  it("merges caller headers without allowing transport safety or API-key overrides", async () => {
+    let capturedUrl: string | URL | Request | undefined;
+    let capturedInit: RequestInit | undefined;
+    const client = new NusendHttpClient({
+      apiKey: "transport-secret",
+      baseUrl: "https://api.example.test/root",
+      fetchImpl: asFetch(async (url, init) => {
+        capturedUrl = url;
+        capturedInit = init;
+        return jsonResponse(200, { ok: true });
+      }),
+    });
+
+    await client.request({
+      body: { value: 1 },
+      headers: {
+        accept: "text/plain",
+        "content-type": "text/plain",
+        "Idempotency-Key": "mailing-1",
+        "X-API-KEY": "caller-secret",
+      },
+      method: "POST",
+      path: "/api/x",
+      schema: OkSchema,
+    });
+
+    const headers = new Headers(capturedInit?.headers);
+    expect(String(capturedUrl)).toBe("https://api.example.test/api/x");
+    expect(capturedInit?.body).toBe('{"value":1}');
+    expect(capturedInit?.method).toBe("POST");
+    expect(capturedInit?.redirect).toBe("error");
+    expect(capturedInit?.signal).toBeInstanceOf(AbortSignal);
+    expect(headers.get("accept")).toBe("application/json");
+    expect(headers.get("content-type")).toBe("application/json");
+    expect(headers.get("idempotency-key")).toBe("mailing-1");
+    expect(headers.get("x-api-key")).toBe("transport-secret");
+  });
+
+  it("does not let caller headers inject an API key into an unauthenticated client", async () => {
+    let capturedHeaders: HttpHeaders | undefined;
+    const client = new NusendHttpClient({
+      baseUrl: "http://localhost",
+      fetchImpl: asFetch(async (_url, init) => {
+        capturedHeaders = init?.headers;
+        return jsonResponse(200, { ok: true });
+      }),
+    });
+
+    await client.request({
+      headers: { "X-Api-Key": "caller-secret" },
+      path: "/x",
+      schema: OkSchema,
+    });
+
+    expect(new Headers(capturedHeaders).has("x-api-key")).toBe(false);
+  });
+
   it("surfaces the server's code and message even for an unknown error code", async () => {
     const client = new NusendHttpClient({
       baseUrl: "http://localhost",

@@ -87,14 +87,14 @@ describe("api-keys commands", () => {
     await runCli(["api-keys", "list", "--limit", "2", "--offset", "0"], cliEnv());
     expect(urls[0]).toBe("https://mail.example.com/api/api-keys?limit=2&offset=0");
     expect(log.mock.calls.flat().join("\n")).toContain(
-      "More keys available: rerun with --offset 2.",
+      "More results available: rerun with --offset 2.",
     );
 
     log.mockClear();
     nextOffset = null;
     await runCli(["api-keys", "list"], cliEnv());
     expect(urls[1]).toBe("https://mail.example.com/api/api-keys");
-    expect(log.mock.calls.flat().join("\n")).not.toContain("More keys available");
+    expect(log.mock.calls.flat().join("\n")).not.toContain("More results available");
   });
 
   it("lists keys", async () => {

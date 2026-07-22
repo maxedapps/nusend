@@ -18,10 +18,14 @@ import {
   type CommandContext,
 } from "./commands/context.js";
 import { helpText } from "./commands/help.js";
+import { runListsCommand } from "./commands/lists.js";
 import { runLoginCommand } from "./commands/login.js";
 import { runLogoutCommand } from "./commands/logout.js";
 import { runMailingsCommand } from "./commands/mailings.js";
+import { runOperationsCommand } from "./commands/operations.js";
 import { parseCliCommand, type CliCommand } from "./commands/options.js";
+import { runSesCommand } from "./commands/ses.js";
+import { runSuppressionsCommand } from "./commands/suppressions.js";
 import { runWhoamiCommand } from "./commands/whoami.js";
 import { loadLocalState, normalizeBaseUrl, type LocalState } from "./config/local-state.js";
 
@@ -87,7 +91,37 @@ export async function runCli(
       break;
     case "mailings-list":
     case "mailings-get":
+    case "mailings-create":
       await runMailingsCommand(command, context);
+      break;
+    case "lists-list":
+    case "lists-get":
+    case "lists-create":
+    case "lists-update":
+    case "lists-delete":
+    case "lists-contacts-list":
+    case "lists-contacts-import":
+    case "lists-contacts-remove":
+      await runListsCommand(command, context);
+      break;
+    case "suppressions-list":
+    case "suppressions-create":
+    case "suppressions-delete":
+      await runSuppressionsCommand(command, context);
+      break;
+    case "operations-summary":
+    case "deliveries-list":
+    case "deliveries-get":
+      await runOperationsCommand(command, context);
+      break;
+    case "ses-summary":
+    case "ses-readiness":
+    case "ses-setup-guide":
+    case "ses-events-list":
+    case "ses-events-get":
+    case "ses-simulator-runs-list":
+    case "ses-simulator-runs-get":
+      await runSesCommand(command, context);
       break;
   }
   return { exitCode: 0 };
