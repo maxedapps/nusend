@@ -1,0 +1,25 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowSesConfigurationSets",
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "ses.amazonaws.com"
+      },
+      "Action": "sns:Publish",
+      "Resource": "arn:aws:sns:us-east-1:123456789012:nusend-ses-events-prod",
+      "Condition": {
+        "StringEquals": {
+          "aws:SourceAccount": "123456789012"
+        },
+        "ArnEquals": {
+          "aws:SourceArn": [
+            "arn:aws:ses:us-east-1:123456789012:configuration-set/nusend-transactional-prod",
+            "arn:aws:ses:us-east-1:123456789012:configuration-set/nusend-marketing-prod"
+          ]
+        }
+      }
+    }
+  ]
+}

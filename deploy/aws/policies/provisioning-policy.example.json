@@ -1,0 +1,84 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "InspectProvisioningCaller",
+      "Effect": "Allow",
+      "Action": "sts:GetCallerIdentity",
+      "Resource": "*"
+    },
+    {
+      "Sid": "ProvisionAndValidateSes",
+      "Effect": "Allow",
+      "Action": [
+        "ses:CreateConfigurationSet",
+        "ses:CreateConfigurationSetEventDestination",
+        "ses:CreateEmailIdentity",
+        "ses:GetAccount",
+        "ses:GetConfigurationSetEventDestinations",
+        "ses:GetEmailIdentity",
+        "ses:ListConfigurationSets",
+        "ses:ListEmailIdentities",
+        "ses:PutAccountDetails",
+        "ses:PutAccountSuppressionAttributes",
+        "ses:PutConfigurationSetSendingOptions",
+        "ses:TagResource",
+        "ses:UpdateConfigurationSetEventDestination"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ProvisionAndValidateSns",
+      "Effect": "Allow",
+      "Action": [
+        "sns:CreateTopic",
+        "sns:GetSubscriptionAttributes",
+        "sns:GetTopicAttributes",
+        "sns:ListSubscriptionsByTopic",
+        "sns:SetSubscriptionAttributes",
+        "sns:SetTopicAttributes",
+        "sns:Subscribe",
+        "sns:TagResource"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ProvisionAndValidateSqs",
+      "Effect": "Allow",
+      "Action": [
+        "sqs:CreateQueue",
+        "sqs:GetQueueAttributes",
+        "sqs:GetQueueUrl",
+        "sqs:SetQueueAttributes",
+        "sqs:TagQueue"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "CreateRuntimeIamUserAndCredentials",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateAccessKey",
+        "iam:CreateUser",
+        "iam:GetUser",
+        "iam:GetUserPolicy",
+        "iam:ListAccessKeys",
+        "iam:PutUserPolicy",
+        "iam:TagUser"
+      ],
+      "Resource": "arn:aws:iam::123456789012:user/nusend-runtime-prod"
+    },
+    {
+      "Sid": "ProvisionAndValidateCloudWatchAlarms",
+      "Effect": "Allow",
+      "Action": ["cloudwatch:DescribeAlarms", "cloudwatch:PutMetricAlarm"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "OptionalRoute53DkimRecords",
+      "Effect": "Allow",
+      "Action": ["route53:ChangeResourceRecordSets", "route53:GetHostedZone"],
+      "Resource": "*"
+    }
+  ]
+}

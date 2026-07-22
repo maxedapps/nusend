@@ -10,7 +10,7 @@ The host needs:
 - a public DNS name and provider firewall control
 - Google OAuth, AWS SES/SNS/SQS/IAM, and private Cloudflare R2 access
 
-The host needs neither Node nor pnpm. Install Node and pnpm 11 only on a machine where you intentionally [build the source CLI](#source-built-cli). The provider commands below require a configured AWS CLI; `jq` is used to create and validate policy JSON.
+The host needs neither Node nor pnpm. Install Node and pnpm 11 only on a machine where you intentionally [build the source CLI](#source-built-cli). AWS workstation requirements are documented only in the [AWS setup guide](./aws-setup.md).
 
 ## Choose a domain and ingress
 
@@ -65,194 +65,11 @@ s3:https://<ACCOUNT_ID>.r2.cloudflarestorage.com/<BUCKET>/nusend
 
 The R2 S3 endpoint is `https://<ACCOUNT_ID>.r2.cloudflarestorage.com`; the backup container supplies region `auto` and path-style bucket lookup. References: [R2 API tokens](https://developers.cloudflare.com/r2/api/tokens/) and [R2's S3 API](https://developers.cloudflare.com/r2/get-started/s3/).
 
-## AWS SES and SNS setup
+## AWS setup
 
-Provision these resources **before** deployment. Use temporary provisioning credentials with the necessary administrative rights; do not put them in `.env`. Keep all resources in one AWS account and region.
+Follow [`aws-setup.md`](./aws-setup.md), the sole AWS procedure. Complete its **Provision before deployment** section, copy the generated runtime credentials and printed non-secret values into `.env`, then return here. Keep application AWS keys separate from R2 keys; the generated long-lived IAM key has no `AWS_SESSION_TOKEN`.
 
-Set reusable shell placeholders:
-
-```sh
-AWS_REGION=us-east-1
-AWS_ACCOUNT_ID=123456789012
-SES_IDENTITY=example.com
-SES_FROM_EMAIL=sender@example.com
-SES_TRANSACTIONAL_SET=nusend-transactional-prod
-SES_MARKETING_SET=nusend-marketing-prod
-SNS_TOPIC_NAME=nusend-ses-events-prod
-```
-
-### Provision SES and SNS
-
-1. In SES, request production access for non-simulator recipients.
-2. Create or select the sending identity, publish its Easy DKIM DNS records, and wait for verified sending and successful DKIM:
-
-   ```sh
-   # Run create only for a new identity.
-   aws sesv2 create-email-identity --region "$AWS_REGION" --email-identity "$SES_IDENTITY"
-   aws sesv2 get-email-identity --region "$AWS_REGION" --email-identity "$SES_IDENTITY"
-   ```
-
-3. Enable account-level bounce and complaint suppression as defense in depth:
-
-   ```sh
-   aws sesv2 put-account-suppression-attributes --region "$AWS_REGION" \
-     --suppressed-reasons BOUNCE COMPLAINT
-   ```
-
-4. Create both configuration sets and a Standard SNS topic, then require SNS SignatureVersion 2:
-
-   ```sh
-   aws sesv2 create-configuration-set --region "$AWS_REGION" \
-     --configuration-set-name "$SES_TRANSACTIONAL_SET"
-   aws sesv2 create-configuration-set --region "$AWS_REGION" \
-     --configuration-set-name "$SES_MARKETING_SET"
-   SNS_TOPIC_ARN=$(aws sns create-topic --region "$AWS_REGION" \
-     --name "$SNS_TOPIC_NAME" --query TopicArn --output text)
-   aws sns set-topic-attributes --region "$AWS_REGION" \
-     --topic-arn "$SNS_TOPIC_ARN" \
-     --attribute-name SignatureVersion --attribute-value 2
-   ```
-
-### Restrict the SNS topic policy
-
-Allow SES to publish only from the two configuration sets. Save this expanded policy as `sns-topic-policy.json`:
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Sid": "AllowSesConfigurationSets",
-      "Effect": "Allow",
-      "Principal": { "Service": "ses.amazonaws.com" },
-      "Action": "sns:Publish",
-      "Resource": "arn:aws:sns:us-east-1:123456789012:nusend-ses-events-prod",
-      "Condition": {
-        "StringEquals": {
-          "AWS:SourceAccount": "123456789012",
-          "AWS:SourceArn": [
-            "arn:aws:ses:us-east-1:123456789012:configuration-set/nusend-transactional-prod",
-            "arn:aws:ses:us-east-1:123456789012:configuration-set/nusend-marketing-prod"
-          ]
-        }
-      }
-    }
-  ]
-}
-```
-
-Validate and apply it:
-
-```sh
-jq empty sns-topic-policy.json
-aws sns set-topic-attributes --region "$AWS_REGION" \
-  --topic-arn "$SNS_TOPIC_ARN" \
-  --attribute-name Policy --attribute-value file://sns-topic-policy.json
-```
-
-### Create SES event destinations
-
-Both configuration sets require `BOUNCE`, `COMPLAINT`, `REJECT`, and `DELIVERY_DELAY`. `DELIVERY` is optional. Add `OPEN` and/or `CLICK` only to marketing when [engagement tracking](#engagement-tracking) is explicitly enabled.
-
-```sh
-TRACKING_EVENTS='[]' # or '["OPEN"]', '["CLICK"]', or '["OPEN","CLICK"]'
-
-jq -n --arg topic "$SNS_TOPIC_ARN" '{
-  Enabled: true,
-  MatchingEventTypes: ["BOUNCE", "COMPLAINT", "REJECT", "DELIVERY_DELAY"],
-  SnsDestination: { TopicArn: $topic }
-}' > transactional-events.json
-
-jq -n --arg topic "$SNS_TOPIC_ARN" --argjson tracking "$TRACKING_EVENTS" '{
-  Enabled: true,
-  MatchingEventTypes: (["BOUNCE", "COMPLAINT", "REJECT", "DELIVERY_DELAY"] + $tracking),
-  SnsDestination: { TopicArn: $topic }
-}' > marketing-events.json
-
-jq empty transactional-events.json marketing-events.json
-aws sesv2 create-configuration-set-event-destination --region "$AWS_REGION" \
-  --configuration-set-name "$SES_TRANSACTIONAL_SET" \
-  --event-destination-name nusend-sns \
-  --event-destination file://transactional-events.json
-aws sesv2 create-configuration-set-event-destination --region "$AWS_REGION" \
-  --configuration-set-name "$SES_MARKETING_SET" \
-  --event-destination-name nusend-sns \
-  --event-destination file://marketing-events.json
-```
-
-Do not create the HTTPS subscription yet; its public endpoint must be live first.
-
-### Engagement tracking
-
-Tracking is opt-in. If marketing event destinations include `OPEN` and/or `CLICK`, set the matching lower-case values in `NUSEND_SES_TRACKING_EVENTS`; optionally set a configured SES custom redirect domain. Transactional readiness remains base-event only.
-
-Open tracking is affected by image blocking, proxying, and prefetching; click tracking rewrites links through SES. Tracking metadata can contain personal data such as IP addresses and user agents. Approve retention and privacy handling before enabling it.
-
-## Runtime IAM policy
-
-Create separate application credentials with only the runtime read/send actions used by Nusend. Replace every example value, retain both the exact sender and domain identity because readiness can fall back to the domain, and save as `nusend-runtime-policy.json`:
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Sid": "ReadSesAccount",
-      "Effect": "Allow",
-      "Action": "ses:GetAccount",
-      "Resource": "*"
-    },
-    {
-      "Sid": "ReadSesIdentities",
-      "Effect": "Allow",
-      "Action": "ses:GetEmailIdentity",
-      "Resource": [
-        "arn:aws:ses:us-east-1:123456789012:identity/sender@example.com",
-        "arn:aws:ses:us-east-1:123456789012:identity/example.com"
-      ]
-    },
-    {
-      "Sid": "ReadSesConfigurationSets",
-      "Effect": "Allow",
-      "Action": [
-        "ses:GetConfigurationSet",
-        "ses:GetConfigurationSetEventDestinations"
-      ],
-      "Resource": [
-        "arn:aws:ses:us-east-1:123456789012:configuration-set/nusend-transactional-prod",
-        "arn:aws:ses:us-east-1:123456789012:configuration-set/nusend-marketing-prod"
-      ]
-    },
-    {
-      "Sid": "SendOnlyFromNusend",
-      "Effect": "Allow",
-      "Action": "ses:SendEmail",
-      "Resource": [
-        "arn:aws:ses:us-east-1:123456789012:identity/sender@example.com",
-        "arn:aws:ses:us-east-1:123456789012:identity/example.com",
-        "arn:aws:ses:us-east-1:123456789012:configuration-set/nusend-transactional-prod",
-        "arn:aws:ses:us-east-1:123456789012:configuration-set/nusend-marketing-prod"
-      ],
-      "Condition": {
-        "StringEquals": { "ses:FromAddress": "sender@example.com" }
-      }
-    },
-    {
-      "Sid": "ReadFeedbackTopic",
-      "Effect": "Allow",
-      "Action": [
-        "sns:GetTopicAttributes",
-        "sns:ListSubscriptionsByTopic"
-      ],
-      "Resource": "arn:aws:sns:us-east-1:123456789012:nusend-ses-events-prod"
-    }
-  ]
-}
-```
-
-Run `jq empty nusend-runtime-policy.json`, attach the policy to a dedicated IAM user or role, and place only those runtime credentials in `.env`. Readiness and setup-guide endpoints inspect AWS but never mutate it.
-
-References: [SES v2 IAM actions and resources](https://docs.aws.amazon.com/service-authorization/latest/reference/list_sesv2.html) and [SES v2 SendEmail](https://docs.aws.amazon.com/ses/latest/APIReference-V2/API_SendEmail.html).
+Do not subscribe the feedback webhook until the public deployment is healthy and already configured with the exact feedback topic ARN. After [Start and verify](#start-and-verify), return to the guide's **Finalize after deployment** section.
 
 ## Complete the environment
 
@@ -273,73 +90,6 @@ docker compose exec -T api bun -e \
 
 Compose fixes volume ownership, migrates the database, reconciles the owner, starts the API and worker, and completes an initial off-site backup before the stack is healthy. Sign in through Google as the configured owner. Then build the CLI on any machine that can reach the public URL and complete its login/`whoami` check below.
 
-## Confirm SNS delivery and configure its DLQ
-
-After the public webhook is live, subscribe the Standard topic:
-
-```sh
-aws sns subscribe --region "$AWS_REGION" \
-  --topic-arn "$SNS_TOPIC_ARN" --protocol https \
-  --notification-endpoint "https://${DOMAIN}/api/webhooks/aws/sns/ses" \
-  --return-subscription-arn
-```
-
-Nusend validates the signed `SubscriptionConfirmation` and calls the region-matched SNS confirmation URL automatically. Wait until `ses readiness` reports a confirmed HTTPS subscription, then record its real ARN as `SNS_SUBSCRIPTION_ARN`.
-
-Create a **Standard** SQS queue in the same account and region and record its URL and ARN:
-
-```sh
-SNS_DLQ_URL=$(aws sqs create-queue --region "$AWS_REGION" \
-  --queue-name nusend-ses-webhook-dlq --query QueueUrl --output text)
-SNS_DLQ_ARN=$(aws sqs get-queue-attributes --region "$AWS_REGION" \
-  --queue-url "$SNS_DLQ_URL" --attribute-names QueueArn \
-  --query Attributes.QueueArn --output text)
-```
-
-Allow only this SNS topic to send to the queue. Save as `sns-dlq-policy.json`, replace values, and apply it:
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Sid": "AllowSnsSubscriptionRedrive",
-      "Effect": "Allow",
-      "Principal": { "Service": "sns.amazonaws.com" },
-      "Action": "sqs:SendMessage",
-      "Resource": "arn:aws:sqs:us-east-1:123456789012:nusend-ses-webhook-dlq",
-      "Condition": {
-        "StringEquals": { "aws:SourceAccount": "123456789012" },
-        "ArnEquals": {
-          "aws:SourceArn": "arn:aws:sns:us-east-1:123456789012:nusend-ses-events-prod"
-        }
-      }
-    }
-  ]
-}
-```
-
-```sh
-jq empty sns-dlq-policy.json
-aws sqs set-queue-attributes --region "$AWS_REGION" \
-  --queue-url "$SNS_DLQ_URL" \
-  --attributes "$(jq -cn --rawfile policy sns-dlq-policy.json '{Policy:$policy}')"
-aws sns set-subscription-attributes --region "$AWS_REGION" \
-  --subscription-arn "$SNS_SUBSCRIPTION_ARN" \
-  --attribute-name RedrivePolicy \
-  --attribute-value "{\"deadLetterTargetArn\":\"${SNS_DLQ_ARN}\"}"
-```
-
-Create CloudWatch alarms at a greater-than-zero threshold for:
-
-| Scope | Metric | Meaning |
-| --- | --- | --- |
-| SNS topic | `NumberOfNotificationsFailed` | HTTPS delivery attempts are failing |
-| SNS topic | `NumberOfNotificationsRedrivenToDlq` and `NumberOfNotificationsFailedToRedriveToDlq` | messages reached the DLQ or could not be moved there |
-| SQS DLQ | `ApproximateNumberOfMessagesVisible` | messages require operator investigation |
-
-Do not use SQS `NumberOfMessagesSent` for DLQ activity; automatic redrive is not represented reliably. Reference: [SNS dead-letter queues](https://docs.aws.amazon.com/sns/latest/dg/sns-dead-letter-queues.html).
-
 ## Source-built CLI
 
 Build the private pnpm workspace from a tagged checkout on any workstation that can reach `https://${DOMAIN}`:
@@ -354,34 +104,13 @@ pnpm --filter @nusend/cli build
 
 There is no published/global-install requirement and no assumption that `nusend` is on `PATH`. Built-in `--help` is the complete command catalog.
 
-### SES readiness
+## Finish AWS setup
 
-```sh
-./apps/cli/dist/main.js ses readiness --no-aws
-./apps/cli/dist/main.js ses readiness
-./apps/cli/dist/main.js ses setup-guide
-```
+Complete [`aws-setup.md` from **Finalize after deployment** through its production gate](./aws-setup.md#finalize-after-deployment). That guide exclusively owns the webhook, DLQ, alarm, AWS-readiness, simulator, and suppression checks.
 
-Readiness reports local config/schema, SES account and identity/DKIM, configuration sets and event destinations, SNS SignatureVersion 2 and confirmed webhook, and observed feedback. Missing setup remains actionable rather than becoming an internal error. Resolve every required error before sending; OPEN/CLICK are checked only when configured for marketing.
+The application does not consume or replay DLQ messages. Investigate every visible message and replay it deliberately only after remediation.
 
-### SES simulator validation
-
-Run the simulator in the deployed API container so end-to-end mode polls the same database that receives SNS callbacks:
-
-```sh
-docker compose exec -T api bun apps/service/src/ses/simulator-main.ts \
-  success --purpose transactional --mode send-acceptance
-docker compose exec -T api bun apps/service/src/ses/simulator-main.ts \
-  bounce --purpose transactional --mode end-to-end
-docker compose exec -T api bun apps/service/src/ses/simulator-main.ts \
-  complaint --purpose transactional --mode end-to-end
-./apps/cli/dist/main.js ses simulator-runs list
-./apps/cli/dist/main.js ses simulator-runs get <id>
-```
-
-Other scenarios are `ooto`, `suppressionlist`, and `all`. `send-acceptance` proves SES accepted or rejected the send but not SNS delivery; `end-to-end` waits for the matching local event. Remote `--target-url` validation is not implemented. Simulator mail does not affect SES reputation metrics, but AWS can rate-limit or bill it.
-
-### CLI automation and local state
+## CLI automation and local state
 
 Use `--json` for one success document on stdout and one compact error object on stderr. Exit codes are 0 success, 1 internal, 2 usage, 3 authentication/device authorization, and 4 API/HTTP.
 
@@ -470,9 +199,7 @@ Nusend is **not ready for broad production marketing volume** until all of these
 - On a clean host with Compose 5.3+, prove the selected ingress mode, `docker compose up -d --wait`, mandatory backup health, restore of an explicit snapshot, and reboot recovery of API, worker, Caddy, and backup. This release-candidate proof replaces deleted local smoke scripts.
 - Assess transport controls beyond the current production validation of HTTPS auth URL and trusted origins.
 - Approve bounded SES notification/event retention, capacity planning, privacy handling, and host/SQLite disk monitoring.
-- Prove live SES/SNS feedback with deployed success, bounce, and complaint simulator runs; bounce/complaint must create protected local suppressions.
-- In Gmail **Show original**, verify DKIM covers `List-Unsubscribe` and `List-Unsubscribe-Post` before marketing volume.
-- Verify readiness has no required errors, account suppression covers bounce/complaint, and the confirmed SNS subscription has its DLQ and alarms.
+- Complete the [AWS production gate](./aws-setup.md#production-gate), including live SES/SNS feedback, protected suppressions, readiness, DLQ/alarms, and Gmail DKIM-header inspection.
 - Monitor worker freshness, dead/ambiguous deliveries, webhook retries, SNS DLQ messages, host health, and failed or missing backups.
 - Verify delivery/SES retention remains long enough for unsubscribe links while conforming to the approved bounded policy.
 - Prove a least-privilege API key reaches only permitted routes and becomes `401 unauthenticated` after revocation or expiry.
@@ -488,7 +215,4 @@ Repository checks and offline provider-policy validation do not prove live DNS, 
 | API never becomes healthy | Inspect API logs for migration, owner-email, secret, or volume-permission errors. |
 | Public `/health/db` is not 404 | Stop rollout and inspect the selected Caddy configuration. |
 | Caddy exits or public TLS fails | Check `NUSEND_INGRESS_MODE`, DNS, ports 80/443, Cloudflare Full (strict), and firewall rules. |
-| SES readiness reports errors | Use `ses setup-guide`; correct IAM, identity/DKIM, configuration sets, events, topic signature/policy, or subscription state. |
-| Simulator end-to-end times out | Confirm it ran in the deployed API container and that SNS targets this instance. |
-| SNS DLQ has visible messages | Inspect the signed webhook failure and retained SES event, remediate, then replay deliberately. |
 | Backup is unhealthy or restore fails | Inspect backup logs and verify separate R2 credentials, repository endpoint, restic password, and explicit snapshot ID. |

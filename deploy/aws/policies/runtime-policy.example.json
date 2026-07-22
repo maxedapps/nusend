@@ -1,0 +1,51 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadSesAccount",
+      "Effect": "Allow",
+      "Action": "ses:GetAccount",
+      "Resource": "*"
+    },
+    {
+      "Sid": "ReadSesIdentities",
+      "Effect": "Allow",
+      "Action": "ses:GetEmailIdentity",
+      "Resource": [
+        "arn:aws:ses:us-east-1:123456789012:identity/sender@example.com",
+        "arn:aws:ses:us-east-1:123456789012:identity/example.com"
+      ]
+    },
+    {
+      "Sid": "ReadSesConfigurationSets",
+      "Effect": "Allow",
+      "Action": ["ses:GetConfigurationSet", "ses:GetConfigurationSetEventDestinations"],
+      "Resource": [
+        "arn:aws:ses:us-east-1:123456789012:configuration-set/nusend-transactional-prod",
+        "arn:aws:ses:us-east-1:123456789012:configuration-set/nusend-marketing-prod"
+      ]
+    },
+    {
+      "Sid": "SendOnlyFromNusend",
+      "Effect": "Allow",
+      "Action": "ses:SendEmail",
+      "Resource": [
+        "arn:aws:ses:us-east-1:123456789012:identity/sender@example.com",
+        "arn:aws:ses:us-east-1:123456789012:identity/example.com",
+        "arn:aws:ses:us-east-1:123456789012:configuration-set/nusend-transactional-prod",
+        "arn:aws:ses:us-east-1:123456789012:configuration-set/nusend-marketing-prod"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "ses:FromAddress": "sender@example.com"
+        }
+      }
+    },
+    {
+      "Sid": "ReadFeedbackTopic",
+      "Effect": "Allow",
+      "Action": ["sns:GetTopicAttributes", "sns:ListSubscriptionsByTopic"],
+      "Resource": "arn:aws:sns:us-east-1:123456789012:nusend-ses-events-prod"
+    }
+  ]
+}
