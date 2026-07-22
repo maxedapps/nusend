@@ -1,8 +1,8 @@
 name: nusend
 
 # Maintainers update these release tags with each published GHCR release.
-x-app-image: &app-image ghcr.io/maxedapps/nusend:v0.1.0
-x-backup-image: &backup-image ghcr.io/maxedapps/nusend-backup:v0.1.0
+x-app-image: &app-image ghcr.io/maxedapps/nusend:v0.1.1
+x-backup-image: &backup-image ghcr.io/maxedapps/nusend-backup:v0.1.1
 x-logging: &default-logging
   driver: local
   options:
