@@ -106,7 +106,7 @@ describe("SES wire schemas", () => {
       checks: [
         {
           action: null,
-          docs: ["docs/ses-readiness.md"],
+          docs: ["docs/deployment.md#ses-readiness"],
           id: "db.ses_operations_schema",
           message: "SES operations tables are migrated.",
           status: "ok",
@@ -119,7 +119,7 @@ describe("SES wire schemas", () => {
     expect(Schema.decodeUnknownSync(SesReadinessResponseSchema)(readiness)).toEqual(readiness);
 
     const guide = {
-      docs: ["docs/ses-setup.md"],
+      docs: ["docs/deployment.md#aws-ses-and-sns-setup"],
       status: "warning",
       steps: [
         {

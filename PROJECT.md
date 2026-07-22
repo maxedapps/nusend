@@ -9,7 +9,7 @@ Nusend is a single-user, self-hosted email orchestration product for AWS SES. It
 
 The product owns recipient data, mailing creation, durable delivery work, SES dispatch evidence, unsubscribe/suppression policy, SES feedback ingestion, and operator inspection. It is not a hosted multi-tenant SaaS, visual editor, journey builder, analytics suite, or generic email SDK.
 
-Current gaps are templates as a managed domain, public asset storage, CLI coverage for every administrative API, and the live checks in [`docs/production-readiness.md`](./docs/production-readiness.md).
+Current gaps are templates as a managed domain, public asset storage, and the live [pre-volume checks](./docs/deployment.md#pre-volume-gates).
 
 ## Repository map
 
@@ -17,12 +17,12 @@ Current gaps are templates as a managed domain, public asset storage, CLI covera
 apps/service          Bun + Hono API, worker, migrations, SES tooling
 apps/cli              Nusend command-line client
 packages/api-contract Shared CLI/API codecs, permissions, and route constants
-docs                   Current development, deployment, and SES guidance
-deploy                 Production Caddy configs, backup image, and Docker smokes
+docs                   Canonical deployment and operator guidance
+deploy                 Production Caddy configs and backup image
 e2e                    Cross-package product tests
 ```
 
-`README.md` is the first-run entrypoint. Deployment and recovery procedures live only in `docs/deployment.md`; CLI behavior lives in `docs/cli.md`. HTTP schemas are authoritative in `packages/api-contract` where shared and in service route/schema modules otherwise.
+`README.md` is the self-hoster entrypoint. Deployment, recovery, and operator CLI procedures live only in `docs/deployment.md`; built-in CLI help is the command catalog. HTTP schemas are authoritative in `packages/api-contract` where shared and in service route/schema modules otherwise.
 
 ## Runtime and configuration
 

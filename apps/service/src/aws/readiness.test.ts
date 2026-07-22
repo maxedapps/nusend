@@ -6,6 +6,7 @@ import { AwsAdminError } from "./errors.ts";
 import { runSesReadinessChecks } from "./readiness.ts";
 import type { SesAdminService } from "./ses-admin.ts";
 import type { SnsAdminService } from "./sns-admin.ts";
+import { sesDocs } from "../ses/constants.ts";
 import { fakeSesOperationsConfig, runTest } from "../testing/layers.ts";
 
 describe("runSesReadinessChecks", () => {
@@ -43,6 +44,7 @@ describe("runSesReadinessChecks", () => {
       ),
     ).toBe(true);
     expect(result.expectedWebhookUrl).toBeNull();
+    expect(result.checks.every((check) => check.docs?.includes(sesDocs.readiness))).toBe(true);
   });
 
   it("normalizes trailing slash public base URL for expected webhook URL", async () => {

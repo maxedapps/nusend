@@ -207,12 +207,12 @@ export function buildSesSetupGuide(readiness: SesReadinessResult): SesSetupGuide
         actions: [
           {
             command:
-              "pnpm --filter @nusend/service ses:simulate success --purpose transactional --mode send-acceptance",
+              "docker compose exec -T api bun apps/service/src/ses/simulator-main.ts success --purpose transactional --mode send-acceptance",
             kind: "cli",
           },
           {
             command:
-              "pnpm --filter @nusend/service ses:simulate bounce --purpose transactional --mode end-to-end",
+              "docker compose exec -T api bun apps/service/src/ses/simulator-main.ts bounce --purpose transactional --mode end-to-end",
             kind: "cli",
           },
         ],

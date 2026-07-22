@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { SesReadinessResult } from "../aws/readiness.ts";
+import { sesDocs } from "./constants.ts";
 import { buildSesSetupGuide } from "./setup-guide.ts";
 
 describe("buildSesSetupGuide", () => {
@@ -25,11 +26,26 @@ describe("buildSesSetupGuide", () => {
       "simulator-validation",
       "manual-production-checks",
     ]);
+    expect(guide.docs).toEqual([
+      sesDocs.setup,
+      sesDocs.readiness,
+      sesDocs.simulator,
+      sesDocs.productionReadiness,
+    ]);
     expect(
       guide.steps
         .find((step) => step.id === "webhook-subscription")
         ?.actions.find((action) => action.kind === "api"),
     ).toMatchObject({ url: "https://mail.example.com/api/webhooks/aws/sns/ses" });
+    expect(
+      guide.steps
+        .find((step) => step.id === "simulator-validation")
+        ?.actions.filter((action) => action.kind === "cli")
+        .map((action) => action.command),
+    ).toEqual([
+      "docker compose exec -T api bun apps/service/src/ses/simulator-main.ts success --purpose transactional --mode send-acceptance",
+      "docker compose exec -T api bun apps/service/src/ses/simulator-main.ts bounce --purpose transactional --mode end-to-end",
+    ]);
   });
 
   it("aggregates duplicate per-topic checks in pass-then-error order", () => {
