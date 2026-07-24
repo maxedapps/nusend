@@ -8,77 +8,161 @@
       "Resource": "*"
     },
     {
-      "Sid": "ProvisionAndValidateSes",
+      "Sid": "ValidateCloudFormationTemplates",
+      "Effect": "Allow",
+      "Action": ["cloudformation:ValidateTemplate", "cloudformation:GetTemplateSummary"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ManageNusendCloudFormationStackLifecycle",
       "Effect": "Allow",
       "Action": [
-        "ses:CreateConfigurationSet",
-        "ses:CreateConfigurationSetEventDestination",
+        "cloudformation:CreateStack",
+        "cloudformation:UpdateStack",
+        "cloudformation:DeleteStack",
+        "cloudformation:DescribeStacks",
+        "cloudformation:DescribeStackEvents",
+        "cloudformation:DescribeStackResource",
+        "cloudformation:DescribeStackResources",
+        "cloudformation:GetTemplate",
+        "cloudformation:ListStackResources",
+        "cloudformation:CreateChangeSet",
+        "cloudformation:DescribeChangeSet",
+        "cloudformation:ExecuteChangeSet",
+        "cloudformation:DeleteChangeSet",
+        "cloudformation:ListChangeSets",
+        "cloudformation:DetectStackDrift",
+        "cloudformation:DetectStackResourceDrift",
+        "cloudformation:DescribeStackDriftDetectionStatus",
+        "cloudformation:DescribeStackResourceDrifts"
+      ],
+      "Resource": [
+        "arn:aws:cloudformation:us-east-1:123456789012:stack/nusend-demo/*",
+        "arn:aws:cloudformation:us-east-1:123456789012:changeSet/*"
+      ]
+    },
+    {
+      "Sid": "ListCloudFormationStacks",
+      "Effect": "Allow",
+      "Action": "cloudformation:ListStacks",
+      "Resource": "*"
+    },
+    {
+      "Sid": "ManageSesStackResources",
+      "Effect": "Allow",
+      "Action": [
         "ses:CreateEmailIdentity",
-        "ses:GetAccount",
-        "ses:GetConfigurationSetEventDestinations",
+        "ses:DeleteEmailIdentity",
         "ses:GetEmailIdentity",
-        "ses:ListConfigurationSets",
         "ses:ListEmailIdentities",
-        "ses:PutAccountDetails",
-        "ses:PutAccountSuppressionAttributes",
-        "ses:PutConfigurationSetSendingOptions",
         "ses:TagResource",
-        "ses:UpdateConfigurationSetEventDestination"
+        "ses:UntagResource",
+        "ses:CreateConfigurationSet",
+        "ses:DeleteConfigurationSet",
+        "ses:GetConfigurationSet",
+        "ses:ListConfigurationSets",
+        "ses:PutConfigurationSetSendingOptions",
+        "ses:PutConfigurationSetSuppressionOptions",
+        "ses:CreateConfigurationSetEventDestination",
+        "ses:UpdateConfigurationSetEventDestination",
+        "ses:DeleteConfigurationSetEventDestination",
+        "ses:GetConfigurationSetEventDestinations",
+        "ses:GetAccount",
+        "ses:PutAccountDetails"
       ],
       "Resource": "*"
     },
     {
-      "Sid": "ProvisionAndValidateSns",
+      "Sid": "ManageSnsStackResources",
       "Effect": "Allow",
       "Action": [
         "sns:CreateTopic",
-        "sns:GetSubscriptionAttributes",
+        "sns:DeleteTopic",
         "sns:GetTopicAttributes",
-        "sns:ListSubscriptionsByTopic",
-        "sns:SetSubscriptionAttributes",
         "sns:SetTopicAttributes",
+        "sns:TagResource",
+        "sns:UntagResource",
+        "sns:ListTagsForResource",
         "sns:Subscribe",
-        "sns:TagResource"
+        "sns:Unsubscribe",
+        "sns:GetSubscriptionAttributes",
+        "sns:SetSubscriptionAttributes",
+        "sns:ListSubscriptionsByTopic"
       ],
-      "Resource": "*"
+      "Resource": [
+        "arn:aws:sns:us-east-1:123456789012:nusend-demo-ses-events",
+        "arn:aws:sns:us-east-1:123456789012:nusend-demo-ops-alarms",
+        "arn:aws:sns:us-east-1:123456789012:nusend-demo-ses-events:*",
+        "arn:aws:sns:us-east-1:123456789012:nusend-demo-ops-alarms:*"
+      ]
     },
     {
-      "Sid": "ProvisionAndValidateSqs",
+      "Sid": "ManageSqsStackResources",
       "Effect": "Allow",
       "Action": [
         "sqs:CreateQueue",
-        "sqs:GetQueueAttributes",
+        "sqs:DeleteQueue",
         "sqs:GetQueueUrl",
+        "sqs:GetQueueAttributes",
         "sqs:SetQueueAttributes",
-        "sqs:TagQueue"
+        "sqs:TagQueue",
+        "sqs:UntagQueue",
+        "sqs:ListQueueTags"
       ],
-      "Resource": "*"
+      "Resource": "arn:aws:sqs:us-east-1:123456789012:nusend-demo-ses-webhook-dlq"
     },
     {
-      "Sid": "CreateRuntimeIamUserAndCredentials",
+      "Sid": "ManageRuntimeIamUserAndAccessKeys",
       "Effect": "Allow",
       "Action": [
-        "iam:CreateAccessKey",
         "iam:CreateUser",
+        "iam:DeleteUser",
         "iam:GetUser",
-        "iam:GetUserPolicy",
-        "iam:ListAccessKeys",
+        "iam:TagUser",
+        "iam:UntagUser",
         "iam:PutUserPolicy",
-        "iam:TagUser"
+        "iam:GetUserPolicy",
+        "iam:DeleteUserPolicy",
+        "iam:ListUserPolicies",
+        "iam:ListUserTags",
+        "iam:ListAttachedUserPolicies",
+        "iam:ListGroupsForUser",
+        "iam:ListSigningCertificates",
+        "iam:ListSSHPublicKeys",
+        "iam:GetLoginProfile",
+        "iam:ListAccessKeys",
+        "iam:CreateAccessKey",
+        "iam:DeleteAccessKey"
       ],
-      "Resource": "arn:aws:iam::123456789012:user/nusend-runtime-prod"
+      "Resource": "arn:aws:iam::123456789012:user/nusend-demo-runtime"
     },
     {
-      "Sid": "ProvisionAndValidateCloudWatchAlarms",
+      "Sid": "ManageCloudWatchAlarms",
       "Effect": "Allow",
-      "Action": ["cloudwatch:DescribeAlarms", "cloudwatch:PutMetricAlarm"],
-      "Resource": "*"
+      "Action": [
+        "cloudwatch:PutMetricAlarm",
+        "cloudwatch:DeleteAlarms",
+        "cloudwatch:DescribeAlarms",
+        "cloudwatch:TagResource",
+        "cloudwatch:UntagResource",
+        "cloudwatch:ListTagsForResource"
+      ],
+      "Resource": [
+        "arn:aws:cloudwatch:us-east-1:123456789012:alarm:nusend-demo-sns-notifications-failed",
+        "arn:aws:cloudwatch:us-east-1:123456789012:alarm:nusend-demo-sns-redriven-to-dlq",
+        "arn:aws:cloudwatch:us-east-1:123456789012:alarm:nusend-demo-sns-redrive-failed",
+        "arn:aws:cloudwatch:us-east-1:123456789012:alarm:nusend-demo-dlq-visible-messages"
+      ]
     },
     {
       "Sid": "OptionalRoute53DkimRecords",
       "Effect": "Allow",
-      "Action": ["route53:ChangeResourceRecordSets", "route53:GetHostedZone"],
-      "Resource": "*"
+      "Action": [
+        "route53:GetHostedZone",
+        "route53:ChangeResourceRecordSets",
+        "route53:ListResourceRecordSets"
+      ],
+      "Resource": "arn:aws:route53:::hostedzone/Z1234567890ABC"
     }
   ]
 }

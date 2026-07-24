@@ -10,7 +10,8 @@
     "typecheck": "pnpm -r --if-present typecheck && tsc --noEmit -p e2e/tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test"
+    "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test",
+    "nusend:setup": "node deploy/setup/main.mjs"
   },
   "devDependencies": {
     "@types/bun": "^1.3.14",

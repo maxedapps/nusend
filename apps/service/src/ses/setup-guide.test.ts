@@ -14,8 +14,8 @@ describe("buildSesSetupGuide", () => {
       "verify-sender-identity",
       "configure-dkim",
       "production-access",
-      "account-suppression",
       "configuration-sets",
+      "configuration-set-suppression",
       "sns-topic",
       "webhook-subscription",
       "event-destinations",
@@ -26,6 +26,22 @@ describe("buildSesSetupGuide", () => {
       "simulator-validation",
       "manual-production-checks",
     ]);
+    expect(guide.steps.find((step) => step.id === "configuration-set-suppression")).toMatchObject({
+      relatedChecks: [
+        "ses.config_set.transactional.suppression",
+        "ses.config_set.marketing.suppression",
+      ],
+      title: "Confirm configuration-set suppression",
+    });
+    expect(
+      guide.steps
+        .find((step) => step.id === "configuration-set-suppression")
+        ?.actions.some(
+          (action) =>
+            action.kind === "console" && action.text.includes("CloudFormation configuration sets"),
+        ),
+    ).toBe(true);
+    expect(guide.steps.some((step) => step.id === "account-suppression")).toBe(false);
     expect(guide.docs).toEqual([
       sesDocs.setup,
       sesDocs.readiness,
@@ -46,6 +62,33 @@ describe("buildSesSetupGuide", () => {
       "docker compose exec -T api bun apps/service/src/ses/simulator-main.ts success --purpose transactional --mode send-acceptance",
       "docker compose exec -T api bun apps/service/src/ses/simulator-main.ts bounce --purpose transactional --mode end-to-end",
     ]);
+
+    const stackResourceSteps = [
+      "verify-sender-identity",
+      "configuration-sets",
+      "configuration-set-suppression",
+      "sns-topic",
+      "webhook-subscription",
+      "event-destinations",
+      "sns-dlq-alarms",
+    ];
+    for (const id of stackResourceSteps) {
+      const actions = guide.steps.find((step) => step.id === id)?.actions ?? [];
+      const instructions = actions
+        .map((action) => (action.kind === "cli" ? action.command : action.text))
+        .join("\n");
+      expect(instructions, id).toMatch(/pnpm nusend:setup|CloudFormation/iu);
+    }
+    const allCommands = guide.steps
+      .flatMap((step) => step.actions)
+      .filter((action) => action.kind === "cli")
+      .map((action) => action.command);
+    expect(allCommands.some((command) => /^aws\s+.*\bcreate-/u.test(command))).toBe(false);
+    const subscriptionInstructions = guide.steps
+      .find((step) => step.id === "webhook-subscription")
+      ?.actions.map((action) => (action.kind === "cli" ? action.command : action.text))
+      .join("\n");
+    expect(subscriptionInstructions).toMatch(/Never manually create a second subscription/iu);
   });
 
   it("aggregates duplicate per-topic checks in pass-then-error order", () => {

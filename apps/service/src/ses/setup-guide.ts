@@ -49,10 +49,11 @@ export function buildSesSetupGuide(readiness: SesReadinessResult): SesSetupGuide
       }),
       step(readiness, {
         actions: [
-          { kind: "console", text: "Open SES > Identities and verify the From email or domain." },
+          { command: "pnpm nusend:setup aws plan", kind: "cli" },
+          { command: "pnpm nusend:setup aws apply", kind: "cli" },
           {
-            command: "aws sesv2 get-email-identity --email-identity sender@example.com",
-            kind: "cli",
+            kind: "console",
+            text: "Review the core CloudFormation change set that creates the SES identity; do not create or adopt an identity manually.",
           },
         ],
         id: "verify-sender-identity",
@@ -62,7 +63,10 @@ export function buildSesSetupGuide(readiness: SesReadinessResult): SesSetupGuide
       }),
       step(readiness, {
         actions: [
-          { kind: "console", text: "Configure Easy DKIM for the sending domain or identity." },
+          {
+            kind: "console",
+            text: "Use the Easy DKIM records output by the coordinator-managed CloudFormation identity. Publish those CNAMEs externally only when Route 53 is not selected; do not recreate the identity.",
+          },
         ],
         id: "configure-dkim",
         relatedChecks: ["ses.identity.dkim"],
@@ -83,24 +87,11 @@ export function buildSesSetupGuide(readiness: SesReadinessResult): SesSetupGuide
       }),
       step(readiness, {
         actions: [
+          { command: "pnpm nusend:setup aws plan", kind: "cli" },
+          { command: "pnpm nusend:setup aws apply", kind: "cli" },
           {
-            command:
-              "aws sesv2 put-account-suppression-attributes --suppressed-reasons BOUNCE COMPLAINT",
-            kind: "cli",
-          },
-        ],
-        id: "account-suppression",
-        relatedChecks: ["ses.account.suppression_recommendation"],
-        title: "Enable account-level suppression defense in depth",
-        why: "Nusend keeps local suppressions as source of truth, while SES account suppression adds reputation protection.",
-      }),
-      step(readiness, {
-        actions: [
-          { kind: "console", text: "Create transactional and marketing SES configuration sets." },
-          {
-            command:
-              "aws sesv2 create-configuration-set --configuration-set-name nusend-transactional-prod",
-            kind: "cli",
+            kind: "console",
+            text: "Create configuration sets only through the reviewed core CloudFormation change set; never create same-name SES resources manually.",
           },
         ],
         id: "configuration-sets",
@@ -115,8 +106,27 @@ export function buildSesSetupGuide(readiness: SesReadinessResult): SesSetupGuide
       }),
       step(readiness, {
         actions: [
-          { kind: "console", text: "Create a Standard SNS topic and allow SES to publish to it." },
-          { command: "aws sns create-topic --name nusend-ses-events-prod", kind: "cli" },
+          {
+            kind: "console",
+            text: "Confirm the coordinator-managed CloudFormation configuration sets have SuppressionOptions.SuppressedReasons set to BOUNCE and COMPLAINT; change them through a reviewed stack update, not manually.",
+          },
+        ],
+        id: "configuration-set-suppression",
+        relatedChecks: [
+          "ses.config_set.transactional.suppression",
+          "ses.config_set.marketing.suppression",
+        ],
+        title: "Confirm configuration-set suppression",
+        why: "Nusend keeps local suppressions as source of truth, while SES configuration-set suppression adds stack-owned reputation protection for every send.",
+      }),
+      step(readiness, {
+        actions: [
+          { command: "pnpm nusend:setup aws plan", kind: "cli" },
+          { command: "pnpm nusend:setup aws apply", kind: "cli" },
+          {
+            kind: "console",
+            text: "Use the Standard SNS topic and SES publish policy created by the reviewed core CloudFormation change set; do not create a topic manually.",
+          },
         ],
         id: "sns-topic",
         relatedChecks: [
@@ -134,7 +144,11 @@ export function buildSesSetupGuide(readiness: SesReadinessResult): SesSetupGuide
             text: "Use this exact webhook URL for the SNS HTTPS subscription.",
             url: readiness.expectedWebhookUrl ?? sesSnsWebhookPath,
           },
-          { kind: "console", text: "Subscribe the SNS topic to the Nusend HTTPS webhook." },
+          { command: "pnpm nusend:setup continue", kind: "cli" },
+          {
+            kind: "console",
+            text: "Let the coordinator's finalize CloudFormation change set create the one HTTPS subscription after healthy deploy. Never manually create a second subscription, including while confirmation is pending.",
+          },
         ],
         id: "webhook-subscription",
         relatedChecks: ["config.public_base_url", "sns.subscription.webhook"],
@@ -145,7 +159,7 @@ export function buildSesSetupGuide(readiness: SesReadinessResult): SesSetupGuide
         actions: [
           {
             kind: "console",
-            text: "Enable required SES event destinations for both configuration sets.",
+            text: "Use the event destinations attached by the reviewed core CloudFormation change set. Update them only through pnpm nusend:setup AWS plan/apply, never manually.",
           },
         ],
         id: "event-destinations",
@@ -157,7 +171,7 @@ export function buildSesSetupGuide(readiness: SesReadinessResult): SesSetupGuide
         actions: [
           {
             kind: "console",
-            text: "Attach an SNS subscription DLQ and alarms for failed deliveries.",
+            text: "Use the SQS DLQ, redrive policy, alarm topic, and CloudWatch alarms created by the reviewed CloudFormation stack; do not attach or create replacements manually.",
           },
         ],
         id: "sns-dlq-alarms",
@@ -169,9 +183,9 @@ export function buildSesSetupGuide(readiness: SesReadinessResult): SesSetupGuide
         actions: [
           {
             kind: "console",
-            text: "Enable OPEN/CLICK event destinations only if engagement tracking is desired.",
+            text: "Select OPEN/CLICK tracking during pnpm nusend:setup init, then let the reviewed CloudFormation change set manage the marketing event destination.",
           },
-          { command: "export NUSEND_SES_TRACKING_EVENTS=open,click", kind: "cli" },
+          { command: "pnpm nusend:setup aws plan", kind: "cli" },
         ],
         id: "engagement-tracking",
         relatedChecks: ["config.tracking", "ses.config_set.marketing.tracking_domain"],

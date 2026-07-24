@@ -4,31 +4,34 @@ Nusend is a single-user, self-hosted email orchestration service for AWS SES. It
 
 Nusend is pre-launch. Deploy it for controlled self-hosting and testing, but complete the documented live gates before broad marketing volume.
 
-## Deploy
+## Guided first-time setup
 
-You need a public domain, Docker Engine, Docker Compose 5.3+, Google OAuth, AWS SES/SNS/SQS/IAM, and private R2/restic credentials. The Compose host does not need Node or pnpm.
+Run setup from a trusted Unix/WSL workstation with Node 22+, pnpm 11, Git, AWS CLI v2, SSH, and curl. The VPS needs Git, Docker Engine, Docker Compose 5.3+, SSH, and a public domain; it does **not** need Node or pnpm.
 
 ```sh
 git clone https://github.com/maxedapps/nusend.git
 cd nusend
 git checkout vX.Y.Z
-cp .env.example .env
-# Replace every placeholder in .env, then:
-docker compose up -d --wait
+pnpm install --frozen-lockfile
+pnpm nusend:setup init
+pnpm nusend:setup doctor
+pnpm nusend:setup continue
+pnpm nusend:setup status
 ```
 
-Follow the complete provider, deployment, verification, monitoring, backup/restore, update, and pre-volume procedure in [`docs/deployment.md`](./docs/deployment.md).
+Each `continue` performs one verified stage or reports one manual/provider gate. Setup keeps mode-`0700` installation state and mode-`0600` `state.json`/`deployment.env` under `${NUSEND_SETUP_HOME:-~/.config/nusend/setup}/<installation-id>/`, verifies normal SSH host trust, deploys an exact release over SSH, and never prints secret values. Independently escrow the generated restic password.
+
+Follow the complete [deployment and operations guide](./docs/deployment.md), including Google OAuth/R2, reviewed CloudFormation change sets, SES/DKIM approval, alarm/DLQ validation, backup restore and reboot proof, DMARC/inbox checks, quotas, and gradual ramp. Direct Compose commands there are for runtime inspection, updates, and recovery—not the primary first installation path. AWS details and destroy retention are in [AWS setup and CloudFormation safety](./docs/aws-setup.md).
 
 ## Source-built CLI
 
-The CLI remains a private pnpm workspace. Build it from a tagged checkout on any machine with Node, pnpm 11, and network access to the public Nusend URL:
+Build the private CLI on a trusted workstation that can reach the public Nusend URL, not on the Node-free VPS:
 
 ```sh
-pnpm install --frozen-lockfile
 pnpm --filter @nusend/cli build
 ./apps/cli/dist/main.js --help
 ./apps/cli/dist/main.js login https://mail.example.com
 ./apps/cli/dist/main.js whoami
 ```
 
-Built-in `--help` is the command catalog. No global installation or `nusend` executable on `PATH` is assumed.
+Built-in `--help` is the CLI command catalog. No global installation or `nusend` executable on `PATH` is assumed.

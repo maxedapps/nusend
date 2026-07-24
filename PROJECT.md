@@ -18,11 +18,13 @@ apps/service          Bun + Hono API, worker, migrations, SES tooling
 apps/cli              Nusend command-line client
 packages/api-contract Shared CLI/API codecs, permissions, and route constants
 docs                   Canonical deployment and operator guidance
+deploy/setup           Workstation-side guided setup coordinator
+deploy/aws             Static CloudFormation stack and temporary provisioner policy
 deploy                 Production Caddy configs and backup image
 e2e                    Cross-package product tests
 ```
 
-`README.md` is the self-hoster entrypoint. Deployment, recovery, and operator CLI procedures live only in `docs/deployment.md`; built-in CLI help is the command catalog. HTTP schemas are authoritative in `packages/api-contract` where shared and in service route/schema modules otherwise.
+`README.md` is the self-hoster entrypoint. Guided first-time setup uses `pnpm nusend:setup`; deployment, recovery, and operator CLI procedures live in `docs/deployment.md`. Direct Compose is the runtime/update/recovery reference, not a parallel provisioning workflow. Built-in CLI help is the application CLI command catalog. HTTP schemas are authoritative in `packages/api-contract` where shared and in service route/schema modules otherwise.
 
 ## Runtime and configuration
 
@@ -146,7 +148,20 @@ Readiness consumes the entrypoint's parsed deployment values/issues rather than 
 
 ## Operations and release boundary
 
-The deployment model is Docker Compose 5.3+ on a host that already has Docker. Compose owns named volumes, migration/owner init hooks, separate API/worker containers, Caddy with automatic public HTTPS in either direct-DNS or Cloudflare-proxied mode, Docker `local` logs, and a mandatory scheduled restic backup service targeting R2. `NUSEND_INGRESS_MODE` selects `direct` or `cloudflare`. Direct mode trusts no forwarding headers; Cloudflare mode trusts only current Cloudflare ranges with strict parsing. Provider DNS/firewall setup remains outside the repository. Follow [`docs/deployment.md`](./docs/deployment.md).
+First-time self-hosting is coordinated from a trusted Unix/WSL workstation:
+
+```sh
+pnpm nusend:setup init
+pnpm nusend:setup doctor
+pnpm nusend:setup continue
+pnpm nusend:setup status
+```
+
+The dependency-free coordinator keeps resumable non-secret state and the secret deployment environment under `${NUSEND_SETUP_HOME:-~/.config/nusend/setup}/<installation-id>/` with Unix `0700`/`0600` modes. It uses reviewed core/finalize CloudFormation change sets, ordinary SSH host-key verification, exact release/commit/image evidence, and explicit human gates. Secret transfer is over SSH stdin. Restic credentials require independent escrow. The VPS remains Node-free.
+
+The runtime model is Docker Compose 5.3+ on a host that already has Docker. Compose owns named volumes, migration/owner init hooks, separate API/worker containers, Caddy with automatic public HTTPS in either direct-DNS or Cloudflare-proxied mode, Docker `local` logs, and a mandatory scheduled restic backup service targeting R2. `NUSEND_INGRESS_MODE` selects `direct` or `cloudflare`. Direct mode trusts no forwarding headers; Cloudflare mode trusts only current Cloudflare ranges with strict parsing. Provider DNS/firewall setup remains outside the repository.
+
+Direct Compose commands are retained for runtime inspection, updates, and recovery. Production remains gated on SES/DKIM approval, an exact confirmed webhook, alarms and empty DLQ, quotas and gradual ramp, DMARC/inbox inspection, external DNS/firewall evidence, backup restore, and reboot recovery. Product destroy removes stack-owned AWS resources and the recorded runtime key while retaining external providers, remote checkout/environment, database, backups, and Compose volumes. Follow [`docs/deployment.md`](./docs/deployment.md).
 
 ## Development rules
 

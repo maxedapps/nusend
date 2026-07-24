@@ -1,0 +1,692 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Nusend dedicated SES/SNS/SQS/IAM/CloudWatch stack. Requires CAPABILITY_NAMED_IAM. Core phase uses EnableWebhookSubscription=false; finalize sets it true after the public app is healthy.",
+  "Parameters": {
+    "InstallationName": {
+      "Type": "String",
+      "AllowedPattern": "^[a-z][a-z0-9-]{0,30}$",
+      "Description": "Conservative installation slug used to derive dedicated resource names."
+    },
+    "SesDomainIdentity": {
+      "Type": "String",
+      "AllowedPattern": "^[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$",
+      "Description": "SES domain identity (bare domain, not an email address)."
+    },
+    "SesFromEmail": {
+      "Type": "String",
+      "AllowedPattern": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$",
+      "Description": "Verified From address on the SES domain identity."
+    },
+    "PublicDomain": {
+      "Type": "String",
+      "AllowedPattern": "^[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$",
+      "Description": "Public Nusend hostname used for the HTTPS webhook endpoint."
+    },
+    "EnableMarketing": {
+      "Type": "String",
+      "AllowedValues": ["true", "false"],
+      "Default": "false",
+      "Description": "When true, create the marketing configuration set and event destination."
+    },
+    "EnableTracking": {
+      "Type": "String",
+      "AllowedValues": ["true", "false"],
+      "Default": "false",
+      "Description": "When true with marketing enabled, include OPEN and CLICK on the marketing event destination."
+    },
+    "EnableDeliveryEvents": {
+      "Type": "String",
+      "AllowedValues": ["true", "false"],
+      "Default": "true",
+      "Description": "When true, include DELIVERY in configuration-set matching event types."
+    },
+    "Route53HostedZoneId": {
+      "Type": "String",
+      "Default": "",
+      "Description": "Optional Route 53 hosted zone ID for automatic Easy DKIM CNAMEs. Leave empty for manual DNS."
+    },
+    "AlertEmail": {
+      "Type": "String",
+      "AllowedPattern": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$",
+      "Description": "Operator email subscribed to the dedicated CloudWatch alarm topic."
+    },
+    "EnableWebhookSubscription": {
+      "Type": "String",
+      "AllowedValues": ["true", "false"],
+      "Default": "false",
+      "Description": "Core change set must keep false. Finalize sets true after Nusend is publicly healthy with the topic allowlisted."
+    }
+  },
+  "Conditions": {
+    "CreateMarketing": {
+      "Fn::Equals": [{ "Ref": "EnableMarketing" }, "true"]
+    },
+    "CreateTracking": {
+      "Fn::And": [
+        { "Condition": "CreateMarketing" },
+        { "Fn::Equals": [{ "Ref": "EnableTracking" }, "true"] }
+      ]
+    },
+    "CreateDeliveryEvents": {
+      "Fn::Equals": [{ "Ref": "EnableDeliveryEvents" }, "true"]
+    },
+    "CreateRoute53Dkim": {
+      "Fn::Not": [{ "Fn::Equals": [{ "Ref": "Route53HostedZoneId" }, ""] }]
+    },
+    "CreateWebhookSubscription": {
+      "Fn::Equals": [{ "Ref": "EnableWebhookSubscription" }, "true"]
+    }
+  },
+  "Resources": {
+    "EmailIdentity": {
+      "Type": "AWS::SES::EmailIdentity",
+      "Properties": {
+        "EmailIdentity": { "Ref": "SesDomainIdentity" },
+        "Tags": [
+          { "Key": "nusend:managed-by", "Value": "cloudformation" },
+          {
+            "Key": "nusend:installation",
+            "Value": { "Ref": "InstallationName" }
+          }
+        ]
+      }
+    },
+    "DkimRecord1": {
+      "Type": "AWS::Route53::RecordSet",
+      "Condition": "CreateRoute53Dkim",
+      "Properties": {
+        "HostedZoneId": { "Ref": "Route53HostedZoneId" },
+        "Name": { "Fn::GetAtt": ["EmailIdentity", "DkimDNSTokenName1"] },
+        "Type": "CNAME",
+        "TTL": "300",
+        "ResourceRecords": [{ "Fn::GetAtt": ["EmailIdentity", "DkimDNSTokenValue1"] }]
+      }
+    },
+    "DkimRecord2": {
+      "Type": "AWS::Route53::RecordSet",
+      "Condition": "CreateRoute53Dkim",
+      "Properties": {
+        "HostedZoneId": { "Ref": "Route53HostedZoneId" },
+        "Name": { "Fn::GetAtt": ["EmailIdentity", "DkimDNSTokenName2"] },
+        "Type": "CNAME",
+        "TTL": "300",
+        "ResourceRecords": [{ "Fn::GetAtt": ["EmailIdentity", "DkimDNSTokenValue2"] }]
+      }
+    },
+    "DkimRecord3": {
+      "Type": "AWS::Route53::RecordSet",
+      "Condition": "CreateRoute53Dkim",
+      "Properties": {
+        "HostedZoneId": { "Ref": "Route53HostedZoneId" },
+        "Name": { "Fn::GetAtt": ["EmailIdentity", "DkimDNSTokenName3"] },
+        "Type": "CNAME",
+        "TTL": "300",
+        "ResourceRecords": [{ "Fn::GetAtt": ["EmailIdentity", "DkimDNSTokenValue3"] }]
+      }
+    },
+    "TransactionalConfigurationSet": {
+      "Type": "AWS::SES::ConfigurationSet",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "nusend-${InstallationName}-transactional"
+        },
+        "SendingOptions": {
+          "SendingEnabled": true
+        },
+        "SuppressionOptions": {
+          "SuppressedReasons": ["BOUNCE", "COMPLAINT"]
+        },
+        "Tags": [
+          { "Key": "nusend:managed-by", "Value": "cloudformation" },
+          {
+            "Key": "nusend:installation",
+            "Value": { "Ref": "InstallationName" }
+          }
+        ]
+      }
+    },
+    "MarketingConfigurationSet": {
+      "Type": "AWS::SES::ConfigurationSet",
+      "Condition": "CreateMarketing",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "nusend-${InstallationName}-marketing"
+        },
+        "SendingOptions": {
+          "SendingEnabled": true
+        },
+        "SuppressionOptions": {
+          "SuppressedReasons": ["BOUNCE", "COMPLAINT"]
+        },
+        "Tags": [
+          { "Key": "nusend:managed-by", "Value": "cloudformation" },
+          {
+            "Key": "nusend:installation",
+            "Value": { "Ref": "InstallationName" }
+          }
+        ]
+      }
+    },
+    "FeedbackTopic": {
+      "Type": "AWS::SNS::Topic",
+      "Properties": {
+        "TopicName": {
+          "Fn::Sub": "nusend-${InstallationName}-ses-events"
+        },
+        "SignatureVersion": "2",
+        "Tags": [
+          { "Key": "nusend:managed-by", "Value": "cloudformation" },
+          {
+            "Key": "nusend:installation",
+            "Value": { "Ref": "InstallationName" }
+          }
+        ]
+      }
+    },
+    "FeedbackTopicPolicy": {
+      "Type": "AWS::SNS::TopicPolicy",
+      "Properties": {
+        "Topics": [{ "Ref": "FeedbackTopic" }],
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AllowSesConfigurationSets",
+              "Effect": "Allow",
+              "Principal": { "Service": "ses.amazonaws.com" },
+              "Action": "sns:Publish",
+              "Resource": { "Ref": "FeedbackTopic" },
+              "Condition": {
+                "StringEquals": {
+                  "aws:SourceAccount": { "Ref": "AWS::AccountId" }
+                },
+                "ArnEquals": {
+                  "aws:SourceArn": {
+                    "Fn::If": [
+                      "CreateMarketing",
+                      [
+                        {
+                          "Fn::Sub": "arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:configuration-set/nusend-${InstallationName}-transactional"
+                        },
+                        {
+                          "Fn::Sub": "arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:configuration-set/nusend-${InstallationName}-marketing"
+                        }
+                      ],
+                      [
+                        {
+                          "Fn::Sub": "arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:configuration-set/nusend-${InstallationName}-transactional"
+                        }
+                      ]
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "TransactionalEventDestination": {
+      "Type": "AWS::SES::ConfigurationSetEventDestination",
+      "DependsOn": ["FeedbackTopicPolicy"],
+      "Properties": {
+        "ConfigurationSetName": { "Ref": "TransactionalConfigurationSet" },
+        "EventDestination": {
+          "Name": "nusend-sns",
+          "Enabled": true,
+          "MatchingEventTypes": {
+            "Fn::If": [
+              "CreateDeliveryEvents",
+              ["BOUNCE", "COMPLAINT", "REJECT", "DELIVERY_DELAY", "DELIVERY"],
+              ["BOUNCE", "COMPLAINT", "REJECT", "DELIVERY_DELAY"]
+            ]
+          },
+          "SnsDestination": {
+            "TopicARN": { "Ref": "FeedbackTopic" }
+          }
+        }
+      }
+    },
+    "MarketingEventDestination": {
+      "Type": "AWS::SES::ConfigurationSetEventDestination",
+      "Condition": "CreateMarketing",
+      "DependsOn": ["FeedbackTopicPolicy"],
+      "Properties": {
+        "ConfigurationSetName": { "Ref": "MarketingConfigurationSet" },
+        "EventDestination": {
+          "Name": "nusend-sns",
+          "Enabled": true,
+          "MatchingEventTypes": {
+            "Fn::If": [
+              "CreateTracking",
+              {
+                "Fn::If": [
+                  "CreateDeliveryEvents",
+                  ["BOUNCE", "COMPLAINT", "REJECT", "DELIVERY_DELAY", "DELIVERY", "OPEN", "CLICK"],
+                  ["BOUNCE", "COMPLAINT", "REJECT", "DELIVERY_DELAY", "OPEN", "CLICK"]
+                ]
+              },
+              {
+                "Fn::If": [
+                  "CreateDeliveryEvents",
+                  ["BOUNCE", "COMPLAINT", "REJECT", "DELIVERY_DELAY", "DELIVERY"],
+                  ["BOUNCE", "COMPLAINT", "REJECT", "DELIVERY_DELAY"]
+                ]
+              }
+            ]
+          },
+          "SnsDestination": {
+            "TopicARN": { "Ref": "FeedbackTopic" }
+          }
+        }
+      }
+    },
+    "WebhookDlq": {
+      "Type": "AWS::SQS::Queue",
+      "Properties": {
+        "QueueName": {
+          "Fn::Sub": "nusend-${InstallationName}-ses-webhook-dlq"
+        },
+        "MessageRetentionPeriod": 1209600,
+        "SqsManagedSseEnabled": true,
+        "Tags": [
+          { "Key": "nusend:managed-by", "Value": "cloudformation" },
+          {
+            "Key": "nusend:installation",
+            "Value": { "Ref": "InstallationName" }
+          }
+        ]
+      }
+    },
+    "WebhookDlqPolicy": {
+      "Type": "AWS::SQS::QueuePolicy",
+      "Properties": {
+        "Queues": [{ "Ref": "WebhookDlq" }],
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "AllowSnsSubscriptionRedrive",
+              "Effect": "Allow",
+              "Principal": { "Service": "sns.amazonaws.com" },
+              "Action": "sqs:SendMessage",
+              "Resource": { "Fn::GetAtt": ["WebhookDlq", "Arn"] },
+              "Condition": {
+                "StringEquals": {
+                  "aws:SourceAccount": { "Ref": "AWS::AccountId" }
+                },
+                "ArnEquals": {
+                  "aws:SourceArn": { "Ref": "FeedbackTopic" }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "RuntimeUser": {
+      "Type": "AWS::IAM::User",
+      "Properties": {
+        "UserName": {
+          "Fn::Sub": "nusend-${InstallationName}-runtime"
+        },
+        "Policies": [
+          {
+            "PolicyName": "nusend-runtime",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Sid": "ReadSesAccount",
+                  "Effect": "Allow",
+                  "Action": "ses:GetAccount",
+                  "Resource": "*"
+                },
+                {
+                  "Sid": "ReadSesIdentities",
+                  "Effect": "Allow",
+                  "Action": "ses:GetEmailIdentity",
+                  "Resource": [
+                    {
+                      "Fn::Sub": "arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/${SesFromEmail}"
+                    },
+                    {
+                      "Fn::Sub": "arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/${SesDomainIdentity}"
+                    }
+                  ]
+                },
+                {
+                  "Sid": "ReadSesConfigurationSets",
+                  "Effect": "Allow",
+                  "Action": ["ses:GetConfigurationSet", "ses:GetConfigurationSetEventDestinations"],
+                  "Resource": {
+                    "Fn::If": [
+                      "CreateMarketing",
+                      [
+                        {
+                          "Fn::Sub": "arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:configuration-set/nusend-${InstallationName}-transactional"
+                        },
+                        {
+                          "Fn::Sub": "arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:configuration-set/nusend-${InstallationName}-marketing"
+                        }
+                      ],
+                      [
+                        {
+                          "Fn::Sub": "arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:configuration-set/nusend-${InstallationName}-transactional"
+                        }
+                      ]
+                    ]
+                  }
+                },
+                {
+                  "Sid": "SendOnlyFromNusend",
+                  "Effect": "Allow",
+                  "Action": "ses:SendEmail",
+                  "Resource": {
+                    "Fn::If": [
+                      "CreateMarketing",
+                      [
+                        {
+                          "Fn::Sub": "arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/${SesFromEmail}"
+                        },
+                        {
+                          "Fn::Sub": "arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/${SesDomainIdentity}"
+                        },
+                        {
+                          "Fn::Sub": "arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:configuration-set/nusend-${InstallationName}-transactional"
+                        },
+                        {
+                          "Fn::Sub": "arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:configuration-set/nusend-${InstallationName}-marketing"
+                        }
+                      ],
+                      [
+                        {
+                          "Fn::Sub": "arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/${SesFromEmail}"
+                        },
+                        {
+                          "Fn::Sub": "arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/${SesDomainIdentity}"
+                        },
+                        {
+                          "Fn::Sub": "arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:configuration-set/nusend-${InstallationName}-transactional"
+                        }
+                      ]
+                    ]
+                  },
+                  "Condition": {
+                    "StringEquals": {
+                      "ses:FromAddress": { "Ref": "SesFromEmail" }
+                    }
+                  }
+                },
+                {
+                  "Sid": "ReadFeedbackTopic",
+                  "Effect": "Allow",
+                  "Action": ["sns:GetTopicAttributes", "sns:ListSubscriptionsByTopic"],
+                  "Resource": { "Ref": "FeedbackTopic" }
+                }
+              ]
+            }
+          }
+        ],
+        "Tags": [
+          { "Key": "nusend:managed-by", "Value": "cloudformation" },
+          {
+            "Key": "nusend:installation",
+            "Value": { "Ref": "InstallationName" }
+          }
+        ]
+      }
+    },
+    "AlarmTopic": {
+      "Type": "AWS::SNS::Topic",
+      "Properties": {
+        "TopicName": {
+          "Fn::Sub": "nusend-${InstallationName}-ops-alarms"
+        },
+        "Tags": [
+          { "Key": "nusend:managed-by", "Value": "cloudformation" },
+          {
+            "Key": "nusend:installation",
+            "Value": { "Ref": "InstallationName" }
+          }
+        ]
+      }
+    },
+    "AlarmEmailSubscription": {
+      "Type": "AWS::SNS::Subscription",
+      "Properties": {
+        "Protocol": "email",
+        "Endpoint": { "Ref": "AlertEmail" },
+        "TopicArn": { "Ref": "AlarmTopic" }
+      }
+    },
+    "AlarmSnsNotificationsFailed": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmName": {
+          "Fn::Sub": "nusend-${InstallationName}-sns-notifications-failed"
+        },
+        "AlarmDescription": "Nusend SNS NumberOfNotificationsFailed is greater than zero",
+        "Namespace": "AWS/SNS",
+        "MetricName": "NumberOfNotificationsFailed",
+        "Dimensions": [
+          {
+            "Name": "TopicName",
+            "Value": {
+              "Fn::Sub": "nusend-${InstallationName}-ses-events"
+            }
+          }
+        ],
+        "Statistic": "Sum",
+        "Period": 300,
+        "EvaluationPeriods": 1,
+        "DatapointsToAlarm": 1,
+        "Threshold": 0,
+        "ComparisonOperator": "GreaterThanThreshold",
+        "TreatMissingData": "notBreaching",
+        "AlarmActions": [{ "Ref": "AlarmTopic" }],
+        "Tags": [
+          { "Key": "nusend:managed-by", "Value": "cloudformation" },
+          {
+            "Key": "nusend:installation",
+            "Value": { "Ref": "InstallationName" }
+          }
+        ]
+      }
+    },
+    "AlarmSnsRedrivenToDlq": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmName": {
+          "Fn::Sub": "nusend-${InstallationName}-sns-redriven-to-dlq"
+        },
+        "AlarmDescription": "Nusend SNS NumberOfNotificationsRedrivenToDlq is greater than zero",
+        "Namespace": "AWS/SNS",
+        "MetricName": "NumberOfNotificationsRedrivenToDlq",
+        "Dimensions": [
+          {
+            "Name": "TopicName",
+            "Value": {
+              "Fn::Sub": "nusend-${InstallationName}-ses-events"
+            }
+          }
+        ],
+        "Statistic": "Sum",
+        "Period": 300,
+        "EvaluationPeriods": 1,
+        "DatapointsToAlarm": 1,
+        "Threshold": 0,
+        "ComparisonOperator": "GreaterThanThreshold",
+        "TreatMissingData": "notBreaching",
+        "AlarmActions": [{ "Ref": "AlarmTopic" }],
+        "Tags": [
+          { "Key": "nusend:managed-by", "Value": "cloudformation" },
+          {
+            "Key": "nusend:installation",
+            "Value": { "Ref": "InstallationName" }
+          }
+        ]
+      }
+    },
+    "AlarmSnsRedriveFailed": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmName": {
+          "Fn::Sub": "nusend-${InstallationName}-sns-redrive-failed"
+        },
+        "AlarmDescription": "Nusend SNS NumberOfNotificationsFailedToRedriveToDlq is greater than zero",
+        "Namespace": "AWS/SNS",
+        "MetricName": "NumberOfNotificationsFailedToRedriveToDlq",
+        "Dimensions": [
+          {
+            "Name": "TopicName",
+            "Value": {
+              "Fn::Sub": "nusend-${InstallationName}-ses-events"
+            }
+          }
+        ],
+        "Statistic": "Sum",
+        "Period": 300,
+        "EvaluationPeriods": 1,
+        "DatapointsToAlarm": 1,
+        "Threshold": 0,
+        "ComparisonOperator": "GreaterThanThreshold",
+        "TreatMissingData": "notBreaching",
+        "AlarmActions": [{ "Ref": "AlarmTopic" }],
+        "Tags": [
+          { "Key": "nusend:managed-by", "Value": "cloudformation" },
+          {
+            "Key": "nusend:installation",
+            "Value": { "Ref": "InstallationName" }
+          }
+        ]
+      }
+    },
+    "AlarmDlqVisibleMessages": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmName": {
+          "Fn::Sub": "nusend-${InstallationName}-dlq-visible-messages"
+        },
+        "AlarmDescription": "Nusend SNS webhook DLQ contains visible messages",
+        "Namespace": "AWS/SQS",
+        "MetricName": "ApproximateNumberOfMessagesVisible",
+        "Dimensions": [
+          {
+            "Name": "QueueName",
+            "Value": {
+              "Fn::Sub": "nusend-${InstallationName}-ses-webhook-dlq"
+            }
+          }
+        ],
+        "Statistic": "Maximum",
+        "Period": 300,
+        "EvaluationPeriods": 1,
+        "DatapointsToAlarm": 1,
+        "Threshold": 0,
+        "ComparisonOperator": "GreaterThanThreshold",
+        "TreatMissingData": "notBreaching",
+        "AlarmActions": [{ "Ref": "AlarmTopic" }],
+        "Tags": [
+          { "Key": "nusend:managed-by", "Value": "cloudformation" },
+          {
+            "Key": "nusend:installation",
+            "Value": { "Ref": "InstallationName" }
+          }
+        ]
+      }
+    },
+    "WebhookSubscription": {
+      "Type": "AWS::SNS::Subscription",
+      "Condition": "CreateWebhookSubscription",
+      "DependsOn": ["WebhookDlqPolicy"],
+      "Properties": {
+        "Protocol": "https",
+        "Endpoint": {
+          "Fn::Sub": "https://${PublicDomain}/api/webhooks/aws/sns/ses"
+        },
+        "TopicArn": { "Ref": "FeedbackTopic" },
+        "RawMessageDelivery": false,
+        "RedrivePolicy": {
+          "deadLetterTargetArn": { "Fn::GetAtt": ["WebhookDlq", "Arn"] }
+        }
+      }
+    }
+  },
+  "Outputs": {
+    "AwsRegion": {
+      "Description": "Stack AWS region.",
+      "Value": { "Ref": "AWS::Region" }
+    },
+    "SesFromEmail": {
+      "Description": "Configured SES From address.",
+      "Value": { "Ref": "SesFromEmail" }
+    },
+    "TransactionalConfigurationSetName": {
+      "Description": "Transactional SES configuration set name.",
+      "Value": { "Ref": "TransactionalConfigurationSet" }
+    },
+    "MarketingConfigurationSetName": {
+      "Description": "Marketing SES configuration set name, or empty when disabled.",
+      "Value": {
+        "Fn::If": ["CreateMarketing", { "Ref": "MarketingConfigurationSet" }, ""]
+      }
+    },
+    "FeedbackTopicArn": {
+      "Description": "SES feedback SNS topic ARN.",
+      "Value": { "Ref": "FeedbackTopic" }
+    },
+    "TrackingEvents": {
+      "Description": "Configured tracking events CSV for NUSEND_SES_TRACKING_EVENTS.",
+      "Value": {
+        "Fn::If": ["CreateTracking", "open,click", ""]
+      }
+    },
+    "RuntimeUserName": {
+      "Description": "Dedicated runtime IAM user name (no access keys in stack).",
+      "Value": { "Ref": "RuntimeUser" }
+    },
+    "DlqUrl": {
+      "Description": "HTTPS webhook subscription DLQ URL.",
+      "Value": { "Ref": "WebhookDlq" }
+    },
+    "DlqArn": {
+      "Description": "HTTPS webhook subscription DLQ ARN.",
+      "Value": { "Fn::GetAtt": ["WebhookDlq", "Arn"] }
+    },
+    "DlqName": {
+      "Description": "HTTPS webhook subscription DLQ name.",
+      "Value": {
+        "Fn::Sub": "nusend-${InstallationName}-ses-webhook-dlq"
+      }
+    },
+    "AlarmTopicArn": {
+      "Description": "Dedicated CloudWatch alarm notification topic ARN.",
+      "Value": { "Ref": "AlarmTopic" }
+    },
+    "DkimRecordName1": {
+      "Description": "Easy DKIM CNAME name 1.",
+      "Value": { "Fn::GetAtt": ["EmailIdentity", "DkimDNSTokenName1"] }
+    },
+    "DkimRecordValue1": {
+      "Description": "Easy DKIM CNAME value 1.",
+      "Value": { "Fn::GetAtt": ["EmailIdentity", "DkimDNSTokenValue1"] }
+    },
+    "DkimRecordName2": {
+      "Description": "Easy DKIM CNAME name 2.",
+      "Value": { "Fn::GetAtt": ["EmailIdentity", "DkimDNSTokenName2"] }
+    },
+    "DkimRecordValue2": {
+      "Description": "Easy DKIM CNAME value 2.",
+      "Value": { "Fn::GetAtt": ["EmailIdentity", "DkimDNSTokenValue2"] }
+    },
+    "DkimRecordName3": {
+      "Description": "Easy DKIM CNAME name 3.",
+      "Value": { "Fn::GetAtt": ["EmailIdentity", "DkimDNSTokenName3"] }
+    },
+    "DkimRecordValue3": {
+      "Description": "Easy DKIM CNAME value 3.",
+      "Value": { "Fn::GetAtt": ["EmailIdentity", "DkimDNSTokenValue3"] }
+    }
+  }
+}

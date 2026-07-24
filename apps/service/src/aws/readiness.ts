@@ -257,7 +257,6 @@ function awsChecks(
               "SES enforcement status",
               "SES enforcement status is healthy or not reported.",
             ),
-      accountSuppressionCheck(account.success.suppressionReasons),
     );
 
     if (Option.isSome(settings.fromEmail)) {
@@ -350,22 +349,27 @@ function awsChecks(
   });
 }
 
-function accountSuppressionCheck(reasons: readonly string[]): ReadinessCheck {
+function configurationSetSuppressionCheck(
+  kind: "marketing" | "transactional",
+  name: string,
+  reasons: readonly string[],
+): ReadinessCheck {
   const normalized = new Set(reasons.map((reason) => reason.toUpperCase()));
   const missing = ["BOUNCE", "COMPLAINT"].filter((reason) => !normalized.has(reason));
+  const prefix = `ses.config_set.${kind}`;
   return missing.length === 0
     ? ok(
-        "ses.account.suppression_recommendation",
-        "SES account-level suppression",
-        "SES account-level suppression includes bounce and complaint defense in depth.",
-        { reasons },
+        `${prefix}.suppression`,
+        `${kind} SES configuration-set suppression`,
+        "Configuration set suppresses bounce and complaint recipients.",
+        { name, reasons },
       )
     : warning(
-        "ses.account.suppression_recommendation",
-        "SES account-level suppression",
-        `SES account-level suppression is missing: ${missing.join(", ")}.`,
-        "Enable SES account-level suppression for BOUNCE and COMPLAINT as defense in depth.",
-        { missing, reasons },
+        `${prefix}.suppression`,
+        `${kind} SES configuration-set suppression`,
+        `Configuration-set suppression is missing: ${missing.join(", ")}.`,
+        "Configure SuppressionOptions.SuppressedReasons=[BOUNCE,COMPLAINT] on the CloudFormation-managed SES configuration set.",
+        { missing, name, reasons },
       );
 }
 
@@ -477,6 +481,7 @@ function configurationSetChecks(
         : ok(`${prefix}.exists`, `${kind} SES configuration set`, "Configuration set exists.", {
             name,
           }),
+      configurationSetSuppressionCheck(kind, name, config.success.suppressedReasons),
     );
 
     if (Option.isSome(settings.trackingCustomRedirectDomain) && kind === "marketing") {

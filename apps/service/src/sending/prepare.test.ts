@@ -53,13 +53,41 @@ function rendered(overrides: Partial<RenderedEmail> = {}): RenderedEmail {
 describe("prepareEmail", () => {
   it("adds RFC 8058 headers for marketing email", async () => {
     const prepared = await runTest(
-      prepareEmail(context("marketing"), rendered()).pipe(Effect.provide(fakeSendingConfigLayer())),
+      prepareEmail(context("marketing"), rendered()).pipe(
+        Effect.provide(fakeSendingConfigLayer({ marketingConfigurationSet: "marketing-set" })),
+      ),
     );
 
     expect(prepared.headers).toEqual({
       "List-Unsubscribe": "<https://example.com/unsubscribe/token>",
       "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
     });
+  });
+
+  it("uses the transactional configuration set for successful transactional preparation", async () => {
+    const prepared = await runTest(
+      prepareEmail(context("transactional"), rendered({ unsubscribeUrl: null })).pipe(
+        Effect.provide(fakeSendingConfigLayer({ transactionalConfigurationSet: "txn-config" })),
+      ),
+    );
+
+    expect(prepared.configurationSetName).toBe("txn-config");
+    expect(prepared.headers).toEqual({});
+  });
+
+  it("uses the marketing configuration set for successful marketing preparation", async () => {
+    const prepared = await runTest(
+      prepareEmail(context("marketing"), rendered()).pipe(
+        Effect.provide(
+          fakeSendingConfigLayer({
+            marketingConfigurationSet: "marketing-set",
+            transactionalConfigurationSet: "txn-config",
+          }),
+        ),
+      ),
+    );
+
+    expect(prepared.configurationSetName).toBe("marketing-set");
   });
 
   it("does not add unsubscribe headers for transactional email", async () => {

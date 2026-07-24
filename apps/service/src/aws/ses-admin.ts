@@ -25,6 +25,7 @@ export type SesIdentitySummary = {
 export type SesConfigurationSetSummary = {
   readonly name: string;
   readonly sendingEnabled: boolean | null;
+  readonly suppressedReasons: readonly string[];
   readonly trackingCustomRedirectDomain: string | null;
 };
 
@@ -98,11 +99,13 @@ export function makeSesAdmin(sender: SesAdminSender, requestTimeoutMs = 30000): 
           const value = output as {
             ConfigurationSetName?: string;
             SendingOptions?: { SendingEnabled?: boolean };
+            SuppressionOptions?: { SuppressedReasons?: string[] };
             TrackingOptions?: { CustomRedirectDomain?: string };
           };
           return {
             name: value.ConfigurationSetName ?? name,
             sendingEnabled: value.SendingOptions?.SendingEnabled ?? null,
+            suppressedReasons: value.SuppressionOptions?.SuppressedReasons ?? [],
             trackingCustomRedirectDomain: value.TrackingOptions?.CustomRedirectDomain ?? null,
           };
         }),

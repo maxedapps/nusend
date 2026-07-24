@@ -153,11 +153,60 @@ describe("runSesReadinessChecks", () => {
       "ok",
     );
     expect(
-      result.checks.find((check) => check.id === "ses.account.suppression_recommendation")?.status,
+      result.checks.find((check) => check.id === "ses.config_set.transactional.suppression")
+        ?.status,
+    ).toBe("ok");
+    expect(
+      result.checks.find((check) => check.id === "ses.config_set.marketing.suppression")?.status,
     ).toBe("ok");
     expect(result.checks.find((check) => check.id === "ses.identity.dkim")?.status).toBe("ok");
     expect(result.checks.find((check) => check.id === "sns.topic.signature_version")?.status).toBe(
       "ok",
+    );
+  });
+
+  it("warns when a configuration set is missing bounce or complaint suppression", async () => {
+    const result = await runTest(runSesReadinessChecks(), {
+      sesAdmin: {
+        ...okSesAdmin(),
+        getConfigurationSet: (name) =>
+          Effect.succeed({
+            name,
+            sendingEnabled: true,
+            suppressedReasons: name === "marketing-set" ? ["BOUNCE"] : ["BOUNCE", "COMPLAINT"],
+            trackingCustomRedirectDomain: null,
+          }),
+      },
+      snsAdmin: okSnsAdmin(),
+    });
+
+    expect(
+      result.checks.find((check) => check.id === "ses.config_set.transactional.suppression"),
+    ).toMatchObject({ status: "ok" });
+    expect(
+      result.checks.find((check) => check.id === "ses.config_set.marketing.suppression"),
+    ).toMatchObject({
+      action:
+        "Configure SuppressionOptions.SuppressedReasons=[BOUNCE,COMPLAINT] on the CloudFormation-managed SES configuration set.",
+      details: { missing: ["COMPLAINT"], name: "marketing-set" },
+      status: "warning",
+    });
+  });
+
+  it("skips marketing configuration-set suppression when marketing is not configured", async () => {
+    const result = await runTest(runSesReadinessChecks(), {
+      sesAdmin: okSesAdmin(),
+      sesOperations: fakeSesOperationsConfig({
+        marketingConfigurationSet: Option.none(),
+      }),
+      snsAdmin: okSnsAdmin(),
+    });
+
+    expect(
+      result.checks.find((check) => check.id === "ses.config_set.transactional.suppression"),
+    ).toMatchObject({ status: "ok" });
+    expect(result.checks.some((check) => check.id === "ses.config_set.marketing.suppression")).toBe(
+      false,
     );
   });
 
@@ -331,7 +380,12 @@ function okSesAdmin(): SesAdminService {
         suppressionReasons: ["BOUNCE", "COMPLAINT"],
       }),
     getConfigurationSet: (name) =>
-      Effect.succeed({ name, sendingEnabled: true, trackingCustomRedirectDomain: null }),
+      Effect.succeed({
+        name,
+        sendingEnabled: true,
+        suppressedReasons: ["BOUNCE", "COMPLAINT"],
+        trackingCustomRedirectDomain: null,
+      }),
     getConfigurationSetEventDestinations: () =>
       Effect.succeed([
         {
