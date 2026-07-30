@@ -102,27 +102,23 @@ export function runAwsAuthWizard(
 
     yield* log(
       terminal,
-      "AWS IAM Identity Center authentication (SSO-only). AWS CLI owns browser/MFA/account/role prompts.",
-    );
-    yield* log(
-      terminal,
-      `Workload region for this installation: ${expectations.workloadRegion} (Identity Center region is separate).`,
+      `AWS SSO login (browser/MFA handled by AWS CLI). App/SES region: ${expectations.workloadRegion}.`,
     );
 
     let profiles = [...(yield* discoverModernSsoProfiles(aws))];
     let selected: ModernSsoProfile | null = null;
 
     if (profiles.length === 0) {
-      yield* log(terminal, "No modern SSO profiles found (need sso_session + account + role).");
+      yield* log(terminal, "No usable SSO profiles found. Starting aws configure sso…");
       selected = yield* configureNewProfile(aws, terminal, expectations, options);
     } else {
-      yield* log(terminal, "Modern SSO profiles:");
+      yield* log(terminal, "SSO profiles on this machine:");
       for (const [index, profile] of profiles.entries()) {
         yield* log(terminal, `  ${formatProfileChoice(profile, index)}`);
       }
-      yield* log(terminal, `  ${profiles.length + 1}) Configure another account/role`);
+      yield* log(terminal, `  ${profiles.length + 1}) Set up a different account/role`);
 
-      const raw = yield* ask(terminal, `Select profile [1-${profiles.length + 1}]: `);
+      const raw = yield* ask(terminal, `Choose profile [1-${profiles.length + 1}]: `);
       const choice = Number.parseInt(raw, 10);
       if (!Number.isFinite(choice) || choice < 1 || choice > profiles.length + 1) {
         return yield* Effect.fail(
@@ -166,9 +162,9 @@ function configureNewProfile(
     const names = generateSsoNames(expectations.installationId ?? "setup");
     yield* log(
       terminal,
-      `Launching \`aws configure sso --profile ${names.profileName}\`. Nested AWS prompts own IdP/MFA and assigned account/role selection.`,
+      `Starting aws configure sso (profile ${names.profileName}). Follow the AWS prompts for login and account/role.`,
     );
-    yield* log(terminal, `Suggested SSO session name when asked: ${names.sessionHint}`);
+    yield* log(terminal, `If asked for a session name, you can use: ${names.sessionHint}`);
 
     const useDevice =
       options.preferDeviceCode === true
@@ -177,7 +173,7 @@ function configureNewProfile(
           ? false
           : yield* askBoolean(
               terminal,
-              "Use device-code flow instead of browser PKCE? (--use-device-code --no-browser)",
+              "No browser available (use device code instead)?",
               false,
             );
 

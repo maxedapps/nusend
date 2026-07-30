@@ -10,9 +10,18 @@ import {
 } from "../errors.ts";
 import { resolveLatestReleaseTag } from "../release/latest.ts";
 import { SetupStore, type SetupStoreService } from "../services/setup-store.ts";
+import { assertInstallationId } from "../state/paths.ts";
 import { assertAbsolutePosixPath, type SetupStateV2 } from "../state/schema.ts";
 import type { TerminalService } from "../terminal.ts";
-import { ask, askBoolean, askChoice, askSecret, writeLine } from "./prompts.ts";
+import {
+  askBoolean,
+  askChoice,
+  askSecret,
+  askUntil,
+  looksLikeEmail,
+  looksLikeHostname,
+  writeLine,
+} from "./prompts.ts";
 
 /**
  * Interactive init: collect installation config, bind modern SSO, write schema v2 + env.
@@ -27,60 +36,131 @@ export function runInit(
   return Effect.gen(function* () {
     const store = yield* SetupStore;
 
-    yield* writeLine("Initialize a new Nusend setup installation.");
-    yield* writeLine("Secrets are written only to deployment.env and are never printed.");
     yield* writeLine(
-      "AWS profile is selected via the SSO wizard after local fields are collected.",
-    );
-    yield* writeLine(
-      "Setup name is a local nickname only (folder under ~/.config/nusend/setup/). It is not your domain.",
+      "New Nusend install. Secrets stay in deployment.env (never printed). AWS login comes after these questions.",
     );
 
-    const installationId = yield* store.assertInstallationId(
-      yield* ask("Setup name (example: prod): "),
-    );
+    const installationId = yield* askUntil("Local setup name (e.g. prod): ", {
+      emptyHint: "Pick a short local name for this install (e.g. prod). Not your domain.",
+      validate: (value) => {
+        try {
+          assertInstallationId(value);
+          return null;
+        } catch {
+          return "Use a short local name like prod (lowercase, start with a letter, max 31 chars).";
+        }
+      },
+    });
     yield* store.assertInstallationNotInitialized(installationId, env);
 
-    yield* writeLine("Resolving the latest published GitHub Release…");
+    yield* writeLine("Fetching latest GitHub Release…");
     const releaseTagValue = yield* resolveLatestReleaseTag({ env });
-    yield* writeLine(
-      `Using latest published release: ${releaseTagValue} (pinned for this installation).`,
-    );
+    yield* writeLine(`Pinned release: ${releaseTagValue}`);
 
-    const domain = yield* ask("Public domain (e.g. mail.example.com): ");
-    const ingressMode = (yield* askChoice("Ingress mode", ["direct", "cloudflare"])) as
-      | "direct"
-      | "cloudflare";
-    const ownerEmail = yield* ask("Owner email (Google account): ");
-    const ownerName = yield* ask("Owner display name: ");
-    const awsRegion = yield* ask("AWS workload region (e.g. us-east-1): ");
-    const awsAccountId = yield* ask("Expected 12-digit AWS account id: ");
-    if (!/^\d{12}$/u.test(awsAccountId)) {
-      return yield* Effect.fail(
-        new SetupCommandError({ message: "AWS account id must be exactly 12 digits." }),
-      );
-    }
-    const sesIdentity = yield* ask("SES domain identity (e.g. example.com): ");
-    const sesFromEmail = yield* ask("SES from address: ");
-    const marketingEnabled = yield* askBoolean("Enable marketing configuration set?", false);
-    const trackingEnabled = yield* askBoolean("Enable open/click tracking?", false);
-    const alertEmail = yield* ask("Alert email for CloudWatch notifications: ");
-    const route53Raw = yield* ask("Route 53 hosted zone id (empty for manual DNS): ", true);
+    const domain = yield* askUntil("Domain name of the server hosting this app (e.g. mail.example.com): ", {
+      emptyHint: "Enter the hostname that will point at your VPS (no https://).",
+      validate: (value) =>
+        looksLikeHostname(value)
+          ? null
+          : "Use a hostname only, like mail.example.com (no https:// or path).",
+    });
+    const ingressMode = (yield* askChoice(
+      "How HTTPS reaches your VPS (direct=DNS to server, cloudflare=proxied CF)",
+      ["direct", "cloudflare"],
+    )) as "direct" | "cloudflare";
+    const ownerEmail = yield* askUntil("Admin Google email (the account that signs into Nusend): ", {
+      emptyHint: "Required: the Google account that will own/admin this Nusend install.",
+      validate: (value) =>
+        looksLikeEmail(value) ? null : "Enter a normal email address (e.g. you@company.com).",
+    });
+    const ownerName = yield* askUntil("Admin display name: ", {
+      emptyHint: "Required: a display name for the admin user.",
+    });
+    const awsRegion = yield* askUntil("AWS region for SES + stack (e.g. us-east-1): ", {
+      emptyHint: "Required: AWS region where SES and the stack will live (e.g. us-east-1).",
+      validate: (value) =>
+        /^[a-z]{2}(?:-[a-z0-9]+)+-\d+$/u.test(value)
+          ? null
+          : "Use a region code like us-east-1 or eu-west-1.",
+    });
+    const awsAccountId = yield* askUntil("AWS account ID (12 digits): ", {
+      emptyHint: "Required: the 12-digit AWS account that will own the stack.",
+      validate: (value) =>
+        /^\d{12}$/u.test(value) ? null : "Account ID must be exactly 12 digits.",
+    });
+    const sesIdentity = yield* askUntil("Domain used to send mail / SES+DKIM (e.g. example.com): ", {
+      emptyHint: "Required: the domain SES will verify for sending (often example.com).",
+      validate: (value) =>
+        looksLikeHostname(value)
+          ? null
+          : "Use a domain hostname like example.com (no https://).",
+    });
+    const sesFromEmail = yield* askUntil("From address on outbound mail (e.g. news@example.com): ", {
+      emptyHint: "Required: the From: address on mail Nusend sends.",
+      validate: (value) =>
+        looksLikeEmail(value) ? null : "Enter a full email address (e.g. news@example.com).",
+    });
+    const marketingEnabled = yield* askBoolean("Also create a marketing SES config set?", false);
+    const trackingEnabled = yield* askBoolean("Track opens/clicks?", false);
+    const alertEmail = yield* askUntil("Email for AWS ops alerts: ", {
+      emptyHint: "Required: where CloudWatch/SNS alarm emails should go.",
+      validate: (value) =>
+        looksLikeEmail(value) ? null : "Enter a full email address for ops alerts.",
+    });
+    const route53Raw = yield* askUntil(
+      "Route 53 zone ID to auto-create DKIM records (blank = you'll add DNS yourself): ",
+      {
+        allowEmpty: true,
+        validate: (value) =>
+          value === "" || /^Z[A-Z0-9]+$/u.test(value)
+            ? null
+            : "Use a Route 53 hosted zone id like Z123…, or leave blank for manual DNS.",
+      },
+    );
     const route53HostedZoneId = route53Raw === "" ? null : route53Raw;
-    const sshTarget = yield* ask("SSH target (user@host): ");
-    const remotePathRaw = yield* ask("Absolute remote checkout path (e.g. /srv/nusend): ");
-    const remotePath = yield* Effect.try({
-      try: () => assertAbsolutePosixPath(remotePathRaw),
-      catch: (error) => toCommandError(error),
+    const sshTarget = yield* askUntil("SSH login for the VPS (user@host): ", {
+      emptyHint: "Required: SSH target used to deploy (e.g. root@203.0.113.10).",
+      validate: (value) =>
+        /^[^@\s]+@[^@\s]+$/u.test(value)
+          ? null
+          : "Use user@host form (e.g. ubuntu@203.0.113.10 or deploy@mail.example.com).",
+    });
+    const remotePath = yield* askUntil("Directory on the VPS for the app (e.g. /srv/nusend): ", {
+      emptyHint: "Required: absolute path on the VPS where Nusend will be checked out.",
+      validate: (value) => {
+        try {
+          assertAbsolutePosixPath(value);
+          return null;
+        } catch (error) {
+          return error instanceof Error
+            ? error.message
+            : "Use an absolute path like /srv/nusend (no .. segments).";
+        }
+      },
     });
 
-    const googleClientId = yield* ask("Google OAuth client id: ");
-    const googleClientSecret = yield* askSecret("Google OAuth client secret: ");
-    const resticRepository = yield* ask(
-      "Restic repository URL (s3:https://...r2.../bucket/nusend): ",
+    const googleClientId = yield* askUntil("Google OAuth client ID: ", {
+      emptyHint: "Required: OAuth client ID from Google Cloud (Web application).",
+    });
+    const googleClientSecret = yield* askSecret("Google OAuth client secret: ", {
+      emptyHint: "Required: OAuth client secret from Google Cloud.",
+    });
+    const resticRepository = yield* askUntil(
+      "Cloudflare R2 backup URL (s3:https://<account>.r2.cloudflarestorage.com/<bucket>/nusend): ",
+      {
+        emptyHint: "Required: restic repository URL on R2 for backups.",
+        validate: (value) =>
+          value.startsWith("s3:https://")
+            ? null
+            : "Expected an s3:https://… R2 URL (restic repository form).",
+      },
     );
-    const r2AccessKeyId = yield* ask("R2 access key id: ");
-    const r2SecretAccessKey = yield* askSecret("R2 secret access key: ");
+    const r2AccessKeyId = yield* askUntil("R2 access key ID: ", {
+      emptyHint: "Required: R2 API token access key id.",
+    });
+    const r2SecretAccessKey = yield* askSecret("R2 secret access key: ", {
+      emptyHint: "Required: R2 API token secret.",
+    });
 
     const betterAuthSecret = store.generateSecret(32);
     const apiKeyHashSecret = store.generateSecret(32);
@@ -177,24 +257,14 @@ export function runInit(
       ),
     );
 
-    yield* writeLine(`Installation "${installationId}" created under ${store.setupHome(env)}.`);
+    yield* writeLine(`Created setup "${installationId}" in ${store.setupHome(env)}.`);
     yield* writeLine(
-      `Bound SSO profile "${binding.awsAuth.profileName}" (account ${binding.awsAuth.verifiedAccountId}, role ${binding.awsAuth.roleName}).`,
+      `SSO: ${binding.awsAuth.profileName} · account ${binding.awsAuth.verifiedAccountId} · role ${binding.awsAuth.roleName}`,
     );
     yield* writeLine(
-      `Identity Center region: ${binding.awsAuth.identityCenterRegion}; workload region: ${awsRegion}.`,
+      `SSO region ${binding.awsAuth.identityCenterRegion} · app/SES region ${awsRegion}`,
     );
-    yield* writeLine("Next: run doctor, then continue.");
+    yield* writeLine("Next: pnpm nusend:setup doctor && pnpm nusend:setup continue");
     return published;
-  });
-}
-
-function toCommandError(error: unknown): SetupCommandError {
-  if (error instanceof SetupCommandError) return error;
-  if (error instanceof SetupStoreError) {
-    return new SetupCommandError({ message: error.message });
-  }
-  return new SetupCommandError({
-    message: error instanceof Error ? error.message : String(error),
   });
 }

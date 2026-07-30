@@ -22,7 +22,7 @@ export type HumanGateDefinition = {
 export const HUMAN_GATE_DEFINITIONS: readonly HumanGateDefinition[] = Object.freeze([
   Object.freeze({
     id: "google_oauth",
-    title: "Google OAuth exact origin and redirect",
+    title: "Google OAuth client URLs",
     requiredValues(state: SetupState) {
       const origin = `https://${state.config.domain}`;
       return {
@@ -33,10 +33,9 @@ export const HUMAN_GATE_DEFINITIONS: readonly HumanGateDefinition[] = Object.fre
     buildPrompt(state: SetupState) {
       const values = this.requiredValues(state);
       return [
-        "Create a Google OAuth Web application client with these exact values:",
-        `  Authorized JavaScript origin: ${values.authorizedJavaScriptOrigin}`,
-        `  Authorized redirect URI:      ${values.authorizedRedirectUri}`,
-        "Confirm the client already uses both values (the coordinator cannot open Google Console).",
+        "In Google Cloud → OAuth Web client, set exactly:",
+        `  Origin:  ${values.authorizedJavaScriptOrigin}`,
+        `  Redirect: ${values.authorizedRedirectUri}`,
       ].join("\n");
     },
     confirmationPhrase(state: SetupState) {
@@ -45,7 +44,7 @@ export const HUMAN_GATE_DEFINITIONS: readonly HumanGateDefinition[] = Object.fre
   }),
   Object.freeze({
     id: "dns_firewall",
-    title: "External DNS and firewall ports/mode",
+    title: "DNS + firewall for the app hostname",
     requiredValues(state: SetupState) {
       return {
         domain: state.config.domain,
@@ -53,18 +52,18 @@ export const HUMAN_GATE_DEFINITIONS: readonly HumanGateDefinition[] = Object.fre
         ports: "80,443",
         note:
           state.config.ingressMode === "cloudflare"
-            ? "Proxied Cloudflare DNS + Full (strict); origin 80/443 only from Cloudflare ranges"
-            : "Public A/AAAA to host; inbound TCP 80/443 open",
+            ? "Cloudflare proxy on; SSL Full (strict); VPS 80/443 from Cloudflare only"
+            : "A/AAAA to VPS; VPS allows public TCP 80/443",
       };
     },
     buildPrompt(state: SetupState) {
       const values = this.requiredValues(state);
       return [
-        "Configure external DNS and the provider firewall (the coordinator will not mutate them):",
-        `  Domain: ${values.domain}`,
-        `  Ingress mode: ${values.ingressMode}`,
-        `  Required ports: TCP ${values.ports}`,
-        `  Expectation: ${values.note}`,
+        "Point DNS at your VPS (this wizard does not change DNS/firewall):",
+        `  Hostname: ${values.domain}`,
+        `  Mode: ${values.ingressMode}`,
+        `  Ports: ${values.ports}`,
+        `  ${values.note}`,
       ].join("\n");
     },
     confirmationPhrase(state: SetupState) {
@@ -73,7 +72,7 @@ export const HUMAN_GATE_DEFINITIONS: readonly HumanGateDefinition[] = Object.fre
   }),
   Object.freeze({
     id: "r2_bucket",
-    title: "R2 private bucket, token, and repository",
+    title: "R2 backup bucket",
     requiredValues(_state: SetupState) {
       return {
         bucketVisibility: "private-bucket",
@@ -85,11 +84,8 @@ export const HUMAN_GATE_DEFINITIONS: readonly HumanGateDefinition[] = Object.fre
       const repository =
         deploymentEnv.NUSEND_RESTIC_REPOSITORY?.trim() || "(set in deployment.env)";
       return [
-        "Confirm the Cloudflare R2 backup target (coordinator cannot create R2 resources):",
-        "  Bucket: private",
-        "  Token: Object Read & Write, apply to that bucket only",
-        `  Repository in deployment.env: ${repository}`,
-        "  Form: s3:https://<ACCOUNT_ID>.r2.cloudflarestorage.com/<BUCKET>/nusend",
+        "Confirm R2 backups (private bucket, Object Read & Write token for that bucket only):",
+        `  URL: ${repository}`,
       ].join("\n");
     },
     confirmationPhrase(state: SetupState) {
@@ -98,7 +94,7 @@ export const HUMAN_GATE_DEFINITIONS: readonly HumanGateDefinition[] = Object.fre
   }),
   Object.freeze({
     id: "restic_escrow",
-    title: "Independently escrowed restic password",
+    title: "Backup password stored safely",
     requiredValues(_state: SetupState) {
       return {
         escrow: "off-server password manager or equivalent independent store",
@@ -107,9 +103,8 @@ export const HUMAN_GATE_DEFINITIONS: readonly HumanGateDefinition[] = Object.fre
     },
     buildPrompt(_state: SetupState) {
       return [
-        "Escrow the generated NUSEND_RESTIC_PASSWORD independently off-server.",
-        "The coordinator will not print or recover it. Losing it makes R2 backups unrecoverable.",
-        "Confirm the password is stored outside this workstation setup home.",
+        "Store NUSEND_RESTIC_PASSWORD in a password manager (not only this machine).",
+        "If you lose it, backups cannot be restored.",
       ].join("\n");
     },
     confirmationPhrase(state: SetupState) {
@@ -118,19 +113,16 @@ export const HUMAN_GATE_DEFINITIONS: readonly HumanGateDefinition[] = Object.fre
   }),
   Object.freeze({
     id: "alarm_email",
-    title: "Alarm email confirmation",
+    title: "Ops alert email confirmed",
     requiredValues(state: SetupState) {
       return {
         alertEmail: state.config.alertEmail,
-        action:
-          "Confirm the SNS alarm-topic subscription email and keep the exercised-notification gate pending until later validation",
+        action: "Confirm SNS alarm-topic email subscription",
       };
     },
     buildPrompt(state: SetupState) {
       return [
-        `Confirm the CloudWatch/SNS alarm email subscription for ${state.config.alertEmail}.`,
-        "Open the confirmation link from AWS if still pending.",
-        "Exercising a live notification remains a later production gate; this only confirms the subscription email.",
+        `Confirm the AWS alarm email for ${state.config.alertEmail} (click the SNS confirm link if needed).`,
       ].join("\n");
     },
     confirmationPhrase(state: SetupState) {
@@ -139,7 +131,7 @@ export const HUMAN_GATE_DEFINITIONS: readonly HumanGateDefinition[] = Object.fre
   }),
   Object.freeze({
     id: "ses_approval",
-    title: "SES production-access approval",
+    title: "SES out of sandbox",
     requiredValues(state: SetupState) {
       const production =
         state.aws && typeof state.aws === "object"
@@ -156,11 +148,8 @@ export const HUMAN_GATE_DEFINITIONS: readonly HumanGateDefinition[] = Object.fre
     buildPrompt(state: SetupState) {
       const values = this.requiredValues(state);
       return [
-        "SES production access is a regional AWS review gate outside CloudFormation.",
-        `  Region: ${values.region}`,
-        `  Recorded status: ${values.status}`,
-        `  productionAccessEnabled: ${values.productionAccessEnabled}`,
-        "Confirm AWS has approved production access for this account/region (sandbox is insufficient for production mail).",
+        `Confirm SES production access is approved in ${values.region} (not sandbox-only).`,
+        `  Status: ${values.status} · enabled=${values.productionAccessEnabled}`,
       ].join("\n");
     },
     confirmationPhrase(state: SetupState) {
