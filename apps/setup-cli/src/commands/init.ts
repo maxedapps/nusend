@@ -8,8 +8,9 @@ import {
   SetupStoreError,
   TerminalError,
 } from "../errors.ts";
+import { resolveLatestReleaseTag } from "../release/latest.ts";
 import { SetupStore, type SetupStoreService } from "../services/setup-store.ts";
-import { assertAbsolutePosixPath, assertReleaseTag, type SetupStateV2 } from "../state/schema.ts";
+import { assertAbsolutePosixPath, type SetupStateV2 } from "../state/schema.ts";
 import type { TerminalService } from "../terminal.ts";
 import { ask, askBoolean, askChoice, askSecret, writeLine } from "./prompts.ts";
 
@@ -31,17 +32,20 @@ export function runInit(
     yield* writeLine(
       "AWS profile is selected via the SSO wizard after local fields are collected.",
     );
+    yield* writeLine(
+      "Setup name is a local nickname only (folder under ~/.config/nusend/setup/). It is not your domain.",
+    );
 
     const installationId = yield* store.assertInstallationId(
-      yield* ask("Installation id (slug, max 31) [a-z][a-z0-9-]*: "),
+      yield* ask("Setup name (example: prod): "),
     );
     yield* store.assertInstallationNotInitialized(installationId, env);
 
-    const releaseTagRaw = yield* ask("Release tag (e.g. v0.1.1): ");
-    const releaseTagValue = yield* Effect.try({
-      try: () => assertReleaseTag(releaseTagRaw),
-      catch: (error) => toCommandError(error),
-    });
+    yield* writeLine("Resolving the latest published GitHub Release…");
+    const releaseTagValue = yield* resolveLatestReleaseTag({ env });
+    yield* writeLine(
+      `Using latest published release: ${releaseTagValue} (pinned for this installation).`,
+    );
 
     const domain = yield* ask("Public domain (e.g. mail.example.com): ");
     const ingressMode = (yield* askChoice("Ingress mode", ["direct", "cloudflare"])) as
