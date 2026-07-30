@@ -92,7 +92,7 @@ function confirmationPhrase() {
     sshTarget: "root@203.0.113.10",
     domain: "mail.example.com",
     remotePath: "/srv/nusend",
-    releaseTag: "v0.1.1",
+    releaseTag: "v0.1.2",
     commitSha: PLANNED_SHA,
   });
 }
@@ -123,8 +123,8 @@ describe("deploy plan", () => {
     expect(plan.commitSha).toBe(PLANNED_SHA);
     expect(plan.abbreviatedSha).toBe(abbreviateSha(PLANNED_SHA));
     expect(plan.pathMode).toBe("empty");
-    expect(plan.appImage).toBe(buildAppImageRef("v0.1.1"));
-    expect(plan.backupImage).toBe(buildBackupImageRef("v0.1.1"));
+    expect(plan.appImage).toBe(buildAppImageRef("v0.1.2"));
+    expect(plan.backupImage).toBe(buildBackupImageRef("v0.1.2"));
     expect(plan.fingerprint).toMatch(/^[a-f0-9]{64}$/u);
     expect(plan.composeReadiness).toMatchObject({
       mode: "local_compose_stdin_remote_render",
@@ -148,7 +148,7 @@ describe("deploy plan", () => {
       opensshJoinedRemote(call.argv).includes("docker compose -f - config --quiet"),
     );
     expect(stdinConfig).toBeTruthy();
-    expect(stdinConfig?.stdin ?? "").toContain("ghcr.io/maxedapps/nusend:v0.1.1");
+    expect(stdinConfig?.stdin ?? "").toContain("ghcr.io/maxedapps/nusend:v0.1.2");
     expect(stdinConfig?.stdin ?? "").not.toMatch(/google-client-secret|restic-password-value/i);
     for (const call of calls.filter((entry) => entry.argv[0] === "ssh")) {
       expect(call.argv[1]).toBe("root@203.0.113.10");
@@ -282,7 +282,7 @@ describe("deploy apply", () => {
           sshTarget: "root@203.0.113.10",
           domain: "other.example.com",
           remotePath: "/srv/nusend",
-          releaseTag: "v0.1.1",
+          releaseTag: "v0.1.2",
           commitSha: PLANNED_SHA,
         }),
       ]);
@@ -329,7 +329,7 @@ describe("deploy apply", () => {
     });
     expect(state.deploy).toMatchObject({
       commitSha: PLANNED_SHA,
-      releaseTag: "v0.1.1",
+      releaseTag: "v0.1.2",
     });
 
     await seedInstallation(env, "dirty", { awsCoreComplete: true, humanGatesComplete: true });
@@ -548,7 +548,7 @@ describe("deploy stage verification", () => {
     expect(evidence).toMatchObject({
       verified: true,
       commitSha: PLANNED_SHA,
-      releaseTag: "v0.1.1",
+      releaseTag: "v0.1.2",
     });
   });
 

@@ -68,7 +68,7 @@ function sampleState(installationId: string) {
     createdAt: now,
     updatedAt: now,
     config: {
-      releaseTag: "v0.1.1",
+      releaseTag: "v0.1.2",
       domain: "mail.example.com",
       ingressMode: "direct" as const,
       ownerEmail: "owner@example.com",
@@ -121,12 +121,12 @@ describe("deploy pure helpers", () => {
       sshTarget: "root@203.0.113.10",
       domain: "mail.example.com",
       remotePath: "/srv/nusend",
-      releaseTag: "v0.1.1",
+      releaseTag: "v0.1.2",
       commitSha: PLANNED_SHA,
     };
     const phrase = buildDeployConfirmationPhrase(expected);
     expect(phrase).toBe(
-      `DEPLOY root@203.0.113.10 mail.example.com /srv/nusend v0.1.1 ${abbreviateSha(PLANNED_SHA)}`,
+      `DEPLOY root@203.0.113.10 mail.example.com /srv/nusend v0.1.2 ${abbreviateSha(PLANNED_SHA)}`,
     );
     expect(phrase.startsWith(DEPLOY_PHRASE_PREFIX)).toBe(true);
     expect(() => validateDeployConfirmation(phrase, expected)).not.toThrow();
@@ -151,8 +151,8 @@ describe("deploy pure helpers", () => {
     expect(isPublicRepoOrigin("https://github.com/maxedapps/nusend.git")).toBe(true);
     expect(isPublicRepoOrigin("https://github.com/maxedapps/nusend")).toBe(true);
     expect(isPublicRepoOrigin("https://github.com/other/nusend.git")).toBe(false);
-    expect(buildAppImageRef("v0.1.1")).toBe(`${APP_IMAGE_REPOSITORY}:v0.1.1`);
-    expect(buildBackupImageRef("v0.1.1")).toBe(`${BACKUP_IMAGE_REPOSITORY}:v0.1.1`);
+    expect(buildAppImageRef("v0.1.2")).toBe(`${APP_IMAGE_REPOSITORY}:v0.1.2`);
+    expect(buildBackupImageRef("v0.1.2")).toBe(`${BACKUP_IMAGE_REPOSITORY}:v0.1.2`);
   });
 
   it("builds OpenSSH argv as one safely quoted remote command after target", () => {
@@ -185,7 +185,7 @@ describe("deploy pure helpers", () => {
     expect(transfer).not.toMatch(/scp|rsync/i);
     expect(transfer).not.toContain("super-secret-value");
 
-    const clone = buildRemoteCloneScript("/srv/nusend", "v0.1.1", PLANNED_SHA);
+    const clone = buildRemoteCloneScript("/srv/nusend", "v0.1.2", PLANNED_SHA);
     expect(clone).toContain(PUBLIC_REPO_URL);
     expect(clone).toContain("git clone");
     expect(clone).toContain(PLANNED_SHA);
@@ -213,7 +213,7 @@ describe("deploy pure helpers", () => {
   });
 
   it("quotes the entire Docker Go --format template as one shell word", () => {
-    const cmd = buildRemoteImageInspectCommand(`${APP_IMAGE_REPOSITORY}:v0.1.1`);
+    const cmd = buildRemoteImageInspectCommand(`${APP_IMAGE_REPOSITORY}:v0.1.2`);
     const format = `{{ index .Config.Labels "${OCI_REVISION_LABEL}" }}`;
     const formatWord = `--format=${posixSingleQuote(format)}`;
     expect(cmd.startsWith(`docker image inspect ${formatWord} `)).toBe(true);
@@ -258,14 +258,14 @@ describe("deploy pure helpers", () => {
   it("fingerprints deploy plans stably", () => {
     const body = {
       commitSha: PLANNED_SHA,
-      releaseTag: "v0.1.1",
+      releaseTag: "v0.1.2",
       sshTarget: "root@203.0.113.10",
       remotePath: "/srv/nusend",
       domain: "mail.example.com",
       pathMode: "empty",
       architecture: "amd64",
-      appImage: buildAppImageRef("v0.1.1"),
-      backupImage: buildBackupImageRef("v0.1.1"),
+      appImage: buildAppImageRef("v0.1.2"),
+      backupImage: buildBackupImageRef("v0.1.2"),
       dockerVersion: "27.0.0",
       composeVersion: "5.3.2",
     };
@@ -278,7 +278,7 @@ describe("deploy pure helpers", () => {
 
   it("extracts compose image tags from the local template", async () => {
     const body = await readFile(LOCAL_COMPOSE_PATH, "utf8");
-    const tags = extractComposeImageTags(body, "v0.1.1");
+    const tags = extractComposeImageTags(body, "v0.1.2");
     // Local compose may pin a different release; just ensure parsing works.
     expect(tags.appTag).toMatch(/^v/);
     expect(tags.backupTag).toMatch(/^v/);

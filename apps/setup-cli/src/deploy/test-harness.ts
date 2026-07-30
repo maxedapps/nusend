@@ -58,7 +58,7 @@ export function sampleState(installationId: string) {
     updatedAt: now,
     awsAuth: sampleAwsAuth(),
     config: {
-      releaseTag: "v0.1.1",
+      releaseTag: "v0.1.2",
       domain: "mail.example.com",
       ingressMode: "direct" as const,
       ownerEmail: "owner@example.com",
@@ -163,8 +163,8 @@ export async function seedInstallation(
 export function composeYamlFixture() {
   return [
     "name: nusend",
-    "x-app-image: &app-image ghcr.io/maxedapps/nusend:v0.1.1",
-    "x-backup-image: &backup-image ghcr.io/maxedapps/nusend-backup:v0.1.1",
+    "x-app-image: &app-image ghcr.io/maxedapps/nusend:v0.1.2",
+    "x-backup-image: &backup-image ghcr.io/maxedapps/nusend-backup:v0.1.2",
     "services:",
     "  api:",
     "    image: *app-image",
@@ -224,7 +224,7 @@ export function planExecutor(
 
       if (runOptions.command === "git" && runOptions.args?.[0] === "ls-remote") {
         const sha = options.lsRemoteSha ?? PLANNED_SHA;
-        return yield* finish(ok(`${sha}\trefs/tags/v0.1.1\n`, 0, "", argv));
+        return yield* finish(ok(`${sha}\trefs/tags/v0.1.2\n`, 0, "", argv));
       }
 
       if (runOptions.command !== "ssh") {
@@ -338,7 +338,7 @@ export function applyExecutor(options: {
 
       if (runOptions.command === "git" && runOptions.args?.[0] === "ls-remote") {
         return yield* finish(
-          ok(`${options.lsRemoteSha ?? PLANNED_SHA}\trefs/tags/v0.1.1\n`, 0, "", argv),
+          ok(`${options.lsRemoteSha ?? PLANNED_SHA}\trefs/tags/v0.1.2\n`, 0, "", argv),
         );
       }
 

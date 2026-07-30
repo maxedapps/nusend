@@ -170,7 +170,7 @@ export function fakeDestroyRunCaptured(options: FakeDestroyOptions = {}) {
       };
 
       if (runOptions.command === "git" && runOptions.args?.[0] === "ls-remote") {
-        return yield* finish(ok(`${DEPLOY_SHA}\trefs/tags/v0.1.1\n`, 0, "", argv));
+        return yield* finish(ok(`${DEPLOY_SHA}\trefs/tags/v0.1.2\n`, 0, "", argv));
       }
 
       if (runOptions.command === "ssh") {
@@ -511,7 +511,7 @@ export async function seedInstallation(env: NodeJS.ProcessEnv) {
           updatedAt: now,
           awsAuth: sampleAwsAuth(),
           config: {
-            releaseTag: "v0.1.1",
+            releaseTag: "v0.1.2",
             domain: "mail.example.com",
             ingressMode: "direct" as const,
             ownerEmail: "owner@example.com",
@@ -539,12 +539,12 @@ export async function seedInstallation(env: NodeJS.ProcessEnv) {
           plans: {},
           deploy: {
             commitSha: DEPLOY_SHA,
-            releaseTag: "v0.1.1",
+            releaseTag: "v0.1.2",
             sshTarget: "root@203.0.113.10",
             remotePath: "/srv/nusend",
             domain: "mail.example.com",
-            appImage: "ghcr.io/maxedapps/nusend:v0.1.1",
-            backupImage: "ghcr.io/maxedapps/nusend-backup:v0.1.1",
+            appImage: "ghcr.io/maxedapps/nusend:v0.1.2",
+            backupImage: "ghcr.io/maxedapps/nusend-backup:v0.1.2",
             appliedAt: now,
             fingerprint: "c".repeat(64),
           },

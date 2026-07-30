@@ -78,7 +78,7 @@ describe("destroy plan", () => {
       reachable: true,
       status: "inspected",
       stopReviewed: true,
-      evidence: { commitSha: DEPLOY_SHA, releaseTag: "v0.1.1" },
+      evidence: { commitSha: DEPLOY_SHA, releaseTag: "v0.1.2" },
     });
     expect(plan.externalDkimRecords).toHaveLength(3);
     expect(plan.fingerprint).toMatch(/^[a-f0-9]{64}$/u);

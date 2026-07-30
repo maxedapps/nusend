@@ -17,7 +17,7 @@ describe("destroy ownership, phrase, and fingerprint", () => {
       createdAt: "2026-01-01T00:00:00.000Z",
       updatedAt: "2026-01-01T00:00:00.000Z",
       config: {
-        releaseTag: "v0.1.1",
+        releaseTag: "v0.1.2",
         domain: "mail.example.com",
         ingressMode: "direct" as const,
         ownerEmail: "owner@example.com",
