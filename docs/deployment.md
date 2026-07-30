@@ -6,7 +6,7 @@ Nusend is pre-launch, self-hosted software. Use the guided setup for a first ins
 
 ### Workstation and VPS requirements
 
-Run setup from a trusted Unix or WSL workstation with Node 22+, pnpm 11, Git, AWS CLI v2, OpenSSH, and curl. Native Windows is unsupported; use WSL. The AWS profile must resolve to the expected account and region and should be a temporary provisioning principal using the policy described in the [AWS setup guide](./aws-setup.md).
+Run setup from a trusted Unix or WSL workstation with Node 22+, pnpm 11, Git, AWS CLI v2.22+, OpenSSH, and curl. Native Windows is unsupported; use WSL. Setup authenticates to AWS only through modern IAM Identity Center profiles selected or configured by the wizard; you do not need a manually preconfigured arbitrary AWS profile. When the selected role lacks authority, an administrator must assign the generated setup-provisioner permission set—see the [AWS setup guide](./aws-setup.md).
 
 The VPS needs only:
 
@@ -26,28 +26,28 @@ Each installation lives under:
 ${NUSEND_SETUP_HOME:-~/.config/nusend/setup}/<installation-id>/
 ```
 
-The installation directory is mode `0700`; `state.json` and `deployment.env` are atomically written mode `0600`. `state.json` contains resumable non-secret choices/evidence. `deployment.env` is the exhaustive Compose environment and contains generated/provider secrets. Sanitized plans contain no secrets. `NUSEND_SETUP_INSTALLATION` selects an installation; otherwise the protected `current` pointer is used.
+The installation directory is mode `0700`; `state.json` and `deployment.env` are atomically written mode `0600`. `state.json` contains resumable non-secret choices/evidence, including the bound SSO profile metadata (never tokens). `deployment.env` is the exhaustive Compose environment and contains generated/provider secrets. The optional non-secret `nusend-provisioner-policy.json` artifact may also live here. Sanitized plans contain no secrets. `NUSEND_SETUP_INSTALLATION` selects an installation; otherwise the protected `current` pointer is used.
 
 Setup transfers `deployment.env` over SSH stdin to a mode-`0600` temporary file and atomically installs remote `.env`; secrets do not appear in command arguments or logs. Independently escrow the generated restic password in an off-server password manager. Losing it makes every backup unreadable. Keep AWS application keys separate from R2 keys, and never commit or paste either environment file.
 
 ### Run the workflow
 
-From a trusted checkout:
+From a trusted checkout after `pnpm install --frozen-lockfile` (no separate setup build or Bun on the workstation):
 
 ```sh
-pnpm nusend:setup init
+pnpm nusend:setup
 pnpm nusend:setup doctor
 pnpm nusend:setup continue
 pnpm nusend:setup status
 ```
 
-`init` records the exact release tag, domain/ingress, owner, provider choices, AWS context, SSH target, and absolute remote path; it collects provider secrets without echo and generates application/restic secrets. `doctor` is read-only. Each `continue` performs at most one eligible stage, checkpoints verified evidence, or prints one external action and stops. Rerun it after completing the reported gate. `status` reads local state only; request live provider/remote evidence explicitly:
+Bare `pnpm nusend:setup` starts or resumes the guided experience. `init` records the exact release tag, domain/ingress, owner, provider choices, AWS workload region, SSH target, and absolute remote path; it collects provider secrets without echo and generates application/restic secrets. SSO profile selection/login runs through AWS CLI (browser or device-code). `doctor` is read-only and requires AWS CLI v2.22+. Each `continue` performs at most one eligible stage, checkpoints verified evidence, or prints one external action and stops. Rerun it after completing the reported gate. Recovery commands include `aws auth`, `aws permissions`, and the explicit plan/apply/validate/destroy verbs. `status` reads local state only; request live provider/remote evidence explicitly:
 
 ```sh
 pnpm nusend:setup status --refresh
 ```
 
-The coordinator resolves the release tag to an exact commit. It either clones into an empty remote directory or accepts an existing clean checkout at that exact tag, commit, and repository origin. It refuses moved tags, dirty/mismatched checkouts, unexpected image revision labels, and unsafe paths. It runs Compose config, pull, startup, and health checks, but does not install Docker or alter external DNS/firewalls.
+Expired SSO sessions prompt for reauthentication before refresh. The coordinator resolves the release tag to an exact commit. It either clones into an empty remote directory or accepts an existing clean checkout at that exact tag, commit, and repository origin. It refuses moved tags, dirty/mismatched checkouts, unexpected image revision labels, and unsafe paths. It runs Compose config, pull, startup, and health checks, but does not install Docker or alter external DNS/firewalls.
 
 ### External gates
 
@@ -57,9 +57,10 @@ The operator must still provide and verify:
 - public DNS and inbound TCP 80/443 for direct ingress, or proxied Cloudflare DNS with Full (strict) and origin access restricted to current Cloudflare ranges;
 - a private R2 bucket and an Object Read & Write token scoped only to that bucket;
 - restic-password escrow, external DKIM records when Route 53 is not selected, SES approval, alarm-email confirmation, and an exercised alarm;
-- backup restore, reboot recovery, DMARC/inbox checks, and quota/ramp review.
+- backup restore, reboot recovery, DMARC/inbox checks, and quota/ramp review;
+- administrator assignment of the setup-provisioner permission set when the selected SSO role is insufficient, plus removal of any dedicated temporary assignment after final validation (and temporary reassignment before later AWS updates/destroy).
 
-See [AWS setup and CloudFormation safety](./aws-setup.md) for the reviewed core/finalize change sets, honest SES application brief, validation, DLQ handling, and destroy retention boundary.
+See [AWS setup and CloudFormation safety](./aws-setup.md) for SSO binding, Identity Center vs workload regions, policy import, honest permission limits, reviewed core/finalize change sets, SES application brief, validation, DLQ handling, and destroy retention boundary.
 
 ## Runtime health and direct Compose operations
 
@@ -178,3 +179,4 @@ Repository checks cannot prove live DNS, TLS, SES/SNS/SQS behavior, R2 durabilit
 | Backup/restore fails | Verify separate R2 credentials, repository endpoint, escrowed restic password, and explicit snapshot ID. |
 | Webhook confirmation is pending | Do not duplicate it; inspect public TLS/health, exact topic allowlist, API/Caddy logs, and outbound SNS HTTPS. |
 | DLQ is nonempty | Investigate the signed webhook failure and replay deliberately only after remediation. |
+| Setup AWS AccessDenied | Run `pnpm nusend:setup aws permissions`, import the artifact into a dedicated Identity Center permission set, reauthenticate with `aws auth`, and resume. Do not edit `AWSReservedSSO_*` roles. |

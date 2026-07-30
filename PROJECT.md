@@ -15,16 +15,16 @@ Current gaps are templates as a managed domain, public asset storage, and the li
 
 ```txt
 apps/service          Bun + Hono API, worker, migrations, SES tooling
-apps/cli              Nusend command-line client
+apps/cli              Nusend command-line client (authenticated product CLI)
+apps/setup-cli        Workstation-side Effect v4 SSO setup wizard
 packages/api-contract Shared CLI/API codecs, permissions, and route constants
 docs                   Canonical deployment and operator guidance
-deploy/setup           Workstation-side guided setup coordinator
 deploy/aws             Static CloudFormation stack and temporary provisioner policy
 deploy                 Production Caddy configs and backup image
 e2e                    Cross-package product tests
 ```
 
-`README.md` is the self-hoster entrypoint. Guided first-time setup uses `pnpm nusend:setup`; deployment, recovery, and operator CLI procedures live in `docs/deployment.md`. Direct Compose is the runtime/update/recovery reference, not a parallel provisioning workflow. Built-in CLI help is the application CLI command catalog. HTTP schemas are authoritative in `packages/api-contract` where shared and in service route/schema modules otherwise.
+`README.md` is the self-hoster entrypoint. Guided first-time setup uses `pnpm nusend:setup` (Effect source via `@nusend/setup-cli`); deployment, recovery, and operator CLI procedures live in `docs/deployment.md`. Direct Compose is the runtime/update/recovery reference, not a parallel provisioning workflow. Built-in CLI help is the application CLI command catalog. HTTP schemas are authoritative in `packages/api-contract` where shared and in service route/schema modules otherwise.
 
 ## Runtime and configuration
 
@@ -151,13 +151,13 @@ Readiness consumes the entrypoint's parsed deployment values/issues rather than 
 First-time self-hosting is coordinated from a trusted Unix/WSL workstation:
 
 ```sh
-pnpm nusend:setup init
+pnpm nusend:setup
 pnpm nusend:setup doctor
 pnpm nusend:setup continue
 pnpm nusend:setup status
 ```
 
-The dependency-free coordinator keeps resumable non-secret state and the secret deployment environment under `${NUSEND_SETUP_HOME:-~/.config/nusend/setup}/<installation-id>/` with Unix `0700`/`0600` modes. It uses reviewed core/finalize CloudFormation change sets, ordinary SSH host-key verification, exact release/commit/image evidence, and explicit human gates. Secret transfer is over SSH stdin. Restic credentials require independent escrow. The VPS remains Node-free.
+The Effect v4 setup wizard (`apps/setup-cli`, launched only as `pnpm nusend:setup`) keeps resumable non-secret state and the secret deployment environment under `${NUSEND_SETUP_HOME:-~/.config/nusend/setup}/<installation-id>/` with Unix `0700`/`0600` modes. It authenticates through modern IAM Identity Center SSO via AWS CLI, emits an exact importable provisioner policy when the selected role is insufficient, and uses reviewed core/finalize CloudFormation change sets, ordinary SSH host-key verification, exact release/commit/image evidence, and explicit human gates. Secret transfer is over SSH stdin. Restic credentials require independent escrow. The VPS remains Node-free.
 
 The runtime model is Docker Compose 5.3+ on a host that already has Docker. Compose owns named volumes, migration/owner init hooks, separate API/worker containers, Caddy with automatic public HTTPS in either direct-DNS or Cloudflare-proxied mode, Docker `local` logs, and a mandatory scheduled restic backup service targeting R2. `NUSEND_INGRESS_MODE` selects `direct` or `cloudflare`. Direct mode trusts no forwarding headers; Cloudflare mode trusts only current Cloudflare ranges with strict parsing. Provider DNS/firewall setup remains outside the repository.
 
