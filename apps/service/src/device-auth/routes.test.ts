@@ -258,6 +258,33 @@ describe("device authorization routes", () => {
     );
   });
 
+  it("rejects an oversized client name and still starts a grant for a normal one", async () => {
+    await withTestApp(
+      {
+        ids: ["device_1"],
+        realApiKeys: true,
+        realDeviceAuthorizations: true,
+      },
+      async (app) => {
+        const oversized = await app.fetch(
+          jsonRequest("http://localhost/api/device-authorizations", {
+            clientName: "x".repeat(30_000),
+            permissions: { contacts: ["read"] },
+          }),
+        );
+        expect(oversized.status).toBe(400);
+
+        const normal = await app.fetch(
+          jsonRequest("http://localhost/api/device-authorizations", {
+            clientName: "nusend-cli",
+            permissions: { contacts: ["read"] },
+          }),
+        );
+        expect(normal.status).toBe(201);
+      },
+    );
+  });
+
   it("rejects unknown permission resources and actions", async () => {
     await withTestApp(
       {

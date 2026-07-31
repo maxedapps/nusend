@@ -111,7 +111,9 @@ export function runDestroyPlan(
     yield* assertCallerBinding(state, binding, env);
 
     const previousApply = state.plans?.[DESTROY_PLAN_KEY]?.apply;
-    const apply =
+    // A new plan carries forward the resume checkpoints but never the approval:
+    // a confirmation only ever authorizes the plan it was given for.
+    const { approved: _discardedApproval, ...apply } =
       previousApply && typeof previousApply === "object"
         ? (previousApply as Record<string, unknown>)
         : {};
@@ -143,7 +145,9 @@ export function runDestroyPlan(
       (state.aws as { runtimeAccessKeyId?: unknown } | undefined)?.runtimeAccessKeyId ?? "",
     );
     if (!runtimeUserName || !runtimeAccessKeyId) {
-      return yield* fail("Destroy is blocked: runtime user/key ownership state is incomplete.");
+      return yield* fail(
+        `Destroy is blocked: runtime user/key ownership state is incomplete. Delete stack ${binding.stackName} in the CloudFormation console instead.`,
+      );
     }
     const keyDeleteIntent =
       apply.runtimeKeyDeleteIntent && typeof apply.runtimeKeyDeleteIntent === "object"

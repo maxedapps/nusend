@@ -837,14 +837,16 @@ export function requireNonActiveStack(
   stackName: string,
   status: string | null,
 ): Effect.Effect<void, SetupCommandError> {
-  if (status && isActiveStackStatus(status)) {
+  // REVIEW_IN_PROGRESS means a CREATE change set exists but nothing is running —
+  // typically one this wizard itself created — so it stays plannable.
+  if (status && status !== "REVIEW_IN_PROGRESS" && isActiveStackStatus(status)) {
     return Effect.fail(
       new SetupCommandError({
         message: `Stack ${stackName} is ${status}. Wait for the in-progress CloudFormation operation to finish, then re-run \`pnpm nusend:setup aws plan\`.`,
       }),
     );
   }
-  if (status && /ROLLBACK_COMPLETE|DELETE_FAILED/u.test(status)) {
+  if (status && /^(ROLLBACK_COMPLETE|DELETE_FAILED|UPDATE_ROLLBACK_FAILED)$/u.test(status)) {
     return Effect.fail(
       new SetupCommandError({
         message: `Stack ${stackName} is in ${status}. Delete or repair it before planning.`,

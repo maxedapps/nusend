@@ -18,10 +18,16 @@ export function subtractDaysIso(isoTime: string, days: number): string {
   return addMillisecondsIso(isoTime, -days * 24 * 60 * 60 * 1000);
 }
 
-// Lenient acceptance on purpose: anything `new Date` parses is a valid scheduledAt.
+// Lenient acceptance on purpose: anything `new Date` parses and that renders as a
+// canonical 4-digit-year ISO string is a valid scheduledAt. Expanded years
+// (`+010000-…`) are rejected because timestamps are stored as TEXT and compared
+// as strings, where they would sort before now.
 export function parseLenientDateToIso(input: string): string | null {
   const date = new Date(input);
-  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+  if (Number.isNaN(date.getTime())) return null;
+
+  const iso = date.toISOString();
+  return /^\d{4}-/u.test(iso) ? iso : null;
 }
 
 export const currentIso: Effect.Effect<string> = Effect.map(Clock.currentTimeMillis, toIso);

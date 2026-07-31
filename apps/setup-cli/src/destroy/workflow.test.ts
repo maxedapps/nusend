@@ -441,6 +441,49 @@ describe("destroy apply and resume", () => {
     expect(interrupted.plans.destroy).toMatchObject({ consumed: true });
   });
 
+  it("re-prompts after a new plan but not when resuming the approved plan", async () => {
+    const env = testEnv();
+    await seedInstallation(env);
+    const calls: Array<{ argv: string[]; stdin?: string }> = [];
+    const providerState = providerStateDefaults();
+
+    const plan = await runDestroyWorkflow(
+      runDestroyPlan(env),
+      destroyLayer(env, { calls, providerState, interruptStopOnce: true }).layer,
+    );
+    {
+      const { layer } = destroyLayer(env, { calls, providerState, interruptStopOnce: true }, [
+        buildDestroyConfirmationPhrase(plan as never),
+      ]);
+      const exit = await runDestroyWorkflowExit(runDestroyApply(env), layer);
+      expect(failMessage(exit)).toMatch(/simulated stop interruption|compose stop/i);
+    }
+    expect(
+      (await loadState(env)).plans.destroy as { apply?: { approved?: unknown } },
+    ).toMatchObject({ apply: { approved: expect.anything() } });
+
+    // Resuming the same plan keeps the approval: no prompt needed.
+    {
+      const { layer, terminal } = destroyLayer(env, { calls, providerState }, []);
+      await runDestroyWorkflow(runDestroyApply(env), layer);
+      expect(terminal.state.prompts.join(" ")).not.toContain("Destroy confirmation");
+    }
+
+    // A brand-new plan drops the approval, so apply must ask again.
+    {
+      const { layer } = destroyLayer(env, { calls, providerState });
+      await runDestroyWorkflow(runDestroyPlan(env), layer);
+    }
+    expect(
+      (await loadState(env)).plans.destroy as { apply?: { approved?: unknown } },
+    ).not.toMatchObject({ apply: { approved: expect.anything() } });
+    {
+      const { layer } = destroyLayer(env, { calls, providerState }, ["DESTROY wrong"]);
+      const exit = await runDestroyWorkflowExit(runDestroyApply(env), layer);
+      expect(failMessage(exit)).toMatch(/Confirmation rejected/);
+    }
+  });
+
   it("persists a reachable nonzero stop outcome and blocks AWS mutation", async () => {
     const env = testEnv();
     await seedInstallation(env);

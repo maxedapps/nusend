@@ -298,6 +298,24 @@ describe("setup-cli main boundary", () => {
     expect(result.stderr).toBe("");
   });
 
+  it("exits 130 when a prompt gets no answer because stdin is closed", async () => {
+    const tsxBin = require.resolve("tsx/cli", { paths: [packageRoot] });
+    const mainTs = join(packageRoot, "src/main.ts");
+    const home = mkdtempSync(join(tmpdir(), "nusend-setup-eof-"));
+    temps.push(home);
+    const result = await runCaptured(process.execPath, [tsxBin, mainTs, "init"], {
+      cwd: packageRoot,
+      env: {
+        ...process.env,
+        FORCE_COLOR: "0",
+        NUSEND_SETUP_HOME: home,
+      },
+    });
+
+    expect(result.exitCode).toBe(130);
+    expect(result.stderr).toContain("Input closed before an answer was given");
+  });
+
   it("smoke-runs pnpm package start -- --help with temp setup home (no mutation)", async () => {
     const home = mkdtempSync(join(tmpdir(), "nusend-setup-pnpm-help-"));
     temps.push(home);

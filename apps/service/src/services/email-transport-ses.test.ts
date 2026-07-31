@@ -171,12 +171,14 @@ describe("SES email transport", () => {
     ["code", "TooManyRequestsException"],
     ["name", "LimitExceededException"],
     ["code", "LimitExceededException"],
+    ["name", "SendingPausedException"],
+    ["code", "SendingPausedException"],
   ] as const)("classifies provider refusal %s %s as retryable", (signal, value) => {
     const cause = signal === "name" ? sesError({ name: value }) : sesError({ code: value });
     expect(classifySesError(cause).kind).toBe("retryable");
   });
 
-  it.each(["BadRequestException", "MessageRejected"])(
+  it.each(["AccountSuspendedException", "BadRequestException", "MessageRejected"])(
     "classifies plain named provider rejection %s as permanent",
     (name) => {
       expect(classifySesError(sesError({ name })).kind).toBe("permanent");

@@ -274,13 +274,11 @@ export function runBuiltCliJson(
   SetupStoreService | ProcessRunnerService
 > {
   return Effect.gen(function* () {
-    let secrets: string[] = [];
-    try {
-      const store = yield* SetupStore;
-      secrets = secretValuesFromEnv(yield* store.loadDeploymentEnv(state.installationId, env));
-    } catch {
-      secrets = [];
-    }
+    const store = yield* SetupStore;
+    const secrets = yield* store.loadDeploymentEnv(state.installationId, env).pipe(
+      Effect.map((deployment) => secretValuesFromEnv(deployment)),
+      Effect.catchTag("SetupStoreError", () => Effect.succeed([] as string[])),
+    );
 
     const runner = yield* ProcessRunner;
     const result = yield* runner

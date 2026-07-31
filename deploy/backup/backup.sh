@@ -147,6 +147,7 @@ run_backup() {
 
   mark_healthy
   printf 'backup: completed\n'
+  rm -rf -- "$RUN_DIR"
   RUN_DIR=
 }
 
@@ -186,6 +187,7 @@ restore_backup() {
   if [ -e "$PRE_RESTORE" ]; then
     printf 'backup: previous database preserved at %s\n' "$PRE_RESTORE"
   fi
+  rm -rf -- "$RUN_DIR"
   RUN_DIR=
 }
 

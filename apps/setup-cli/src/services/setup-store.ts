@@ -333,7 +333,7 @@ function makeSetupStore(): SetupStoreService {
           if (exists) {
             return yield* Effect.fail(
               new SetupStoreError({
-                message: `Installation "${id}" already exists (${label} at ${path}). Refusing to overwrite existing state, deployment.env, or secrets. Choose a new installation id or continue the existing installation.`,
+                message: `Installation "${id}" already exists (${label} at ${path}). Refusing to overwrite existing state, deployment.env, or secrets. Choose a new installation id, or reach the existing one with NUSEND_SETUP_INSTALLATION=${id}.`,
                 reason: "conflict",
               }),
             );

@@ -2,13 +2,7 @@ import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { TerminalFake } from "../terminal.ts";
-import {
-  askBoolean,
-  askChoice,
-  askUntil,
-  looksLikeEmail,
-  looksLikeHostname,
-} from "./prompts.ts";
+import { askBoolean, askChoice, askUntil, looksLikeEmail, looksLikeHostname } from "./prompts.ts";
 
 describe("prompt recovery helpers", () => {
   it("re-prompts until a non-empty valid value is entered", async () => {

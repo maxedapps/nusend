@@ -26,7 +26,6 @@ export {
   abbreviateSha,
   assertArgvFreeOfSecrets,
   assertFullCommitSha,
-  assertNoHostKeyBypass,
   assertSafeRemotePath,
   assertSshTarget,
   buildAppImageRef,

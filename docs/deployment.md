@@ -54,7 +54,7 @@ Expired SSO sessions prompt for reauthentication before refresh. The coordinator
 The operator must still provide and verify:
 
 - a Google OAuth **Web application** with origin `https://<domain>` and redirect `https://<domain>/api/auth/callback/google`;
-- public DNS and inbound TCP 80/443 for direct ingress, or proxied Cloudflare DNS with Full (strict) and origin access restricted to current Cloudflare ranges;
+- public DNS and inbound TCP 80/443 for direct ingress, or proxied Cloudflare DNS with Full (strict) and origin access restricted to current Cloudflare ranges — with Cloudflare's "Always Use HTTPS" off, or a configuration rule excluding `/.well-known/acme-challenge/*`, so ACME HTTP-01 can complete behind the proxy;
 - a private R2 bucket and an Object Read & Write token scoped only to that bucket;
 - restic-password escrow, external DKIM records when Route 53 is not selected, SES approval, alarm-email confirmation, and an exercised alarm;
 - backup restore, reboot recovery, DMARC/inbox checks, and quota/ramp review;
@@ -76,7 +76,7 @@ docker compose exec -T api bun -e \
   "const r=await fetch('http://127.0.0.1:3000/health/db');if(!r.ok)process.exit(1)"
 ```
 
-Compose fixes volume ownership, migrates the database, reconciles the sole owner, and completes an initial off-site backup before becoming healthy. Public database health must remain hidden. Sign in through Google as the configured owner.
+Compose fixes volume ownership, migrates the database, and reconciles the sole owner when the service definition changes or the container is recreated — `pre_start` hooks are memoized and do not re-run on a plain `up`. It completes an initial off-site backup before becoming healthy. Public database health must remain hidden. Sign in through Google as the configured owner.
 
 Inspect services and bounded local-driver logs with:
 
@@ -129,6 +129,7 @@ Restore only an explicit 64-character lowercase hexadecimal snapshot ID; `latest
 ```sh
 docker compose stop api worker caddy backup
 docker compose run --rm --no-deps backup restore <64-lowercase-hex-snapshot-id>
+docker compose run --rm --no-deps api bun apps/service/src/db/migrate.ts up
 docker compose up -d --wait
 curl -fsS "https://${DOMAIN}/health"
 ```

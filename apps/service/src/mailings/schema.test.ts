@@ -76,11 +76,21 @@ describe("decodeCreateMailingRequest", () => {
     [{ ...validRequest, html: "" }],
     [{ ...validRequest, recipients: [] }],
     [{ ...validRequest, scheduledAt: "not a date" }],
+    [{ ...validRequest, scheduledAt: "+010000-01-01T00:00:00.000Z" }],
     [{ ...validRequest, recipients: [{ email: "a@example.com", vars: [] }] }],
     [{ ...validRequest, recipients: [{ email: "not-an-email" }] }],
     [{ ...validRequest, recipients: [{ email: "two@@example.com" }] }],
   ])("rejects invalid request %#", (request) => {
     expect(Result.isFailure(decodeCreateMailingRequest(request))).toBe(true);
+  });
+
+  it.each([
+    ["2027-01-01T00:00:00.000Z", "2027-01-01T00:00:00.000Z"],
+    ["9999-12-31T23:59:59.999Z", "9999-12-31T23:59:59.999Z"],
+  ])("accepts the canonical-year schedule %s", (scheduledAt, expected) => {
+    const result = decodeCreateMailingRequest({ ...validRequest, scheduledAt });
+
+    expect(Result.getOrThrow(result).scheduledAt).toBe(expected);
   });
 
   it("keeps the exact presence-rule messages", () => {

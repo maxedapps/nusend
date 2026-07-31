@@ -129,7 +129,9 @@ services:
       - no-new-privileges:true
     depends_on:
       api:
-        condition: service_healthy
+        # service_started, not service_healthy: backups must still run during an
+        # API incident. backup.sh already fails cleanly on an unreadable source.
+        condition: service_started
     pre_start:
       - image: busybox:1.37.0-musl@sha256:222ad6d973c0d198014546a65cd02c5fdedcc172123c5b4c2bf0af636550bd94
         user: "0:0"

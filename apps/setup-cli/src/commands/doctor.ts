@@ -16,6 +16,8 @@ import {
   SetupStoreError,
   TerminalError,
 } from "../errors.ts";
+import { assertSshTarget } from "../deploy/pure.ts";
+import { readSshHostKeyPolicy } from "../deploy/ssh.ts";
 import { ProcessRunner, type ProcessRunnerService } from "../process-runner.ts";
 import { SetupStore, type SetupStoreService } from "../services/setup-store.ts";
 import { unwrapEnvValue, type DeploymentEnvMap } from "../state/env.ts";
@@ -85,7 +87,7 @@ export function runDoctor(
       nodeMajor >= 22 ? `Node ${nodeVersion}` : `Node ${nodeVersion} is too old; require Node 22+`,
     );
 
-    yield* checkLocalBinary(note, "pnpm", ["pnpm", "--version"], /./u);
+    yield* checkLocalBinary(note, "pnpm", ["pnpm", "--version"], /^\d+\.\d+/u);
     yield* checkLocalBinary(note, "git", ["git", "--version"], /^git version\b/iu);
     yield* checkAwsCliV2_22(note);
     yield* checkLocalBinary(note, "ssh", ["ssh", "-V"], /OpenSSH|ssh/iu);
@@ -162,6 +164,21 @@ export function runDoctor(
     );
 
     yield* checkAwsCaller(note, state);
+
+    const targetCheck = yield* Effect.try({
+      try: () => assertSshTarget(state.config.sshTarget),
+      catch: (error) => error,
+    }).pipe(Effect.result);
+    yield* note(
+      "ssh-target",
+      Result.isSuccess(targetCheck),
+      Result.isSuccess(targetCheck)
+        ? targetCheck.success
+        : targetCheck.failure instanceof Error
+          ? targetCheck.failure.message
+          : String(targetCheck.failure),
+    );
+
     yield* checkSshHostKeyPolicy(note, state);
 
     if (!skipRemote) {
@@ -303,35 +320,8 @@ function checkSshHostKeyPolicy(
   state: SetupState,
 ): Effect.Effect<void, TerminalError, ProcessRunnerService | TerminalService> {
   return Effect.gen(function* () {
-    const runner = yield* ProcessRunner;
-    const host = state.config.sshTarget.includes("@")
-      ? (state.config.sshTarget.split("@").at(-1) ?? state.config.sshTarget)
-      : state.config.sshTarget;
-    const result = yield* runner.runCaptured({ command: "ssh", args: ["-G", host] }).pipe(
-      Effect.catch((error) =>
-        Effect.succeed({
-          exitCode: 1 as number | null,
-          signal: null as NodeJS.Signals | null,
-          stdout: "",
-          stderr: error instanceof Error ? error.message : String(error),
-          argv: ["ssh", "-G", host],
-        }),
-      ),
-    );
-    if (result.exitCode !== 0) {
-      yield* note("ssh-host-key", false, result.stderr || result.stdout || "ssh -G failed");
-      return;
-    }
-    const match = /^stricthostkeychecking\s+(\S+)/imu.exec(result.stdout);
-    const value = match?.[1]?.toLowerCase() ?? "";
-    const ok = value === "yes" || value === "accept-new";
-    yield* note(
-      "ssh-host-key",
-      ok,
-      ok
-        ? `StrictHostKeyChecking=${value}`
-        : `StrictHostKeyChecking=${value || "unknown"} (require yes or accept-new)`,
-    );
+    const policy = yield* readSshHostKeyPolicy(state.config.sshTarget);
+    yield* note("ssh-host-key", policy.ok, policy.detail);
   });
 }
 

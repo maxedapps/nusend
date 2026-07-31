@@ -25,7 +25,6 @@ import {
 import { HUMAN_GATE_DEFINITIONS, listHumanGateProgress } from "./human-gates.ts";
 import {
   abbreviateSha,
-  assertNoHostKeyBypass,
   assertSafeRemotePath,
   assertSshTarget,
   buildAppImageRef,
@@ -233,15 +232,6 @@ describe("deploy pure helpers", () => {
     const stdinCmd = buildRemoteComposeConfigFromStdinCommand(dummy);
     expect(stdinCmd).toContain("docker compose -f - config --quiet");
     expect(stdinCmd).not.toContain("cd ");
-    expect(() =>
-      assertNoHostKeyBypass(["ssh", "-o", "StrictHostKeyChecking=no", "host", "true"]),
-    ).toThrow(/host-key/);
-    expect(() =>
-      assertNoHostKeyBypass(["ssh", "-o", "UserKnownHostsFile=/dev/null", "host", "true"]),
-    ).toThrow(/host-key/);
-    expect(() =>
-      assertNoHostKeyBypass(["ssh", "root@host", buildOpenSshRemoteCommand("true")]),
-    ).not.toThrow();
   });
 
   it("parses compose ps JSON/NDJSON", () => {

@@ -37,7 +37,7 @@ import {
   resolveReleaseCommitSha,
   validateDeployHealth,
 } from "./remote.ts";
-import { failCommand, runSsh, trySyncCommand } from "./ssh.ts";
+import { failCommand, readSshHostKeyPolicy, runSsh, trySyncCommand } from "./ssh.ts";
 
 export function runDeployApply(
   env: PathEnvironment = process.env,
@@ -255,6 +255,14 @@ export function runDeployApply(
     }
 
     if (applyCheckpoint === APPLY_CHECKPOINT_CLONED) {
+      // Secrets are about to move over this connection; refuse an unverified host identity.
+      const hostKeyPolicy = yield* readSshHostKeyPolicy(state.config.sshTarget);
+      if (!hostKeyPolicy.ok) {
+        return yield* failCommand(
+          `Refusing to transfer deployment secrets: ${hostKeyPolicy.detail}. Fix the SSH host-key policy for ${sshTarget} and re-run.`,
+        );
+      }
+
       const safePath = yield* trySyncCommand(() => assertSafeRemotePath(remotePath));
       const remoteEnvPath = `${safePath}/.env`;
       const transferScript = yield* trySyncCommand(() =>

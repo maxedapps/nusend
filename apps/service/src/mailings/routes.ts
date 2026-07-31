@@ -103,6 +103,12 @@ function normalizeRouteIdempotencyKey(
   value: string | null | undefined,
 ): Effect.Effect<string | null, RequestValidationError> {
   const key = normalizeIdempotencyKey(value);
+  if (key === null && value !== undefined && value !== null) {
+    return Effect.fail(
+      new RequestValidationError({ message: "Idempotency-Key must not be blank." }),
+    );
+  }
+
   if (key !== null && key.length > maxIdempotencyKeyLength) {
     return Effect.fail(
       new RequestValidationError({

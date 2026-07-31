@@ -121,8 +121,10 @@ async function runLoop(): Promise<void> {
 async function loadConfig<A>(label: string, effect: Effect.Effect<A, unknown>): Promise<A> {
   return Effect.runPromise(
     effect.pipe(Effect.provideService(ConfigProvider.ConfigProvider, configProvider)),
-  ).catch(() => {
-    console.error(`Invalid ${label} configuration. Check the documented environment variables.`);
+  ).catch((error: unknown) => {
+    console.error(
+      `Invalid ${label} configuration: ${error instanceof Error ? error.message : String(error)}`,
+    );
     process.exit(1);
   });
 }

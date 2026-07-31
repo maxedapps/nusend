@@ -110,7 +110,7 @@ Marketing creation additionally requires unsubscribe configuration and `{{ unsub
 
 Sending and queue code is deliberately conservative because it coordinates a database with an external side effect.
 
-- Jobs are claimed under a lease with a worker owner/fencing token.
+- Jobs are claimed under a lease with a worker owner.
 - Retry uses bounded attempts and backoff; stale leases can be repaired.
 - A send attempt is inserted and committed before the SES call.
 - No database transaction remains open across network dispatch.

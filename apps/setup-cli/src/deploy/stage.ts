@@ -112,12 +112,10 @@ export function runDeployStageVerification(
     yield* assertRemoteImageRevision(state, appImage, commitSha);
     yield* assertRemoteImageRevision(state, backupImage, commitSha);
 
-    let secrets: string[] = [];
-    try {
-      secrets = secretValuesFromEnv(yield* store.loadDeploymentEnv(installationId, env));
-    } catch {
-      secrets = [];
-    }
+    const secrets = yield* store.loadDeploymentEnv(installationId, env).pipe(
+      Effect.map((deployment) => secretValuesFromEnv(deployment)),
+      Effect.catchTag("SetupStoreError", () => Effect.succeed([] as string[])),
+    );
 
     yield* writeLine("Re-validating live deploy health before checkpoint.");
     const health = yield* validateDeployHealth(state, { domain, remotePath, secrets });

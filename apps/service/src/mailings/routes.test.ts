@@ -423,6 +423,27 @@ describe("mailings routes", () => {
     });
   });
 
+  it.each([[""], ["   "]])("rejects a blank idempotency key %j", async (idempotencyKey) => {
+    const response = await postMailing(
+      { apiKeyPermissions: { mailings: ["write"] } },
+      { headers: { "idempotency-key": idempotencyKey, "x-api-key": "valid" } },
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: { code: "invalid_request", message: "Idempotency-Key must not be blank." },
+    });
+  });
+
+  it("creates a mailing when the idempotency key header is omitted", async () => {
+    const response = await postMailing(
+      { apiKeyPermissions: { mailings: ["write"] } },
+      { headers: { "x-api-key": "valid" } },
+    );
+
+    expect(response.status).toBe(201);
+  });
+
   it("rejects oversized request bodies before parsing", async () => {
     const response = await postMailing(
       { apiKeyPermissions: { mailings: ["write"] } },

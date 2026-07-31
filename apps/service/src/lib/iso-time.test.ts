@@ -20,6 +20,12 @@ describe("iso time helpers", () => {
     expect(parseLenientDateToIso("not-a-date")).toBeNull();
   });
 
+  it("rejects expanded-year dates that would not sort as ISO text", () => {
+    expect(parseLenientDateToIso("+010000-01-01T00:00:00.000Z")).toBeNull();
+    expect(parseLenientDateToIso("-000001-01-01T00:00:00.000Z")).toBeNull();
+    expect(parseLenientDateToIso("9999-12-31T23:59:59.999Z")).toBe("9999-12-31T23:59:59.999Z");
+  });
+
   it("reads the current time from the Clock", async () => {
     const observed = await runTest(
       Effect.gen(function* () {

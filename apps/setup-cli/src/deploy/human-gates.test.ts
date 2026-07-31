@@ -2,7 +2,8 @@ import { Cause, Effect, Exit, Layer, Option } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { ProcessRunnerFake } from "../process-runner.ts";
-import { SetupStore, SetupStoreLive } from "../services/setup-store.ts";
+import { SetupStoreError } from "../errors.ts";
+import { SetupStore, SetupStoreFake, SetupStoreLive } from "../services/setup-store.ts";
 import { TerminalFake } from "../terminal.ts";
 import type { SetupState } from "../state/schema.ts";
 import { HUMAN_GATE_DEFINITIONS, listHumanGateProgress, runHumanGatesStep } from "./human-gates.ts";
@@ -70,6 +71,27 @@ describe("human gates", () => {
     expect(after.plans.human_gates).toMatchObject({
       completed: { google_oauth: expect.objectContaining({ phrase }) },
     });
+  });
+
+  it("still presents its gates when deployment.env cannot be read", async () => {
+    const env = testEnv();
+    await seedInstallation(env, "prod", { awsCoreComplete: true });
+    const state = await loadState(env, "prod");
+    const phrase = HUMAN_GATE_DEFINITIONS[0]!.confirmationPhrase(state);
+    const terminal = TerminalFake({ answers: [phrase] });
+    const layer = Layer.mergeAll(
+      SetupStoreFake({
+        loadDeploymentEnv: () =>
+          Effect.fail(new SetupStoreError({ message: "env unreadable", reason: "io" })),
+      }),
+      terminal.layer,
+      ProcessRunnerFake({}),
+    );
+
+    const result = await Effect.runPromise(runHumanGatesStep(env).pipe(Effect.provide(layer)));
+
+    expect(result).toMatchObject({ completedGate: "google_oauth", progress: true });
+    expect(terminal.state.stdout.join("")).toMatch(/Google OAuth/i);
   });
 
   it("rejects mismatched human-gate evidence phrases", async () => {

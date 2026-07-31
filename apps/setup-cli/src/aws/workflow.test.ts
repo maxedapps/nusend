@@ -15,6 +15,7 @@ import {
   defaultStackTemplatePath,
 } from "./constants.ts";
 import { runAwsCoreVerification } from "./core.ts";
+import { requireNonActiveStack } from "./ops.ts";
 import { AwsPermissionDeniedError } from "./permissions.ts";
 import { runAwsPlan } from "./plan.ts";
 import { runProductionAccessRequest } from "./production-access.ts";
@@ -394,8 +395,25 @@ describe("aws plan", () => {
         stackStatus: "REVIEW_IN_PROGRESS",
       });
       const exit = await runWorkflowExit(runAwsPlan(env), layer);
-      expect(failMessage(exit)).toMatch(/REVIEW_IN_PROGRESS|in-progress/i);
+      // REVIEW_IN_PROGRESS is not an active operation; planning proceeds past this
+      // gate and is only stopped by the unrelated provenance guard.
+      expect(failMessage(exit)).not.toMatch(/Wait for the in-progress/i);
     }
+  });
+
+  it.each([
+    ["REVIEW_IN_PROGRESS", null],
+    ["UPDATE_ROLLBACK_COMPLETE", null],
+    ["CREATE_IN_PROGRESS", /Wait for the in-progress/i],
+    ["ROLLBACK_COMPLETE", /Delete or repair/i],
+    ["DELETE_FAILED", /Delete or repair/i],
+  ])("gates planning for stack status %s", (status, expected) => {
+    const exit = Effect.runSyncExit(requireNonActiveStack("nusend-prod", status));
+    if (expected === null) {
+      expect(Exit.isSuccess(exit)).toBe(true);
+      return;
+    }
+    expect(failMessage(exit as Exit.Exit<unknown, { message: string }>)).toMatch(expected);
   });
 
   it("emits permission handoff on AccessDenied and preserves plans", async () => {

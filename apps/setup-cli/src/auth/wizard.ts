@@ -1,6 +1,7 @@
 import { Clock, Effect, Result } from "effect";
 
-import { AwsAuthError, CancellationError, TerminalError } from "../errors.ts";
+import { askBoolean, askUntil } from "../commands/prompts.ts";
+import { AwsAuthError, CancellationError, SetupCommandError, TerminalError } from "../errors.ts";
 import type { SsoMigrationBinding } from "../state/migration.ts";
 import type { AwsSsoAuth, SetupState, SetupStateV2 } from "../state/schema.ts";
 import { SetupStore, type SetupStoreService } from "../services/setup-store.ts";
@@ -41,45 +42,6 @@ function log(terminal: TerminalService, message: string) {
   return terminal.writeOut(`${message}\n`);
 }
 
-function ask(
-  terminal: TerminalService,
-  message: string,
-  allowEmpty = false,
-): Effect.Effect<string, TerminalError | CancellationError | AwsAuthError> {
-  return Effect.gen(function* () {
-    const value = (yield* terminal.promptLine(message)).trim();
-    if (!allowEmpty && value === "") {
-      return yield* Effect.fail(
-        new AwsAuthError({
-          message: `A value is required for: ${message.trim()}`,
-          reason: "cancelled",
-        }),
-      );
-    }
-    return value;
-  });
-}
-
-function askBoolean(
-  terminal: TerminalService,
-  label: string,
-  defaultValue: boolean,
-): Effect.Effect<boolean, TerminalError | CancellationError | AwsAuthError> {
-  return Effect.gen(function* () {
-    const hint = defaultValue ? "Y/n" : "y/N";
-    const value = (yield* ask(terminal, `${label} [${hint}]: `, true)).toLowerCase();
-    if (value === "") return defaultValue;
-    if (["y", "yes"].includes(value)) return true;
-    if (["n", "no"].includes(value)) return false;
-    return yield* Effect.fail(
-      new AwsAuthError({
-        message: "Please answer yes or no.",
-        reason: "cancelled",
-      }),
-    );
-  });
-}
-
 function formatProfileChoice(profile: ModernSsoProfile, index: number): string {
   return `${index + 1}) ${profile.profileName}  account=${profile.accountId}  role=${profile.roleName}  sso_region=${profile.identityCenterRegion}`;
 }
@@ -93,7 +55,7 @@ export function runAwsAuthWizard(
   options: AuthWizardOptions = {},
 ): Effect.Effect<
   VerifiedSsoBinding,
-  AwsAuthError | CancellationError | TerminalError,
+  AwsAuthError | CancellationError | TerminalError | SetupCommandError,
   AwsCliService | TerminalService
 > {
   return Effect.gen(function* () {
@@ -118,16 +80,17 @@ export function runAwsAuthWizard(
       }
       yield* log(terminal, `  ${profiles.length + 1}) Set up a different account/role`);
 
-      const raw = yield* ask(terminal, `Choose profile [1-${profiles.length + 1}]: `);
+      const last = profiles.length + 1;
+      const raw = yield* askUntil(`Choose profile [1-${last}]: `, {
+        emptyHint: `Enter a number between 1 and ${last}.`,
+        validate: (value) => {
+          const parsed = Number.parseInt(value, 10);
+          return Number.isFinite(parsed) && parsed >= 1 && parsed <= last
+            ? null
+            : `Enter a number between 1 and ${last}.`;
+        },
+      });
       const choice = Number.parseInt(raw, 10);
-      if (!Number.isFinite(choice) || choice < 1 || choice > profiles.length + 1) {
-        return yield* Effect.fail(
-          new AwsAuthError({
-            message: "Invalid profile selection.",
-            reason: "cancelled",
-          }),
-        );
-      }
       if (choice === profiles.length + 1) {
         selected = yield* configureNewProfile(aws, terminal, expectations, options);
       } else {
@@ -157,7 +120,11 @@ function configureNewProfile(
   terminal: TerminalService,
   expectations: AuthBindingExpectations,
   options: AuthWizardOptions,
-): Effect.Effect<ModernSsoProfile, AwsAuthError | CancellationError | TerminalError> {
+): Effect.Effect<
+  ModernSsoProfile,
+  AwsAuthError | CancellationError | TerminalError | SetupCommandError,
+  TerminalService
+> {
   return Effect.gen(function* () {
     const names = generateSsoNames(expectations.installationId ?? "setup");
     yield* log(
@@ -171,11 +138,7 @@ function configureNewProfile(
         ? true
         : options.preferDeviceCode === false
           ? false
-          : yield* askBoolean(
-              terminal,
-              "No browser available (use device code instead)?",
-              false,
-            );
+          : yield* askBoolean("No browser available (use device code instead)?", false);
 
     const args = ["configure", "sso", "--profile", names.profileName];
     if (useDevice) {
@@ -235,7 +198,11 @@ export function ensureFreshSession(
   terminal: TerminalService,
   profile: ModernSsoProfile,
   workloadRegion: string,
-): Effect.Effect<ResolvedCallerContext, AwsAuthError | CancellationError | TerminalError> {
+): Effect.Effect<
+  ResolvedCallerContext,
+  AwsAuthError | CancellationError | TerminalError | SetupCommandError,
+  TerminalService
+> {
   return Effect.gen(function* () {
     const first = yield* aws
       .verifyProfileSession(profile.profileName, workloadRegion)
@@ -252,7 +219,6 @@ export function ensureFreshSession(
 
     yield* log(terminal, `SSO session for profile "${profile.profileName}" is missing or expired.`);
     const proceed = yield* askBoolean(
-      terminal,
       `Run \`aws sso login --profile ${profile.profileName}\` now?`,
       true,
     );
@@ -475,7 +441,11 @@ export function runAwsAuthCommand(
   env: NodeJS.ProcessEnv = process.env,
 ): Effect.Effect<
   SetupStateV2,
-  AwsAuthError | CancellationError | TerminalError | import("../errors.ts").SetupStoreError,
+  | AwsAuthError
+  | CancellationError
+  | TerminalError
+  | SetupCommandError
+  | import("../errors.ts").SetupStoreError,
   AwsCliService | TerminalService | SetupStoreService
 > {
   return Effect.gen(function* () {
@@ -519,7 +489,7 @@ export function revalidateStoredAuth(
   options: { readonly promptForLogin: boolean },
 ): Effect.Effect<
   ResolvedCallerContext,
-  AwsAuthError | CancellationError | TerminalError,
+  AwsAuthError | CancellationError | TerminalError | SetupCommandError,
   AwsCliService | TerminalService
 > {
   return Effect.gen(function* () {

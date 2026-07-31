@@ -275,13 +275,10 @@ export function runHumanGatesStep(
       initialState?.installationId ?? (yield* store.resolveInstallationId(env));
     let state = yield* store.loadState(installationId, env);
 
-    let deployment: Record<string, string> = {};
-    try {
-      const loaded = yield* store.loadDeploymentEnv(installationId, env);
-      deployment = plainDeploymentEnv(loaded);
-    } catch {
-      deployment = {};
-    }
+    const deployment = yield* store.loadDeploymentEnv(installationId, env).pipe(
+      Effect.map((loaded) => plainDeploymentEnv(loaded)),
+      Effect.catchTag("SetupStoreError", () => Effect.succeed({} as Record<string, string>)),
+    );
 
     state = yield* ensureAutoSatisfiedGates(state, env);
 

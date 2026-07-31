@@ -15,7 +15,7 @@ import {
 import { SetupStore, SetupStoreLive } from "../services/setup-store.ts";
 import { TerminalFake } from "../terminal.ts";
 import type { DeployWorkflowError, DeployWorkflowServices } from "./plan.ts";
-import { assertNoHostKeyBypass, buildOpenSshRemoteCommand } from "./pure.ts";
+import { buildOpenSshRemoteCommand } from "./pure.ts";
 import { PUBLIC_REPO_URL } from "./constants.ts";
 import { HUMAN_GATE_DEFINITIONS } from "./human-gates.ts";
 
@@ -230,7 +230,6 @@ export function planExecutor(
       if (runOptions.command !== "ssh") {
         return yield* Effect.die(new Error(`unexpected command: ${joined}`));
       }
-      assertNoHostKeyBypass(argv);
       assertOpenSshArgvShape(argv);
 
       if (remote.includes("uname")) {
@@ -308,6 +307,7 @@ export function applyExecutor(options: {
   caddyHealth?: string;
   workerHealth?: string;
   dirtyAtApply?: boolean;
+  hostKeyPolicy?: string;
 }) {
   const calls = options.calls ?? [];
   let cloned = options.pathModeAfterPlan === "existing_git";
@@ -356,7 +356,13 @@ export function applyExecutor(options: {
       if (runOptions.command !== "ssh") {
         return yield* Effect.die(new Error(`unexpected command: ${joined}`));
       }
-      assertNoHostKeyBypass(argv);
+
+      if (runOptions.args?.[0] === "-G") {
+        return yield* finish(
+          respond(`stricthostkeychecking ${options.hostKeyPolicy ?? "accept-new"}\n`),
+        );
+      }
+
       assertOpenSshArgvShape(argv);
 
       if (remote.includes("path=") && remote.includes("ABSENT_WRITABLE_PARENT")) {

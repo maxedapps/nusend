@@ -98,13 +98,29 @@ function promptWithReadline(message: string, signal: AbortSignal): Promise<strin
       terminal: process.stdin.isTTY,
     });
 
+    // `rl.question`'s callback never fires when the stream closes first, so an
+    // unanswered prompt would hang forever without the `close` handler below.
+    let settled = false;
+
     const onAbort = () => {
+      settled = true;
       rl.close();
       reject(new DOMException("The operation was aborted.", "AbortError"));
     };
 
     signal.addEventListener("abort", onAbort, { once: true });
+    rl.on("close", () => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", onAbort);
+      reject(
+        new CancellationError({
+          message: "Input closed before an answer was given (EOF or Ctrl-C).",
+        }),
+      );
+    });
     rl.question(message, (answer) => {
+      settled = true;
       signal.removeEventListener("abort", onAbort);
       rl.close();
       resolve(answer);

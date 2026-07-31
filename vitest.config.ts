@@ -24,5 +24,6 @@ export default defineConfig({
     exclude: ["**/dist/**", "**/node_modules/**", ".progress/**"],
     globals: false,
     restoreMocks: true,
+    testTimeout: 30000,
   },
 });

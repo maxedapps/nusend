@@ -4,7 +4,7 @@ import { PermissionSetSchema } from "../permissions.js";
 import { ApiKeyWithSecretSchema } from "../api-keys/schema.js";
 
 export const DeviceAuthorizationStartRequestSchema = Schema.Struct({
-  clientName: Schema.String,
+  clientName: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(100)),
   permissions: PermissionSetSchema,
 });
 

@@ -315,16 +315,6 @@ export function fingerprintDeployPlan(planBody: Record<string, unknown>): string
   return createHash("sha256").update(canonical).digest("hex");
 }
 
-export function assertNoHostKeyBypass(argv: readonly string[] = []): void {
-  const joined = argv.join(" ");
-  if (
-    /StrictHostKeyChecking\s*=\s*no/iu.test(joined) ||
-    /UserKnownHostsFile\s*=\s*\/dev\/null/iu.test(joined)
-  ) {
-    throw new Error("Refusing SSH invocation that disables host-key verification.");
-  }
-}
-
 export function assertArgvFreeOfSecrets(argv: readonly string[], secrets: readonly string[]): void {
   const joined = argv.join("\0");
   for (const secret of secrets) {

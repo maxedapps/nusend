@@ -348,6 +348,27 @@ describe("deploy apply", () => {
     }
   });
 
+  it("refuses to transfer the env when the SSH host-key policy is bypassed", async () => {
+    const env = testEnv();
+    await seedInstallation(env, "prod", { awsCoreComplete: true, humanGatesComplete: true });
+
+    {
+      const { layer } = deployLayer(env, planExecutor([], { pathMode: "absent" }));
+      await runDeployWorkflow(runDeployPlan(env), layer);
+    }
+
+    const calls: Array<{ argv: string[]; stdin?: string }> = [];
+    const { layer } = deployLayer(
+      env,
+      applyExecutor({ calls, hostKeyPolicy: "no", pathModeAfterPlan: "absent" }),
+      [confirmationPhrase()],
+    );
+    const exit = await runDeployWorkflowExit(runDeployApply(env), layer);
+
+    expect(failMessage(exit)).toMatch(/host-key policy|StrictHostKeyChecking/i);
+    expect(calls.some((call) => opensshJoinedRemote(call.argv).includes(".env.tmp"))).toBe(false);
+  });
+
   it("refuses moved image labels and compose config/pull/up failures", async () => {
     for (const [id, failOptions, pattern] of [
       ["img", { imageRevision: OTHER_SHA }, new RegExp(OCI_REVISION_LABEL)],

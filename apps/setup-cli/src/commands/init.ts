@@ -8,6 +8,7 @@ import {
   SetupStoreError,
   TerminalError,
 } from "../errors.ts";
+import { assertSshTarget } from "../deploy/pure.ts";
 import { resolveLatestReleaseTag } from "../release/latest.ts";
 import { SetupStore, type SetupStoreService } from "../services/setup-store.ts";
 import { assertInstallationId } from "../state/paths.ts";
@@ -57,22 +58,28 @@ export function runInit(
     const releaseTagValue = yield* resolveLatestReleaseTag({ env });
     yield* writeLine(`Pinned release: ${releaseTagValue}`);
 
-    const domain = yield* askUntil("Domain name of the server hosting this app (e.g. mail.example.com): ", {
-      emptyHint: "Enter the hostname that will point at your VPS (no https://).",
-      validate: (value) =>
-        looksLikeHostname(value)
-          ? null
-          : "Use a hostname only, like mail.example.com (no https:// or path).",
-    });
+    const domain = yield* askUntil(
+      "Domain name of the server hosting this app (e.g. mail.example.com): ",
+      {
+        emptyHint: "Enter the hostname that will point at your VPS (no https://).",
+        validate: (value) =>
+          looksLikeHostname(value)
+            ? null
+            : "Use a hostname only, like mail.example.com (no https:// or path).",
+      },
+    );
     const ingressMode = (yield* askChoice(
       "How HTTPS reaches your VPS (direct=DNS to server, cloudflare=proxied CF)",
       ["direct", "cloudflare"],
     )) as "direct" | "cloudflare";
-    const ownerEmail = yield* askUntil("Admin Google email (the account that signs into Nusend): ", {
-      emptyHint: "Required: the Google account that will own/admin this Nusend install.",
-      validate: (value) =>
-        looksLikeEmail(value) ? null : "Enter a normal email address (e.g. you@company.com).",
-    });
+    const ownerEmail = yield* askUntil(
+      "Admin Google email (the account that signs into Nusend): ",
+      {
+        emptyHint: "Required: the Google account that will own/admin this Nusend install.",
+        validate: (value) =>
+          looksLikeEmail(value) ? null : "Enter a normal email address (e.g. you@company.com).",
+      },
+    );
     const ownerName = yield* askUntil("Admin display name: ", {
       emptyHint: "Required: a display name for the admin user.",
     });
@@ -88,18 +95,22 @@ export function runInit(
       validate: (value) =>
         /^\d{12}$/u.test(value) ? null : "Account ID must be exactly 12 digits.",
     });
-    const sesIdentity = yield* askUntil("Domain used to send mail / SES+DKIM (e.g. example.com): ", {
-      emptyHint: "Required: the domain SES will verify for sending (often example.com).",
-      validate: (value) =>
-        looksLikeHostname(value)
-          ? null
-          : "Use a domain hostname like example.com (no https://).",
-    });
-    const sesFromEmail = yield* askUntil("From address on outbound mail (e.g. news@example.com): ", {
-      emptyHint: "Required: the From: address on mail Nusend sends.",
-      validate: (value) =>
-        looksLikeEmail(value) ? null : "Enter a full email address (e.g. news@example.com).",
-    });
+    const sesIdentity = yield* askUntil(
+      "Domain used to send mail / SES+DKIM (e.g. example.com): ",
+      {
+        emptyHint: "Required: the domain SES will verify for sending (often example.com).",
+        validate: (value) =>
+          looksLikeHostname(value) ? null : "Use a domain hostname like example.com (no https://).",
+      },
+    );
+    const sesFromEmail = yield* askUntil(
+      "From address on outbound mail (e.g. news@example.com): ",
+      {
+        emptyHint: "Required: the From: address on mail Nusend sends.",
+        validate: (value) =>
+          looksLikeEmail(value) ? null : "Enter a full email address (e.g. news@example.com).",
+      },
+    );
     const marketingEnabled = yield* askBoolean("Also create a marketing SES config set?", false);
     const trackingEnabled = yield* askBoolean("Track opens/clicks?", false);
     const alertEmail = yield* askUntil("Email for AWS ops alerts: ", {
@@ -120,10 +131,16 @@ export function runInit(
     const route53HostedZoneId = route53Raw === "" ? null : route53Raw;
     const sshTarget = yield* askUntil("SSH login for the VPS (user@host): ", {
       emptyHint: "Required: SSH target used to deploy (e.g. root@203.0.113.10).",
-      validate: (value) =>
-        /^[^@\s]+@[^@\s]+$/u.test(value)
-          ? null
-          : "Use user@host form (e.g. ubuntu@203.0.113.10 or deploy@mail.example.com).",
+      validate: (value) => {
+        try {
+          assertSshTarget(value);
+          return null;
+        } catch (error) {
+          return error instanceof Error
+            ? error.message
+            : "Use user@host form (e.g. ubuntu@203.0.113.10 or deploy@mail.example.com).";
+        }
+      },
     });
     const remotePath = yield* askUntil("Directory on the VPS for the app (e.g. /srv/nusend): ", {
       emptyHint: "Required: absolute path on the VPS where Nusend will be checked out.",
@@ -201,24 +218,22 @@ export function runInit(
         remotePath,
         installationName: installationId,
       },
-      stages: {
-        init: {
-          status: "complete",
-          completedAt: now,
-          evidence: {
-            verified: true,
-            installationId,
-            domain,
-            releaseTag: releaseTagValue,
-            awsRegion,
-            awsAccountId: binding.awsAuth.verifiedAccountId,
-            awsProfile: binding.awsAuth.profileName,
-            authType: "sso",
-          },
-        },
-      },
+      // `init` is checkpointed only after the `current` pointer exists, so a crash
+      // mid-publish never leaves a complete-but-unreachable installation.
+      stages: {},
       plans: {},
       awsAuth: binding.awsAuth,
+    };
+
+    const initEvidence = {
+      verified: true,
+      installationId,
+      domain,
+      releaseTag: releaseTagValue,
+      awsRegion,
+      awsAccountId: binding.awsAuth.verifiedAccountId,
+      awsProfile: binding.awsAuth.profileName,
+      authType: "sso",
     };
 
     const deploymentEnv = {
@@ -248,7 +263,14 @@ export function runInit(
     const published = yield* store.writeState(state, env).pipe(
       Effect.flatMap(() => store.writeDeploymentEnv(installationId, deploymentEnv, env)),
       Effect.flatMap(() => store.writeCurrentPointer(installationId, env)),
-      Effect.as(state),
+      Effect.flatMap(() => store.checkpointStage(state, "init", initEvidence, env)),
+      Effect.map(
+        (written): SetupStateV2 => ({
+          ...state,
+          updatedAt: written.updatedAt,
+          stages: written.stages,
+        }),
+      ),
       Effect.catchTag("SetupStoreError", (error) =>
         store.removeUnpublishedInstallation(installationId, env).pipe(
           Effect.ignore,

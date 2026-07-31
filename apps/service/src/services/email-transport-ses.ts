@@ -178,6 +178,8 @@ const postAcceptanceAmbiguityErrors = new Set([
 ]);
 const explicitThrottleOrQuotaErrors = new Set([
   "LimitExceededException",
+  // An explicit pre-acceptance refusal, so retrying cannot double-send.
+  "SendingPausedException",
   "ThrottlingException",
   "TooManyRequestsException",
 ]);
@@ -188,7 +190,6 @@ const permanentErrors = new Set([
   "MailFromDomainNotVerifiedException",
   "MessageRejected",
   "NotFoundException",
-  "SendingPausedException",
 ]);
 
 function getErrorName(cause: unknown): string | null {

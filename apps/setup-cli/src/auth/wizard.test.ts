@@ -22,6 +22,15 @@ const profile: ModernSsoProfile = {
   profileRegion: "eu-west-1",
 };
 
+// `ensureFreshSession` still takes a terminal for its log lines; prompts now come
+// from the Terminal service in context.
+const logOnly = {
+  writeOut: () => Effect.succeed(undefined),
+  writeErr: () => Effect.succeed(undefined),
+  promptLine: () => Effect.succeed(""),
+  promptSecret: () => Effect.succeed(""),
+} as never;
+
 const caller: ResolvedCallerContext = {
   accountId: "123456789012",
   arn: "arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_NusendProvisioner_ab12/user",
@@ -172,6 +181,21 @@ describe("auth wizard flows", () => {
     expect(inherited[0]).not.toContain("--use-device-code");
   });
 
+  it("re-prompts an out-of-range profile number instead of aborting", async () => {
+    const terminal = TerminalFake({ answers: ["banana", "9", "1"] });
+    const aws = baseAws({});
+
+    const binding = await Effect.runPromise(
+      runAwsAuthWizard({
+        workloadRegion: "eu-west-1",
+        expectedAccountId: "123456789012",
+      }).pipe(Effect.provide(Layer.mergeAll(aws, terminal.layer))),
+    );
+
+    expect(binding.caller.accountId).toBe("123456789012");
+    expect(terminal.state.prompts.filter((p) => p.includes("Choose profile"))).toHaveLength(3);
+  });
+
   it("existing valid session succeeds without login", async () => {
     const inherited: string[][] = [];
     const terminal = TerminalFake({ answers: ["1"] });
@@ -221,17 +245,10 @@ describe("auth wizard flows", () => {
       },
     };
 
+    const terminal = TerminalFake({ answers: ["y"] });
     const out = await Effect.runPromise(
-      ensureFreshSession(
-        aws as never,
-        {
-          writeOut: () => Effect.succeed(undefined),
-          writeErr: () => Effect.succeed(undefined),
-          promptLine: () => Effect.succeed("y"),
-          promptSecret: () => Effect.succeed(""),
-        } as never,
-        profile,
-        "eu-west-1",
+      ensureFreshSession(aws as never, logOnly, profile, "eu-west-1").pipe(
+        Effect.provide(terminal.layer),
       ),
     );
 
@@ -250,15 +267,12 @@ describe("auth wizard flows", () => {
       runInheritedSso: () =>
         Effect.fail(new AwsAuthError({ message: "cancelled", reason: "login-cancelled" })),
     };
-    const terminal = {
-      writeOut: () => Effect.succeed(undefined),
-      writeErr: () => Effect.succeed(undefined),
-      promptLine: () => Effect.succeed("y"),
-      promptSecret: () => Effect.succeed(""),
-    };
+    const terminal = TerminalFake({ answers: ["y"] });
 
     const exit = await Effect.runPromiseExit(
-      ensureFreshSession(aws as never, terminal as never, profile, "eu-west-1"),
+      ensureFreshSession(aws as never, logOnly, profile, "eu-west-1").pipe(
+        Effect.provide(terminal.layer),
+      ),
     );
     expect(Exit.isFailure(exit)).toBe(true);
     expect(verifyCount).toBe(1);
@@ -277,17 +291,10 @@ describe("auth wizard flows", () => {
           argv: ["aws"],
         }),
     };
+    const terminal = TerminalFake({ answers: ["n"] });
     const exit = await Effect.runPromiseExit(
-      ensureFreshSession(
-        aws as never,
-        {
-          writeOut: () => Effect.succeed(undefined),
-          writeErr: () => Effect.succeed(undefined),
-          promptLine: () => Effect.succeed("n"),
-          promptSecret: () => Effect.succeed(""),
-        } as never,
-        profile,
-        "eu-west-1",
+      ensureFreshSession(aws as never, logOnly, profile, "eu-west-1").pipe(
+        Effect.provide(terminal.layer),
       ),
     );
     expect(Exit.isFailure(exit)).toBe(true);
